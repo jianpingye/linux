@@ -28,21 +28,7 @@
 #include <sys/time.h>
 #include <sys/timex.h>
 #include <time.h>
-#ifdef KTEST
 #include "../kselftest.h"
-#else
-static inline int ksft_exit_pass(void)
-{
-	exit(0);
-}
-static inline int ksft_exit_fail(void)
-{
-	exit(1);
-}
-#endif
-
-#define NSEC_PER_SEC 1000000000LL
-
 
 int change_skew_test(int ppm)
 {
@@ -66,7 +52,7 @@ int change_skew_test(int ppm)
 }
 
 
-int main(int argv, char **argc)
+int main(int argc, char **argv)
 {
 	struct timex tx;
 	int i, ret;
@@ -100,8 +86,8 @@ int main(int argv, char **argc)
 
 	if (ret) {
 		printf("[FAIL]");
-		return ksft_exit_fail();
+		ksft_exit_fail();
 	}
 	printf("[OK]");
-	return ksft_exit_pass();
+	ksft_exit_pass();
 }

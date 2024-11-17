@@ -1,6 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _UAPI_FALLOC_H_
 #define _UAPI_FALLOC_H_
 
+#define FALLOC_FL_ALLOCATE_RANGE 0x00 /* allocate range */
 #define FALLOC_FL_KEEP_SIZE	0x01 /* default is extend size */
 #define FALLOC_FL_PUNCH_HOLE	0x02 /* de-allocates range */
 #define FALLOC_FL_NO_HIDE_STALE	0x04 /* reserved codepoint */
@@ -57,5 +59,23 @@
  * fallocate(2) with mode 0 for such type of operations.
  */
 #define FALLOC_FL_INSERT_RANGE		0x20
+
+/*
+ * FALLOC_FL_UNSHARE_RANGE is used to unshare shared blocks within the
+ * file size without overwriting any existing data. The purpose of this
+ * call is to preemptively reallocate any blocks that are subject to
+ * copy-on-write.
+ *
+ * Different filesystems may implement different limitations on the
+ * granularity of the operation. Most will limit operations to filesystem
+ * block size boundaries, but this boundary may be larger or smaller
+ * depending on the filesystem and/or the configuration of the filesystem
+ * or file.
+ *
+ * This flag can only be used with allocate-mode fallocate, which is
+ * to say that it cannot be used with the punch, zero, collapse, or
+ * insert range modes.
+ */
+#define FALLOC_FL_UNSHARE_RANGE		0x40
 
 #endif /* _UAPI_FALLOC_H_ */

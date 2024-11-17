@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Because linux/module.h has tracepoints in the header, and ftrace.h
  * used to include this file, define_trace.h includes linux/module.h
@@ -40,7 +41,7 @@ TRACE_EVENT(module_load,
 
 	TP_fast_assign(
 		__entry->taints = mod->taints;
-		__assign_str(name, mod->name);
+		__assign_str(name);
 	),
 
 	TP_printk("%s %s", __get_str(name), show_module_flags(__entry->taints))
@@ -57,7 +58,7 @@ TRACE_EVENT(module_free,
 	),
 
 	TP_fast_assign(
-		__assign_str(name, mod->name);
+		__assign_str(name);
 	),
 
 	TP_printk("%s", __get_str(name))
@@ -81,7 +82,7 @@ DECLARE_EVENT_CLASS(module_refcnt,
 	TP_fast_assign(
 		__entry->ip	= ip;
 		__entry->refcnt	= atomic_read(&mod->refcnt);
-		__assign_str(name, mod->name);
+		__assign_str(name);
 	),
 
 	TP_printk("%s call_site=%ps refcnt=%d",
@@ -118,7 +119,7 @@ TRACE_EVENT(module_request,
 	TP_fast_assign(
 		__entry->ip	= ip;
 		__entry->wait	= wait;
-		__assign_str(name, name);
+		__assign_str(name);
 	),
 
 	TP_printk("%s wait=%d call_site=%ps",

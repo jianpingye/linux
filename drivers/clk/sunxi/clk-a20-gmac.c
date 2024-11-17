@@ -1,31 +1,33 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2013 Emilio López
  * Emilio López <emilio@elopez.com.ar>
  *
  * Copyright 2013 Chen-Yu Tsai
  * Chen-Yu Tsai <wens@csie.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/clk-provider.h>
-#include <linux/clkdev.h>
+#include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/slab.h>
 
 static DEFINE_SPINLOCK(gmac_lock);
 
+
+#define SUN7I_A20_GMAC_GPIT	2
+#define SUN7I_A20_GMAC_MASK	0x3
+#define SUN7I_A20_GMAC_PARENTS	2
+
+static u32 sun7i_a20_gmac_mux_table[SUN7I_A20_GMAC_PARENTS] = {
+	0x00, /* Select mii_phy_tx_clk */
+	0x02, /* Select gmac_int_tx_clk */
+};
+
 /**
  * sun7i_a20_gmac_clk_setup - Setup function for A20/A31 GMAC clock module
+ * @node: &struct device_node for the clock
  *
  * This clock looks something like this
  *                               ________________________
@@ -48,16 +50,6 @@ static DEFINE_SPINLOCK(gmac_lock);
  * enable/disable this clock to configure the required state. The clock
  * driver then responds by auto-reparenting the clock.
  */
-
-#define SUN7I_A20_GMAC_GPIT	2
-#define SUN7I_A20_GMAC_MASK	0x3
-#define SUN7I_A20_GMAC_PARENTS	2
-
-static u32 sun7i_a20_gmac_mux_table[SUN7I_A20_GMAC_PARENTS] = {
-	0x00, /* Select mii_phy_tx_clk */
-	0x02, /* Select gmac_int_tx_clk */
-};
-
 static void __init sun7i_a20_gmac_clk_setup(struct device_node *node)
 {
 	struct clk *clk;
@@ -80,9 +72,7 @@ static void __init sun7i_a20_gmac_clk_setup(struct device_node *node)
 		goto free_mux;
 
 	/* gmac clock requires exactly 2 parents */
-	parents[0] = of_clk_get_parent_name(node, 0);
-	parents[1] = of_clk_get_parent_name(node, 1);
-	if (!parents[0] || !parents[1])
+	if (of_clk_parent_fill(node, parents, 2) != 2)
 		goto free_gate;
 
 	reg = of_iomap(node, 0);
@@ -109,7 +99,6 @@ static void __init sun7i_a20_gmac_clk_setup(struct device_node *node)
 		goto iounmap_reg;
 
 	of_clk_add_provider(node, of_clk_src_simple_get, clk);
-	clk_register_clkdev(clk, clk_name, NULL);
 
 	return;
 

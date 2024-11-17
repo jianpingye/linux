@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Hisilicon Hi3620 clock driver
  *
@@ -6,32 +7,14 @@
  *
  * Author: Haojian Zhuang <haojian.zhuang@linaro.org>
  *	   Xin Li <li.xin@linaro.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/clk-provider.h>
-#include <linux/clkdev.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/slab.h>
-#include <linux/clk.h>
 
 #include <dt-bindings/clock/hi3620-clock.h>
 
@@ -80,15 +63,15 @@ static const char *const mmc3_mux_p[] __initconst = { "armpll2", "armpll3", };
 
 /* fixed rate clocks */
 static struct hisi_fixed_rate_clock hi3620_fixed_rate_clks[] __initdata = {
-	{ HI3620_OSC32K,   "osc32k",   NULL, CLK_IS_ROOT, 32768, },
-	{ HI3620_OSC26M,   "osc26m",   NULL, CLK_IS_ROOT, 26000000, },
-	{ HI3620_PCLK,     "pclk",     NULL, CLK_IS_ROOT, 26000000, },
-	{ HI3620_PLL_ARM0, "armpll0",  NULL, CLK_IS_ROOT, 1600000000, },
-	{ HI3620_PLL_ARM1, "armpll1",  NULL, CLK_IS_ROOT, 1600000000, },
-	{ HI3620_PLL_PERI, "armpll2",  NULL, CLK_IS_ROOT, 1440000000, },
-	{ HI3620_PLL_USB,  "armpll3",  NULL, CLK_IS_ROOT, 1440000000, },
-	{ HI3620_PLL_HDMI, "armpll4",  NULL, CLK_IS_ROOT, 1188000000, },
-	{ HI3620_PLL_GPU,  "armpll5",  NULL, CLK_IS_ROOT, 1300000000, },
+	{ HI3620_OSC32K,   "osc32k",   NULL, 0, 32768, },
+	{ HI3620_OSC26M,   "osc26m",   NULL, 0, 26000000, },
+	{ HI3620_PCLK,     "pclk",     NULL, 0, 26000000, },
+	{ HI3620_PLL_ARM0, "armpll0",  NULL, 0, 1600000000, },
+	{ HI3620_PLL_ARM1, "armpll1",  NULL, 0, 1600000000, },
+	{ HI3620_PLL_PERI, "armpll2",  NULL, 0, 1440000000, },
+	{ HI3620_PLL_USB,  "armpll3",  NULL, 0, 1440000000, },
+	{ HI3620_PLL_HDMI, "armpll4",  NULL, 0, 1188000000, },
+	{ HI3620_PLL_GPU,  "armpll5",  NULL, 0, 1300000000, },
 };
 
 /* fixed factor clocks */
@@ -146,7 +129,7 @@ static struct hisi_divider_clock hi3620_div_clks[] __initdata = {
 	{ HI3620_MMC3_DIV,     "mmc3_div",   "mmc3_mux",  0, 0x140, 5, 4, CLK_DIVIDER_HIWORD_MASK, NULL, },
 };
 
-static struct hisi_gate_clock hi3620_seperated_gate_clks[] __initdata = {
+static struct hisi_gate_clock hi3620_separated_gate_clks[] __initdata = {
 	{ HI3620_TIMERCLK01,   "timerclk01",   "timer_rclk01", CLK_SET_RATE_PARENT, 0x20, 0, 0, },
 	{ HI3620_TIMER_RCLK01, "timer_rclk01", "rclk_tcxo",    CLK_SET_RATE_PARENT, 0x20, 1, 0, },
 	{ HI3620_TIMERCLK23,   "timerclk23",   "timer_rclk23", CLK_SET_RATE_PARENT, 0x20, 2, 0, },
@@ -226,8 +209,8 @@ static void __init hi3620_clk_init(struct device_node *np)
 			      clk_data);
 	hisi_clk_register_divider(hi3620_div_clks, ARRAY_SIZE(hi3620_div_clks),
 				  clk_data);
-	hisi_clk_register_gate_sep(hi3620_seperated_gate_clks,
-				   ARRAY_SIZE(hi3620_seperated_gate_clks),
+	hisi_clk_register_gate_sep(hi3620_separated_gate_clks,
+				   ARRAY_SIZE(hi3620_separated_gate_clks),
 				   clk_data);
 }
 CLK_OF_DECLARE(hi3620_clk, "hisilicon,hi3620-clock", hi3620_clk_init);
@@ -294,34 +277,29 @@ static unsigned long mmc_clk_recalc_rate(struct clk_hw *hw,
 	}
 }
 
-static long mmc_clk_determine_rate(struct clk_hw *hw, unsigned long rate,
-			      unsigned long min_rate,
-			      unsigned long max_rate,
-			      unsigned long *best_parent_rate,
-			      struct clk_hw **best_parent_p)
+static int mmc_clk_determine_rate(struct clk_hw *hw,
+				  struct clk_rate_request *req)
 {
 	struct clk_mmc *mclk = to_mmc(hw);
-	unsigned long best = 0;
 
-	if ((rate <= 13000000) && (mclk->id == HI3620_MMC_CIUCLK1)) {
-		rate = 13000000;
-		best = 26000000;
-	} else if (rate <= 26000000) {
-		rate = 25000000;
-		best = 180000000;
-	} else if (rate <= 52000000) {
-		rate = 50000000;
-		best = 360000000;
-	} else if (rate <= 100000000) {
-		rate = 100000000;
-		best = 720000000;
+	if ((req->rate <= 13000000) && (mclk->id == HI3620_MMC_CIUCLK1)) {
+		req->rate = 13000000;
+		req->best_parent_rate = 26000000;
+	} else if (req->rate <= 26000000) {
+		req->rate = 25000000;
+		req->best_parent_rate = 180000000;
+	} else if (req->rate <= 52000000) {
+		req->rate = 50000000;
+		req->best_parent_rate = 360000000;
+	} else if (req->rate <= 100000000) {
+		req->rate = 100000000;
+		req->best_parent_rate = 720000000;
 	} else {
 		/* max is 180M */
-		rate = 180000000;
-		best = 1440000000;
+		req->rate = 180000000;
+		req->best_parent_rate = 1440000000;
 	}
-	*best_parent_rate = best;
-	return rate;
+	return -EINVAL;
 }
 
 static u32 mmc_clk_delay(u32 val, u32 para, u32 off, u32 len)
@@ -422,7 +400,7 @@ static int mmc_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	return mmc_clk_set_timing(hw, rate);
 }
 
-static struct clk_ops clk_mmc_ops = {
+static const struct clk_ops clk_mmc_ops = {
 	.prepare = mmc_clk_prepare,
 	.determine_rate = mmc_clk_determine_rate,
 	.set_rate = mmc_clk_set_rate,
@@ -437,14 +415,12 @@ static struct clk *hisi_register_clk_mmc(struct hisi_mmc_clock *mmc_clk,
 	struct clk_init_data init;
 
 	mclk = kzalloc(sizeof(*mclk), GFP_KERNEL);
-	if (!mclk) {
-		pr_err("%s: fail to allocate mmc clk\n", __func__);
+	if (!mclk)
 		return ERR_PTR(-ENOMEM);
-	}
 
 	init.name = mmc_clk->name;
 	init.ops = &clk_mmc_ops;
-	init.flags = mmc_clk->flags | CLK_IS_BASIC;
+	init.flags = mmc_clk->flags;
 	init.parent_names = (mmc_clk->parent_name ? &mmc_clk->parent_name : NULL);
 	init.num_parents = (mmc_clk->parent_name ? 1 : 0);
 	mclk->hw.init = &init;
@@ -489,9 +465,9 @@ static void __init hi3620_mmc_clk_init(struct device_node *node)
 	if (WARN_ON(!clk_data))
 		return;
 
-	clk_data->clks = kzalloc(sizeof(struct clk *) * num, GFP_KERNEL);
+	clk_data->clks = kcalloc(num, sizeof(*clk_data->clks), GFP_KERNEL);
 	if (!clk_data->clks) {
-		pr_err("%s: fail to allocate mmc clk\n", __func__);
+		kfree(clk_data);
 		return;
 	}
 

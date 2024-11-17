@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HD-audio codec core device
  */
 
 #include <linux/init.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -11,6 +13,7 @@
 #include <sound/hdaudio.h>
 #include <sound/hda_regmap.h>
 #include <sound/pcm.h>
+#include <sound/pcm_params.h>
 #include "local.h"
 
 static void setup_fg_nodes(struct hdac_device *codec);
@@ -18,7 +21,7 @@ static int get_codec_vendor_name(struct hdac_device *codec);
 
 static void default_release(struct device *dev)
 {
-	snd_hdac_device_exit(container_of(dev, struct hdac_device, dev));
+	snd_hdac_device_exit(dev_to_hdac_dev(dev));
 }
 
 /**
@@ -54,6 +57,8 @@ int snd_hdac_device_init(struct hdac_device *codec, struct hdac_bus *bus,
 	codec->bus = bus;
 	codec->addr = addr;
 	codec->type = HDA_DEV_CORE;
+	mutex_init(&codec->widget_lock);
+	mutex_init(&codec->regmap_lock);
 	pm_runtime_set_active(&codec->dev);
 	pm_runtime_get_noresume(&codec->dev);
 	atomic_set(&codec->in_pm, 0);
@@ -123,6 +128,8 @@ EXPORT_SYMBOL_GPL(snd_hdac_device_init);
 void snd_hdac_device_exit(struct hdac_device *codec)
 {
 	pm_runtime_put_noidle(&codec->dev);
+	/* keep balance of runtime PM child_count in parent device */
+	pm_runtime_set_suspended(&codec->dev);
 	snd_hdac_bus_remove_device(codec->bus, codec);
 	kfree(codec->vendor_name);
 	kfree(codec->chip_name);
@@ -131,7 +138,7 @@ EXPORT_SYMBOL_GPL(snd_hdac_device_exit);
 
 /**
  * snd_hdac_device_register - register the hd-audio codec base device
- * codec: the device to register
+ * @codec: the device to register
  */
 int snd_hdac_device_register(struct hdac_device *codec)
 {
@@ -140,7 +147,9 @@ int snd_hdac_device_register(struct hdac_device *codec)
 	err = device_add(&codec->dev);
 	if (err < 0)
 		return err;
+	mutex_lock(&codec->widget_lock);
 	err = hda_widget_sysfs_init(codec);
+	mutex_unlock(&codec->widget_lock);
 	if (err < 0) {
 		device_del(&codec->dev);
 		return err;
@@ -152,16 +161,56 @@ EXPORT_SYMBOL_GPL(snd_hdac_device_register);
 
 /**
  * snd_hdac_device_unregister - unregister the hd-audio codec base device
- * codec: the device to unregister
+ * @codec: the device to unregister
  */
 void snd_hdac_device_unregister(struct hdac_device *codec)
 {
 	if (device_is_registered(&codec->dev)) {
+		mutex_lock(&codec->widget_lock);
 		hda_widget_sysfs_exit(codec);
+		mutex_unlock(&codec->widget_lock);
 		device_del(&codec->dev);
+		snd_hdac_bus_remove_device(codec->bus, codec);
 	}
 }
 EXPORT_SYMBOL_GPL(snd_hdac_device_unregister);
+
+/**
+ * snd_hdac_device_set_chip_name - set/update the codec name
+ * @codec: the HDAC device
+ * @name: name string to set
+ *
+ * Returns 0 if the name is set or updated, or a negative error code.
+ */
+int snd_hdac_device_set_chip_name(struct hdac_device *codec, const char *name)
+{
+	char *newname;
+
+	if (!name)
+		return 0;
+	newname = kstrdup(name, GFP_KERNEL);
+	if (!newname)
+		return -ENOMEM;
+	kfree(codec->chip_name);
+	codec->chip_name = newname;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(snd_hdac_device_set_chip_name);
+
+/**
+ * snd_hdac_codec_modalias - give the module alias name
+ * @codec: HDAC device
+ * @buf: string buffer to store
+ * @size: string buffer size
+ *
+ * Returns the size of string, like snprintf(), or a negative error code.
+ */
+int snd_hdac_codec_modalias(const struct hdac_device *codec, char *buf, size_t size)
+{
+	return scnprintf(buf, size, "hdaudio:v%08Xr%08Xa%02X\n",
+			codec->vendor_id, codec->revision_id, codec->type);
+}
+EXPORT_SYMBOL_GPL(snd_hdac_codec_modalias);
 
 /**
  * snd_hdac_make_cmd - compose a 32bit command word to be sent to the
@@ -173,8 +222,8 @@ EXPORT_SYMBOL_GPL(snd_hdac_device_unregister);
  *
  * Return an encoded command verb or -1 for error.
  */
-unsigned int snd_hdac_make_cmd(struct hdac_device *codec, hda_nid_t nid,
-			       unsigned int verb, unsigned int parm)
+static unsigned int snd_hdac_make_cmd(struct hdac_device *codec, hda_nid_t nid,
+				      unsigned int verb, unsigned int parm)
 {
 	u32 val, addr;
 
@@ -192,7 +241,6 @@ unsigned int snd_hdac_make_cmd(struct hdac_device *codec, hda_nid_t nid,
 	val |= parm;
 	return val;
 }
-EXPORT_SYMBOL_GPL(snd_hdac_make_cmd);
 
 /**
  * snd_hdac_exec_verb - execute an encoded verb
@@ -213,7 +261,6 @@ int snd_hdac_exec_verb(struct hdac_device *codec, unsigned int cmd,
 		return codec->exec_verb(codec, cmd, flags, res);
 	return snd_hdac_bus_exec_verb(codec->bus, codec->addr, cmd, res);
 }
-EXPORT_SYMBOL_GPL(snd_hdac_exec_verb);
 
 
 /**
@@ -237,6 +284,10 @@ EXPORT_SYMBOL_GPL(snd_hdac_read);
 
 /**
  * _snd_hdac_read_parm - read a parmeter
+ * @codec: the codec object
+ * @nid: NID to read a parameter
+ * @parm: parameter to read
+ * @res: pointer to store the read value
  *
  * This function returns zero or an error unlike snd_hdac_read_parm().
  */
@@ -262,13 +313,11 @@ EXPORT_SYMBOL_GPL(_snd_hdac_read_parm);
 int snd_hdac_read_parm_uncached(struct hdac_device *codec, hda_nid_t nid,
 				int parm)
 {
-	int val;
+	unsigned int cmd, val;
 
-	if (codec->regmap)
-		regcache_cache_bypass(codec->regmap, true);
-	val = snd_hdac_read_parm(codec, nid, parm);
-	if (codec->regmap)
-		regcache_cache_bypass(codec->regmap, false);
+	cmd = snd_hdac_regmap_encode_verb(nid, AC_VERB_PARAMETERS) | parm;
+	if (snd_hdac_regmap_read_raw_uncached(codec, cmd, &val) < 0)
+		return -1;
 	return val;
 }
 EXPORT_SYMBOL_GPL(snd_hdac_read_parm_uncached);
@@ -356,19 +405,31 @@ static void setup_fg_nodes(struct hdac_device *codec)
 int snd_hdac_refresh_widgets(struct hdac_device *codec)
 {
 	hda_nid_t start_nid;
-	int nums;
+	int nums, err = 0;
 
+	/*
+	 * Serialize against multiple threads trying to update the sysfs
+	 * widgets array.
+	 */
+	mutex_lock(&codec->widget_lock);
 	nums = snd_hdac_get_sub_nodes(codec, codec->afg, &start_nid);
 	if (!start_nid || nums <= 0 || nums >= 0xff) {
 		dev_err(&codec->dev, "cannot read sub nodes for FG 0x%02x\n",
 			codec->afg);
-		return -EINVAL;
+		err = -EINVAL;
+		goto unlock;
 	}
+
+	err = hda_widget_sysfs_reinit(codec, start_nid, nums);
+	if (err < 0)
+		goto unlock;
 
 	codec->num_nodes = nums;
 	codec->start_nid = start_nid;
 	codec->end_nid = start_nid + nums;
-	return 0;
+unlock:
+	mutex_unlock(&codec->widget_lock);
+	return err;
 }
 EXPORT_SYMBOL_GPL(snd_hdac_refresh_widgets);
 
@@ -501,23 +562,27 @@ EXPORT_SYMBOL_GPL(snd_hdac_get_connections);
  * This function calls the runtime PM helper to power up the given codec.
  * Unlike snd_hdac_power_up_pm(), you should call this only for the code
  * path that isn't included in PM path.  Otherwise it gets stuck.
+ *
+ * Returns zero if successful, or a negative error code.
  */
-void snd_hdac_power_up(struct hdac_device *codec)
+int snd_hdac_power_up(struct hdac_device *codec)
 {
-	pm_runtime_get_sync(&codec->dev);
+	return pm_runtime_get_sync(&codec->dev);
 }
 EXPORT_SYMBOL_GPL(snd_hdac_power_up);
 
 /**
  * snd_hdac_power_down - power down the codec
  * @codec: the codec object
+ *
+ * Returns zero if successful, or a negative error code.
  */
-void snd_hdac_power_down(struct hdac_device *codec)
+int snd_hdac_power_down(struct hdac_device *codec)
 {
 	struct device *dev = &codec->dev;
 
 	pm_runtime_mark_last_busy(dev);
-	pm_runtime_put_autosuspend(dev);
+	return pm_runtime_put_autosuspend(dev);
 }
 EXPORT_SYMBOL_GPL(snd_hdac_power_down);
 
@@ -529,13 +594,32 @@ EXPORT_SYMBOL_GPL(snd_hdac_power_down);
  * which may be called by PM suspend/resume again.  OTOH, if a power-up
  * call must wake up the sleeper (e.g. in a kctl callback), use
  * snd_hdac_power_up() instead.
+ *
+ * Returns zero if successful, or a negative error code.
  */
-void snd_hdac_power_up_pm(struct hdac_device *codec)
+int snd_hdac_power_up_pm(struct hdac_device *codec)
 {
 	if (!atomic_inc_not_zero(&codec->in_pm))
-		snd_hdac_power_up(codec);
+		return snd_hdac_power_up(codec);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_hdac_power_up_pm);
+
+/* like snd_hdac_power_up_pm(), but only increment the pm count when
+ * already powered up.  Returns -1 if not powered up, 1 if incremented
+ * or 0 if unchanged.  Only used in hdac_regmap.c
+ */
+int snd_hdac_keep_power_up(struct hdac_device *codec)
+{
+	if (!atomic_inc_not_zero(&codec->in_pm)) {
+		int ret = pm_runtime_get_if_active(&codec->dev);
+		if (!ret)
+			return -1;
+		if (ret < 0)
+			return 0;
+	}
+	return 1;
+}
 
 /**
  * snd_hdac_power_down_pm - power down the codec
@@ -543,29 +627,17 @@ EXPORT_SYMBOL_GPL(snd_hdac_power_up_pm);
  *
  * Like snd_hdac_power_up_pm(), this function is used in a recursive
  * code path like init code which may be called by PM suspend/resume again.
+ *
+ * Returns zero if successful, or a negative error code.
  */
-void snd_hdac_power_down_pm(struct hdac_device *codec)
+int snd_hdac_power_down_pm(struct hdac_device *codec)
 {
 	if (atomic_dec_if_positive(&codec->in_pm) < 0)
-		snd_hdac_power_down(codec);
+		return snd_hdac_power_down(codec);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_hdac_power_down_pm);
 #endif
-
-/*
- * Enable/disable the link power for a codec.
- */
-int snd_hdac_link_power(struct hdac_device *codec, bool enable)
-{
-	if  (!codec->link_power_control)
-		return 0;
-
-	if  (codec->bus->ops->link_power)
-		return codec->bus->ops->link_power(codec->bus, enable);
-	else
-		return -EINVAL;
-}
-EXPORT_SYMBOL_GPL(snd_hdac_link_power);
 
 /* codec vendor labels */
 struct hda_vendor_id {
@@ -573,7 +645,8 @@ struct hda_vendor_id {
 	const char *name;
 };
 
-static struct hda_vendor_id hda_vendor_ids[] = {
+static const struct hda_vendor_id hda_vendor_ids[] = {
+	{ 0x0014, "Loongson" },
 	{ 0x1002, "ATI" },
 	{ 0x1013, "Cirrus Logic" },
 	{ 0x1057, "Motorola" },
@@ -589,8 +662,10 @@ static struct hda_vendor_id hda_vendor_ids[] = {
 	{ 0x14f1, "Conexant" },
 	{ 0x17e8, "Chrontel" },
 	{ 0x1854, "LG" },
+	{ 0x19e5, "Huawei" },
 	{ 0x1aec, "Wolfson Microelectronics" },
 	{ 0x1af4, "QEMU" },
+	{ 0x1fa8, "Senarytech" },
 	{ 0x434d, "C-Media" },
 	{ 0x8086, "Intel" },
 	{ 0x8384, "SigmaTel" },
@@ -628,7 +703,7 @@ struct hda_rate_tbl {
 	(AC_FMT_BASE_##base##K | (((mult) - 1) << AC_FMT_MULT_SHIFT) | \
 	 (((div) - 1) << AC_FMT_DIV_SHIFT))
 
-static struct hda_rate_tbl rate_bits[] = {
+static const struct hda_rate_tbl rate_bits[] = {
 	/* rate in Hz, ALSA rate bitmask, HDA format value */
 
 	/* autodetected value used in snd_hda_query_supported_pcm */
@@ -652,32 +727,77 @@ static struct hda_rate_tbl rate_bits[] = {
 	{ 0 } /* terminator */
 };
 
-/**
- * snd_hdac_calc_stream_format - calculate the format bitset
- * @rate: the sample rate
- * @channels: the number of channels
- * @format: the PCM format (SNDRV_PCM_FORMAT_XXX)
- * @maxbps: the max. bps
- * @spdif_ctls: HD-audio SPDIF status bits (0 if irrelevant)
- *
- * Calculate the format bitset from the given rate, channels and th PCM format.
- *
- * Return zero if invalid.
- */
-unsigned int snd_hdac_calc_stream_format(unsigned int rate,
-					 unsigned int channels,
-					 unsigned int format,
-					 unsigned int maxbps,
-					 unsigned short spdif_ctls)
+static snd_pcm_format_t snd_hdac_format_normalize(snd_pcm_format_t format)
 {
-	int i;
-	unsigned int val = 0;
+	switch (format) {
+	case SNDRV_PCM_FORMAT_S20_LE:
+	case SNDRV_PCM_FORMAT_S24_LE:
+		return SNDRV_PCM_FORMAT_S32_LE;
 
-	for (i = 0; rate_bits[i].hz; i++)
+	case SNDRV_PCM_FORMAT_U20_LE:
+	case SNDRV_PCM_FORMAT_U24_LE:
+		return SNDRV_PCM_FORMAT_U32_LE;
+
+	case SNDRV_PCM_FORMAT_S20_BE:
+	case SNDRV_PCM_FORMAT_S24_BE:
+		return SNDRV_PCM_FORMAT_S32_BE;
+
+	case SNDRV_PCM_FORMAT_U20_BE:
+	case SNDRV_PCM_FORMAT_U24_BE:
+		return SNDRV_PCM_FORMAT_U32_BE;
+
+	default:
+		return format;
+	}
+}
+
+/**
+ * snd_hdac_stream_format_bits - obtain bits per sample value.
+ * @format:	the PCM format.
+ * @subformat:	the PCM subformat.
+ * @maxbits:	the maximum bits per sample.
+ *
+ * Return: The number of bits per sample.
+ */
+unsigned int snd_hdac_stream_format_bits(snd_pcm_format_t format, snd_pcm_subformat_t subformat,
+					 unsigned int maxbits)
+{
+	struct snd_pcm_hw_params params;
+	unsigned int bits;
+
+	memset(&params, 0, sizeof(params));
+
+	params_set_format(&params, snd_hdac_format_normalize(format));
+	snd_mask_set(hw_param_mask(&params, SNDRV_PCM_HW_PARAM_SUBFORMAT),
+		     (__force unsigned int)subformat);
+
+	bits = snd_pcm_hw_params_bits(&params);
+	if (maxbits)
+		return min(bits, maxbits);
+	return bits;
+}
+EXPORT_SYMBOL_GPL(snd_hdac_stream_format_bits);
+
+/**
+ * snd_hdac_stream_format - convert format parameters to SDxFMT value.
+ * @channels:	the number of channels.
+ * @bits:	bits per sample.
+ * @rate:	the sample rate.
+ *
+ * Return: The format bitset or zero if invalid.
+ */
+unsigned int snd_hdac_stream_format(unsigned int channels, unsigned int bits, unsigned int rate)
+{
+	unsigned int val = 0;
+	int i;
+
+	for (i = 0; rate_bits[i].hz; i++) {
 		if (rate_bits[i].hz == rate) {
 			val = rate_bits[i].hda_fmt;
 			break;
 		}
+	}
+
 	if (!rate_bits[i].hz)
 		return 0;
 
@@ -685,7 +805,7 @@ unsigned int snd_hdac_calc_stream_format(unsigned int rate,
 		return 0;
 	val |= channels - 1;
 
-	switch (snd_pcm_format_width(format)) {
+	switch (bits) {
 	case 8:
 		val |= AC_FMT_BITS_8;
 		break;
@@ -693,25 +813,42 @@ unsigned int snd_hdac_calc_stream_format(unsigned int rate,
 		val |= AC_FMT_BITS_16;
 		break;
 	case 20:
+		val |= AC_FMT_BITS_20;
+		break;
 	case 24:
+		val |= AC_FMT_BITS_24;
+		break;
 	case 32:
-		if (maxbps >= 32 || format == SNDRV_PCM_FORMAT_FLOAT_LE)
-			val |= AC_FMT_BITS_32;
-		else if (maxbps >= 24)
-			val |= AC_FMT_BITS_24;
-		else
-			val |= AC_FMT_BITS_20;
+		val |= AC_FMT_BITS_32;
 		break;
 	default:
 		return 0;
 	}
 
-	if (spdif_ctls & AC_DIG1_NONAUDIO)
+	return val;
+}
+EXPORT_SYMBOL_GPL(snd_hdac_stream_format);
+
+/**
+ * snd_hdac_spdif_stream_format - convert format parameters to SDxFMT value.
+ * @channels:	the number of channels.
+ * @bits:	bits per sample.
+ * @rate:	the sample rate.
+ * @spdif_ctls:	HD-audio SPDIF status bits (0 if irrelevant).
+ *
+ * Return: The format bitset or zero if invalid.
+ */
+unsigned int snd_hdac_spdif_stream_format(unsigned int channels, unsigned int bits,
+					  unsigned int rate, unsigned short spdif_ctls)
+{
+	unsigned int val = snd_hdac_stream_format(channels, bits, rate);
+
+	if (val && spdif_ctls & AC_DIG1_NONAUDIO)
 		val |= AC_FMT_TYPE_NON_PCM;
 
 	return val;
 }
-EXPORT_SYMBOL_GPL(snd_hdac_calc_stream_format);
+EXPORT_SYMBOL_GPL(snd_hdac_spdif_stream_format);
 
 static unsigned int query_pcm_param(struct hdac_device *codec, hda_nid_t nid)
 {
@@ -744,15 +881,17 @@ static unsigned int query_stream_param(struct hdac_device *codec, hda_nid_t nid)
  * @nid: NID to query
  * @ratesp: the pointer to store the detected rate bitflags
  * @formatsp: the pointer to store the detected formats
+ * @subformatsp: the pointer to store the detected subformats for S32_LE format
  * @bpsp: the pointer to store the detected format widths
  *
- * Queries the supported PCM rates and formats.  The NULL @ratesp, @formatsp
- * or @bsps argument is ignored.
+ * Queries the supported PCM rates and formats.  The NULL @ratesp, @formatsp,
+ * @subformatsp or @bpsp argument is ignored.
  *
  * Returns 0 if successful, otherwise a negative error code.
  */
 int snd_hdac_query_supported_pcm(struct hdac_device *codec, hda_nid_t nid,
-				 u32 *ratesp, u64 *formatsp, unsigned int *bpsp)
+				 u32 *ratesp, u64 *formatsp, u32 *subformatsp,
+				 unsigned int *bpsp)
 {
 	unsigned int i, val, wcaps;
 
@@ -775,9 +914,10 @@ int snd_hdac_query_supported_pcm(struct hdac_device *codec, hda_nid_t nid,
 		*ratesp = rates;
 	}
 
-	if (formatsp || bpsp) {
-		u64 formats = 0;
+	if (formatsp || subformatsp || bpsp) {
 		unsigned int streams, bps;
+		u32 subformats = 0;
+		u64 formats = 0;
 
 		streams = query_stream_param(codec, nid);
 		if (!streams)
@@ -793,24 +933,24 @@ int snd_hdac_query_supported_pcm(struct hdac_device *codec, hda_nid_t nid,
 				formats |= SNDRV_PCM_FMTBIT_S16_LE;
 				bps = 16;
 			}
-			if (wcaps & AC_WCAP_DIGITAL) {
-				if (val & AC_SUPPCM_BITS_32)
-					formats |= SNDRV_PCM_FMTBIT_IEC958_SUBFRAME_LE;
-				if (val & (AC_SUPPCM_BITS_20|AC_SUPPCM_BITS_24))
-					formats |= SNDRV_PCM_FMTBIT_S32_LE;
-				if (val & AC_SUPPCM_BITS_24)
-					bps = 24;
-				else if (val & AC_SUPPCM_BITS_20)
-					bps = 20;
-			} else if (val & (AC_SUPPCM_BITS_20|AC_SUPPCM_BITS_24|
-					  AC_SUPPCM_BITS_32)) {
+			if (val & AC_SUPPCM_BITS_20) {
 				formats |= SNDRV_PCM_FMTBIT_S32_LE;
-				if (val & AC_SUPPCM_BITS_32)
+				subformats |= SNDRV_PCM_SUBFMTBIT_MSBITS_20;
+				bps = 20;
+			}
+			if (val & AC_SUPPCM_BITS_24) {
+				formats |= SNDRV_PCM_FMTBIT_S32_LE;
+				subformats |= SNDRV_PCM_SUBFMTBIT_MSBITS_24;
+				bps = 24;
+			}
+			if (val & AC_SUPPCM_BITS_32) {
+				if (wcaps & AC_WCAP_DIGITAL) {
+					formats |= SNDRV_PCM_FMTBIT_IEC958_SUBFRAME_LE;
+				} else {
+					formats |= SNDRV_PCM_FMTBIT_S32_LE;
+					subformats |= SNDRV_PCM_SUBFMTBIT_MSBITS_MAX;
 					bps = 32;
-				else if (val & AC_SUPPCM_BITS_24)
-					bps = 24;
-				else if (val & AC_SUPPCM_BITS_20)
-					bps = 20;
+				}
 			}
 		}
 #if 0 /* FIXME: CS4206 doesn't work, which is the only codec supporting float */
@@ -838,6 +978,8 @@ int snd_hdac_query_supported_pcm(struct hdac_device *codec, hda_nid_t nid,
 		}
 		if (formatsp)
 			*formatsp = formats;
+		if (subformatsp)
+			*subformatsp = subformats;
 		if (bpsp)
 			*bpsp = bps;
 	}
@@ -912,3 +1054,118 @@ bool snd_hdac_is_supported_format(struct hdac_device *codec, hda_nid_t nid,
 	return true;
 }
 EXPORT_SYMBOL_GPL(snd_hdac_is_supported_format);
+
+static unsigned int codec_read(struct hdac_device *hdac, hda_nid_t nid,
+			int flags, unsigned int verb, unsigned int parm)
+{
+	unsigned int cmd = snd_hdac_make_cmd(hdac, nid, verb, parm);
+	unsigned int res;
+
+	if (snd_hdac_exec_verb(hdac, cmd, flags, &res))
+		return -1;
+
+	return res;
+}
+
+static int codec_write(struct hdac_device *hdac, hda_nid_t nid,
+			int flags, unsigned int verb, unsigned int parm)
+{
+	unsigned int cmd = snd_hdac_make_cmd(hdac, nid, verb, parm);
+
+	return snd_hdac_exec_verb(hdac, cmd, flags, NULL);
+}
+
+/**
+ * snd_hdac_codec_read - send a command and get the response
+ * @hdac: the HDAC device
+ * @nid: NID to send the command
+ * @flags: optional bit flags
+ * @verb: the verb to send
+ * @parm: the parameter for the verb
+ *
+ * Send a single command and read the corresponding response.
+ *
+ * Returns the obtained response value, or -1 for an error.
+ */
+int snd_hdac_codec_read(struct hdac_device *hdac, hda_nid_t nid,
+			int flags, unsigned int verb, unsigned int parm)
+{
+	return codec_read(hdac, nid, flags, verb, parm);
+}
+EXPORT_SYMBOL_GPL(snd_hdac_codec_read);
+
+/**
+ * snd_hdac_codec_write - send a single command without waiting for response
+ * @hdac: the HDAC device
+ * @nid: NID to send the command
+ * @flags: optional bit flags
+ * @verb: the verb to send
+ * @parm: the parameter for the verb
+ *
+ * Send a single command without waiting for response.
+ *
+ * Returns 0 if successful, or a negative error code.
+ */
+int snd_hdac_codec_write(struct hdac_device *hdac, hda_nid_t nid,
+			int flags, unsigned int verb, unsigned int parm)
+{
+	return codec_write(hdac, nid, flags, verb, parm);
+}
+EXPORT_SYMBOL_GPL(snd_hdac_codec_write);
+
+/**
+ * snd_hdac_check_power_state - check whether the actual power state matches
+ * with the target state
+ *
+ * @hdac: the HDAC device
+ * @nid: NID to send the command
+ * @target_state: target state to check for
+ *
+ * Return true if state matches, false if not
+ */
+bool snd_hdac_check_power_state(struct hdac_device *hdac,
+		hda_nid_t nid, unsigned int target_state)
+{
+	unsigned int state = codec_read(hdac, nid, 0,
+				AC_VERB_GET_POWER_STATE, 0);
+
+	if (state & AC_PWRST_ERROR)
+		return true;
+	state = (state >> 4) & 0x0f;
+	return (state == target_state);
+}
+EXPORT_SYMBOL_GPL(snd_hdac_check_power_state);
+/**
+ * snd_hdac_sync_power_state - wait until actual power state matches
+ * with the target state
+ *
+ * @codec: the HDAC device
+ * @nid: NID to send the command
+ * @power_state: target power state to wait for
+ *
+ * Return power state or PS_ERROR if codec rejects GET verb.
+ */
+unsigned int snd_hdac_sync_power_state(struct hdac_device *codec,
+			hda_nid_t nid, unsigned int power_state)
+{
+	unsigned long end_time = jiffies + msecs_to_jiffies(500);
+	unsigned int state, actual_state, count;
+
+	for (count = 0; count < 500; count++) {
+		state = snd_hdac_codec_read(codec, nid, 0,
+				AC_VERB_GET_POWER_STATE, 0);
+		if (state & AC_PWRST_ERROR) {
+			msleep(20);
+			break;
+		}
+		actual_state = (state >> 4) & 0x0f;
+		if (actual_state == power_state)
+			break;
+		if (time_after_eq(jiffies, end_time))
+			break;
+		/* wait until the codec reachs to the target state */
+		msleep(1);
+	}
+	return state;
+}
+EXPORT_SYMBOL_GPL(snd_hdac_sync_power_state);

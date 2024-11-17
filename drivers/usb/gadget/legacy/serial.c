@@ -1,23 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * serial.c -- USB gadget serial driver
  *
  * Copyright (C) 2003 Al Borchers (alborchers@steinerpoint.com)
  * Copyright (C) 2008 by David Brownell
  * Copyright (C) 2008 by Nokia Corporation
- *
- * This software is distributed under the terms of the GNU General
- * Public License ("GPL") as published by the Free Software Foundation,
- * either version 2 of that License or (at your option) any later version.
  */
 
 #include <linux/kernel.h>
 #include <linux/device.h>
+#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 
 #include "u_serial.h"
-#include "gadget_chips.h"
 
 
 /* Defines */
@@ -66,7 +63,7 @@ static struct usb_gadget_strings *dev_strings[] = {
 static struct usb_device_descriptor device_desc = {
 	.bLength =		USB_DT_DEVICE_SIZE,
 	.bDescriptorType =	USB_DT_DEVICE,
-	.bcdUSB =		cpu_to_le16(0x0200),
+	/* .bcdUSB = DYNAMIC */
 	/* .bDeviceClass = f(use_acm) */
 	.bDeviceSubClass =	0,
 	.bDeviceProtocol =	0,
@@ -79,20 +76,7 @@ static struct usb_device_descriptor device_desc = {
 	.bNumConfigurations =	1,
 };
 
-static struct usb_otg_descriptor otg_descriptor = {
-	.bLength =		sizeof otg_descriptor,
-	.bDescriptorType =	USB_DT_OTG,
-
-	/* REVISIT SRP-only hardware is possible, although
-	 * it would not be called "OTG" ...
-	 */
-	.bmAttributes =		USB_OTG_SRP | USB_OTG_HNP,
-};
-
-static const struct usb_descriptor_header *otg_desc[] = {
-	(struct usb_descriptor_header *) &otg_descriptor,
-	NULL,
-};
+static const struct usb_descriptor_header *otg_desc[2];
 
 /*-------------------------------------------------------------------------*/
 
@@ -113,6 +97,36 @@ MODULE_PARM_DESC(use_obex, "Use CDC OBEX, default=no");
 static unsigned n_ports = 1;
 module_param(n_ports, uint, 0);
 MODULE_PARM_DESC(n_ports, "number of ports to create, default=1");
+
+static bool enable = true;
+
+static int switch_gserial_enable(bool do_enable);
+
+static int enable_set(const char *s, const struct kernel_param *kp)
+{
+	bool do_enable;
+	int ret;
+
+	if (!s)	/* called for no-arg enable == default */
+		return 0;
+
+	ret = kstrtobool(s, &do_enable);
+	if (ret || enable == do_enable)
+		return ret;
+
+	ret = switch_gserial_enable(do_enable);
+	if (!ret)
+		enable = do_enable;
+
+	return ret;
+}
+
+static const struct kernel_param_ops enable_ops = {
+	.set = enable_set,
+	.get = param_get_bool,
+};
+
+module_param_cb(enable, &enable_ops, &enable, 0644);
 
 /*-------------------------------------------------------------------------*/
 
@@ -191,6 +205,18 @@ static int gs_bind(struct usb_composite_dev *cdev)
 	serial_config_driver.iConfiguration = status;
 
 	if (gadget_is_otg(cdev->gadget)) {
+		if (!otg_desc[0]) {
+			struct usb_descriptor_header *usb_desc;
+
+			usb_desc = usb_otg_descriptor_alloc(cdev->gadget);
+			if (!usb_desc) {
+				status = -ENOMEM;
+				goto fail;
+			}
+			usb_otg_descriptor_init(cdev->gadget, usb_desc);
+			otg_desc[0] = usb_desc;
+			otg_desc[1] = NULL;
+		}
 		serial_config_driver.descriptors = otg_desc;
 		serial_config_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
 	}
@@ -208,13 +234,15 @@ static int gs_bind(struct usb_composite_dev *cdev)
 				"gser");
 	}
 	if (status < 0)
-		goto fail;
+		goto fail1;
 
 	usb_composite_overwrite_options(cdev, &coverwrite);
 	INFO(cdev, "%s\n", GS_VERSION_NAME);
 
 	return 0;
-
+fail1:
+	kfree(otg_desc[0]);
+	otg_desc[0] = NULL;
 fail:
 	return status;
 }
@@ -227,6 +255,10 @@ static int gs_unbind(struct usb_composite_dev *cdev)
 		usb_put_function(f_serial[i]);
 		usb_put_function_instance(fi_serial[i]);
 	}
+
+	kfree(otg_desc[0]);
+	otg_desc[0] = NULL;
+
 	return 0;
 }
 
@@ -239,7 +271,20 @@ static struct usb_composite_driver gserial_driver = {
 	.unbind		= gs_unbind,
 };
 
-static int __init init(void)
+static int switch_gserial_enable(bool do_enable)
+{
+	if (!serial_config_driver.label)
+		/* gserial_init() was not called, yet */
+		return 0;
+
+	if (do_enable)
+		return usb_composite_probe(&gserial_driver);
+
+	usb_composite_unregister(&gserial_driver);
+	return 0;
+}
+
+static int __init gserial_init(void)
 {
 	/* We *could* export two configs; that'd be much cleaner...
 	 * but neither of these product IDs was defined that way.
@@ -265,12 +310,16 @@ static int __init init(void)
 	}
 	strings_dev[STRING_DESCRIPTION_IDX].s = serial_config_driver.label;
 
+	if (!enable)
+		return 0;
+
 	return usb_composite_probe(&gserial_driver);
 }
-module_init(init);
+module_init(gserial_init);
 
-static void __exit cleanup(void)
+static void __exit gserial_cleanup(void)
 {
-	usb_composite_unregister(&gserial_driver);
+	if (enable)
+		usb_composite_unregister(&gserial_driver);
 }
-module_exit(cleanup);
+module_exit(gserial_cleanup);

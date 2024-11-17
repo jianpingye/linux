@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM net
 
@@ -37,7 +38,7 @@ TRACE_EVENT(net_dev_start_xmit,
 	),
 
 	TP_fast_assign(
-		__assign_str(name, dev->name);
+		__assign_str(name);
 		__entry->queue_mapping = skb->queue_mapping;
 		__entry->skbaddr = skb;
 		__entry->vlan_tagged = skb_vlan_tag_present(skb);
@@ -50,7 +51,8 @@ TRACE_EVENT(net_dev_start_xmit,
 		__entry->network_offset = skb_network_offset(skb);
 		__entry->transport_offset_valid =
 			skb_transport_header_was_set(skb);
-		__entry->transport_offset = skb_transport_offset(skb);
+		__entry->transport_offset = skb_transport_header_was_set(skb) ?
+			skb_transport_offset(skb) : 0;
 		__entry->tx_flags = skb_shinfo(skb)->tx_flags;
 		__entry->gso_size = skb_shinfo(skb)->gso_size;
 		__entry->gso_segs = skb_shinfo(skb)->gso_segs;
@@ -87,11 +89,34 @@ TRACE_EVENT(net_dev_xmit,
 		__entry->skbaddr = skb;
 		__entry->len = skb_len;
 		__entry->rc = rc;
-		__assign_str(name, dev->name);
+		__assign_str(name);
 	),
 
 	TP_printk("dev=%s skbaddr=%p len=%u rc=%d",
 		__get_str(name), __entry->skbaddr, __entry->len, __entry->rc)
+);
+
+TRACE_EVENT(net_dev_xmit_timeout,
+
+	TP_PROTO(struct net_device *dev,
+		 int queue_index),
+
+	TP_ARGS(dev, queue_index),
+
+	TP_STRUCT__entry(
+		__string(	name,		dev->name	)
+		__string(	driver,		netdev_drivername(dev))
+		__field(	int,		queue_index	)
+	),
+
+	TP_fast_assign(
+		__assign_str(name);
+		__assign_str(driver);
+		__entry->queue_index = queue_index;
+	),
+
+	TP_printk("dev=%s driver=%s queue=%d",
+		__get_str(name), __get_str(driver), __entry->queue_index)
 );
 
 DECLARE_EVENT_CLASS(net_dev_template,
@@ -109,7 +134,7 @@ DECLARE_EVENT_CLASS(net_dev_template,
 	TP_fast_assign(
 		__entry->skbaddr = skb;
 		__entry->len = skb->len;
-		__assign_str(name, skb->dev->name);
+		__assign_str(name);
 	),
 
 	TP_printk("dev=%s skbaddr=%p len=%u",
@@ -166,7 +191,7 @@ DECLARE_EVENT_CLASS(net_dev_rx_verbose_template,
 	),
 
 	TP_fast_assign(
-		__assign_str(name, skb->dev->name);
+		__assign_str(name);
 #ifdef CONFIG_NET_RX_BUSY_POLL
 		__entry->napi_id = skb->napi_id;
 #else
@@ -222,6 +247,13 @@ DEFINE_EVENT(net_dev_rx_verbose_template, netif_receive_skb_entry,
 	TP_ARGS(skb)
 );
 
+DEFINE_EVENT(net_dev_rx_verbose_template, netif_receive_skb_list_entry,
+
+	TP_PROTO(const struct sk_buff *skb),
+
+	TP_ARGS(skb)
+);
+
 DEFINE_EVENT(net_dev_rx_verbose_template, netif_rx_entry,
 
 	TP_PROTO(const struct sk_buff *skb),
@@ -229,11 +261,56 @@ DEFINE_EVENT(net_dev_rx_verbose_template, netif_rx_entry,
 	TP_ARGS(skb)
 );
 
-DEFINE_EVENT(net_dev_rx_verbose_template, netif_rx_ni_entry,
+DECLARE_EVENT_CLASS(net_dev_rx_exit_template,
 
-	TP_PROTO(const struct sk_buff *skb),
+	TP_PROTO(int ret),
 
-	TP_ARGS(skb)
+	TP_ARGS(ret),
+
+	TP_STRUCT__entry(
+		__field(int,	ret)
+	),
+
+	TP_fast_assign(
+		__entry->ret = ret;
+	),
+
+	TP_printk("ret=%d", __entry->ret)
+);
+
+DEFINE_EVENT(net_dev_rx_exit_template, napi_gro_frags_exit,
+
+	TP_PROTO(int ret),
+
+	TP_ARGS(ret)
+);
+
+DEFINE_EVENT(net_dev_rx_exit_template, napi_gro_receive_exit,
+
+	TP_PROTO(int ret),
+
+	TP_ARGS(ret)
+);
+
+DEFINE_EVENT(net_dev_rx_exit_template, netif_receive_skb_exit,
+
+	TP_PROTO(int ret),
+
+	TP_ARGS(ret)
+);
+
+DEFINE_EVENT(net_dev_rx_exit_template, netif_rx_exit,
+
+	TP_PROTO(int ret),
+
+	TP_ARGS(ret)
+);
+
+DEFINE_EVENT(net_dev_rx_exit_template, netif_receive_skb_list_exit,
+
+	TP_PROTO(int ret),
+
+	TP_ARGS(ret)
 );
 
 #endif /* _TRACE_NET_H */

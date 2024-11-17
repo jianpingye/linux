@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* irq.h: IRQ registers on the 64-bit Sparc.
  *
  * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
@@ -60,7 +61,6 @@ void sun4u_destroy_msi(unsigned int irq);
 unsigned int irq_alloc(unsigned int dev_handle, unsigned int dev_ino);
 void irq_free(unsigned int irq);
 
-void __init init_IRQ(void);
 void fixup_irqs(void);
 
 static inline void set_softint(unsigned long bits)
@@ -86,12 +86,12 @@ static inline unsigned long get_softint(void)
 	return retval;
 }
 
-void arch_trigger_all_cpu_backtrace(bool);
-#define arch_trigger_all_cpu_backtrace arch_trigger_all_cpu_backtrace
+void arch_trigger_cpumask_backtrace(const struct cpumask *mask,
+				    int exclude_cpu);
+#define arch_trigger_cpumask_backtrace arch_trigger_cpumask_backtrace
 
 extern void *hardirq_stack[NR_CPUS];
 extern void *softirq_stack[NR_CPUS];
-#define __ARCH_HAS_DO_SOFTIRQ
 
 #define NO_IRQ		0xffffffff
 

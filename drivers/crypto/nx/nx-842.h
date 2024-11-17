@@ -1,10 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
 #ifndef __NX_842_H__
 #define __NX_842_H__
 
+#include <crypto/algapi.h>
 #include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/module.h>
-#include <linux/sw842.h>
 #include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/io.h>
@@ -75,9 +77,17 @@
 #define CSB_CC_DECRYPT_OVERFLOW	(64)
 /* asym crypt codes */
 #define CSB_CC_MINV_OVERFLOW	(128)
+/*
+ * HW error - Job did not finish in the maximum time allowed.
+ * Job terminated.
+ */
+#define CSB_CC_HW_EXPIRED_TIMER		(224)
 /* These are reserved for hypervisor use */
 #define CSB_CC_HYP_RESERVE_START	(240)
 #define CSB_CC_HYP_RESERVE_END		(253)
+#define CSB_CC_HYP_RESERVE_P9_END	(251)
+/* No valid interrupt server (P9 or later). */
+#define CSB_CC_HYP_RESERVE_NO_INTR_SERVER	(252)
 #define CSB_CC_HYP_NO_HW		(254)
 #define CSB_CC_HYP_HANG_ABORTED		(255)
 
@@ -99,11 +109,25 @@ static inline unsigned long nx842_get_pa(void *addr)
 	return page_to_phys(vmalloc_to_page(addr)) + offset_in_page(addr);
 }
 
-/* Get/Set bit fields */
-#define MASK_LSH(m)		(__builtin_ffsl(m) - 1)
-#define GET_FIELD(v, m)		(((v) & (m)) >> MASK_LSH(m))
-#define SET_FIELD(v, m, val)	(((v) & ~(m)) | (((val) << MASK_LSH(m)) & (m)))
-
+/**
+ * This provides the driver's constraints.  Different nx842 implementations
+ * may have varying requirements.  The constraints are:
+ *   @alignment:	All buffers should be aligned to this
+ *   @multiple:		All buffer lengths should be a multiple of this
+ *   @minimum:		Buffer lengths must not be less than this amount
+ *   @maximum:		Buffer lengths must not be more than this amount
+ *
+ * The constraints apply to all buffers and lengths, both input and output,
+ * for both compression and decompression, except for the minimum which
+ * only applies to compression input and decompression output; the
+ * compressed data can be less than the minimum constraint.  It can be
+ * assumed that compressed data will always adhere to the multiple
+ * constraint.
+ *
+ * The driver may succeed even if these constraints are violated;
+ * however the driver can return failure or suffer reduced performance
+ * if any constraint is not met.
+ */
 struct nx842_constraints {
 	int alignment;
 	int multiple;
@@ -126,19 +150,45 @@ struct nx842_driver {
 			  void *wrkmem);
 };
 
-struct nx842_driver *nx842_platform_driver(void);
-bool nx842_platform_driver_set(struct nx842_driver *driver);
-void nx842_platform_driver_unset(struct nx842_driver *driver);
-bool nx842_platform_driver_get(void);
-void nx842_platform_driver_put(void);
+struct nx842_crypto_header_group {
+	__be16 padding;			/* unused bytes at start of group */
+	__be32 compressed_length;	/* compressed bytes in group */
+	__be32 uncompressed_length;	/* bytes after decompression */
+} __packed;
 
-size_t nx842_workmem_size(void);
+struct nx842_crypto_header {
+	/* New members MUST be added within the struct_group() macro below. */
+	struct_group_tagged(nx842_crypto_header_hdr, hdr,
+		__be16 magic;		/* NX842_CRYPTO_MAGIC */
+		__be16 ignore;		/* decompressed end bytes to ignore */
+		u8 groups;		/* total groups in this header */
+	);
+	struct nx842_crypto_header_group group[];
+} __packed;
+static_assert(offsetof(struct nx842_crypto_header, group) == sizeof(struct nx842_crypto_header_hdr),
+	      "struct member likely outside of struct_group_tagged()");
 
-int nx842_constraints(struct nx842_constraints *constraints);
+#define NX842_CRYPTO_GROUP_MAX	(0x20)
 
-int nx842_compress(const unsigned char *in, unsigned int in_len,
-		   unsigned char *out, unsigned int *out_len, void *wrkmem);
-int nx842_decompress(const unsigned char *in, unsigned int in_len,
-		     unsigned char *out, unsigned int *out_len, void *wrkmem);
+struct nx842_crypto_ctx {
+	spinlock_t lock;
+
+	u8 *wmem;
+	u8 *sbounce, *dbounce;
+
+	struct nx842_crypto_header_hdr header;
+	struct nx842_crypto_header_group group[NX842_CRYPTO_GROUP_MAX];
+
+	struct nx842_driver *driver;
+};
+
+int nx842_crypto_init(struct crypto_tfm *tfm, struct nx842_driver *driver);
+void nx842_crypto_exit(struct crypto_tfm *tfm);
+int nx842_crypto_compress(struct crypto_tfm *tfm,
+			  const u8 *src, unsigned int slen,
+			  u8 *dst, unsigned int *dlen);
+int nx842_crypto_decompress(struct crypto_tfm *tfm,
+			    const u8 *src, unsigned int slen,
+			    u8 *dst, unsigned int *dlen);
 
 #endif /* __NX_842_H__ */

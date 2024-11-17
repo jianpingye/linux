@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright IBM Corp. 2007,2012
  *
- * Author(s): Heiko Carstens <heiko.carstens@de.ibm.com>,
- *	      Peter Oberparleiter <peter.oberparleiter@de.ibm.com>
+ * Author(s): Peter Oberparleiter <peter.oberparleiter@de.ibm.com>
  */
 
 #define KMSG_COMPONENT "sclp_cmd"
@@ -18,15 +18,21 @@
 #include <linux/mm.h>
 #include <linux/mmzone.h>
 #include <linux/memory.h>
+#include <linux/memory_hotplug.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
-#include <asm/ctl_reg.h>
+#include <asm/ctlreg.h>
 #include <asm/chpid.h>
 #include <asm/setup.h>
 #include <asm/page.h>
 #include <asm/sclp.h>
+#include <asm/numa.h>
+#include <asm/facility.h>
+#include <asm/page-states.h>
 
 #include "sclp.h"
+
+#define SCLP_CMDW_ASSIGN_STORAGE	0x000d0001
+#define SCLP_CMDW_UNASSIGN_STORAGE	0x000c0001
 
 static void sclp_sync_callback(struct sclp_req *req, void *data)
 {
@@ -66,8 +72,8 @@ int sclp_sync_request_timeout(sclp_cmdw_t cmd, void *sccb, int timeout)
 
 	/* Check response. */
 	if (request->status != SCLP_REQ_DONE) {
-		pr_warning("sync request failed (cmd=0x%08x, "
-			   "status=0x%02x)\n", cmd, request->status);
+		pr_warn("sync request failed (cmd=0x%08x, status=0x%02x)\n",
+			cmd, request->status);
 		rc = -EIO;
 	}
 out:
@@ -79,56 +85,36 @@ out:
  * CPU configuration related functions.
  */
 
-#define SCLP_CMDW_READ_CPU_INFO		0x00010001
 #define SCLP_CMDW_CONFIGURE_CPU		0x00110001
 #define SCLP_CMDW_DECONFIGURE_CPU	0x00100001
 
-struct read_cpu_info_sccb {
-	struct	sccb_header header;
-	u16	nr_configured;
-	u16	offset_configured;
-	u16	nr_standby;
-	u16	offset_standby;
-	u8	reserved[4096 - 16];
-} __attribute__((packed, aligned(PAGE_SIZE)));
-
-static void sclp_fill_core_info(struct sclp_core_info *info,
-				struct read_cpu_info_sccb *sccb)
-{
-	char *page = (char *) sccb;
-
-	memset(info, 0, sizeof(*info));
-	info->configured = sccb->nr_configured;
-	info->standby = sccb->nr_standby;
-	info->combined = sccb->nr_configured + sccb->nr_standby;
-	memcpy(&info->core, page + sccb->offset_configured,
-	       info->combined * sizeof(struct sclp_core_entry));
-}
-
-int sclp_get_core_info(struct sclp_core_info *info)
+int _sclp_get_core_info(struct sclp_core_info *info)
 {
 	int rc;
+	int length = test_facility(140) ? EXT_SCCB_READ_CPU : PAGE_SIZE;
 	struct read_cpu_info_sccb *sccb;
 
 	if (!SCLP_HAS_CPU_INFO)
 		return -EOPNOTSUPP;
-	sccb = (void *) get_zeroed_page(GFP_KERNEL | GFP_DMA);
+
+	sccb = (void *)__get_free_pages(GFP_KERNEL | GFP_DMA | __GFP_ZERO, get_order(length));
 	if (!sccb)
 		return -ENOMEM;
-	sccb->header.length = sizeof(*sccb);
+	sccb->header.length = length;
+	sccb->header.control_mask[2] = 0x80;
 	rc = sclp_sync_request_timeout(SCLP_CMDW_READ_CPU_INFO, sccb,
 				       SCLP_QUEUE_INTERVAL);
 	if (rc)
 		goto out;
 	if (sccb->header.response_code != 0x0010) {
-		pr_warning("readcpuinfo failed (response=0x%04x)\n",
-			   sccb->header.response_code);
+		pr_warn("readcpuinfo failed (response=0x%04x)\n",
+			sccb->header.response_code);
 		rc = -EIO;
 		goto out;
 	}
 	sclp_fill_core_info(info, sccb);
 out:
-	free_page((unsigned long) sccb);
+	free_pages((unsigned long) sccb, get_order(length));
 	return rc;
 }
 
@@ -159,9 +145,8 @@ static int do_core_configure(sclp_cmdw_t cmd)
 	case 0x0120:
 		break;
 	default:
-		pr_warning("configure cpu failed (cmd=0x%08x, "
-			   "response=0x%04x)\n", cmd,
-			   sccb->header.response_code);
+		pr_warn("configure cpu failed (cmd=0x%08x, response=0x%04x)\n",
+			cmd, sccb->header.response_code);
 		rc = -EIO;
 		break;
 	}
@@ -186,7 +171,6 @@ static DEFINE_MUTEX(sclp_mem_mutex);
 static LIST_HEAD(sclp_mem_list);
 static u8 sclp_max_storage_id;
 static DECLARE_BITMAP(sclp_storage_ids, 256);
-static int sclp_mem_state_changed;
 
 struct memory_increment {
 	struct list_head list;
@@ -229,9 +213,8 @@ static int do_assign_storage(sclp_cmdw_t cmd, u16 rn)
 	case 0x0120:
 		break;
 	default:
-		pr_warning("assign storage failed (cmd=0x%08x, "
-			   "response=0x%04x, rn=0x%04x)\n", cmd,
-			   sccb->header.response_code, rn);
+		pr_warn("assign storage failed (cmd=0x%08x, response=0x%04x, rn=0x%04x)\n",
+			cmd, sccb->header.response_code, rn);
 		rc = -EIO;
 		break;
 	}
@@ -245,7 +228,7 @@ static int sclp_assign_storage(u16 rn)
 	unsigned long long start;
 	int rc;
 
-	rc = do_assign_storage(0x000d0001, rn);
+	rc = do_assign_storage(SCLP_CMDW_ASSIGN_STORAGE, rn);
 	if (rc)
 		return rc;
 	start = rn2addr(rn);
@@ -255,7 +238,7 @@ static int sclp_assign_storage(u16 rn)
 
 static int sclp_unassign_storage(u16 rn)
 {
-	return do_assign_storage(0x000c0001, rn);
+	return do_assign_storage(SCLP_CMDW_UNASSIGN_STORAGE, rn);
 }
 
 struct attach_storage_sccb {
@@ -263,7 +246,7 @@ struct attach_storage_sccb {
 	u16 :16;
 	u16 assigned;
 	u32 :32;
-	u32 entries[0];
+	u32 entries[];
 } __packed;
 
 static int sclp_attach_storage(u8 id)
@@ -276,6 +259,7 @@ static int sclp_attach_storage(u8 id)
 	if (!sccb)
 		return -ENOMEM;
 	sccb->header.length = PAGE_SIZE;
+	sccb->header.function_code = 0x40;
 	rc = sclp_sync_request_timeout(0x00080001 | id << 8, sccb,
 				       SCLP_QUEUE_INTERVAL);
 	if (rc)
@@ -361,24 +345,43 @@ static int sclp_mem_notifier(struct notifier_block *nb,
 		if (contains_standby_increment(start, start + size))
 			rc = -EPERM;
 		break;
-	case MEM_ONLINE:
-	case MEM_CANCEL_OFFLINE:
-		break;
-	case MEM_GOING_ONLINE:
+	case MEM_PREPARE_ONLINE:
+		/*
+		 * Access the altmap_start_pfn and altmap_nr_pages fields
+		 * within the struct memory_notify specifically when dealing
+		 * with only MEM_PREPARE_ONLINE/MEM_FINISH_OFFLINE notifiers.
+		 *
+		 * When altmap is in use, take the specified memory range
+		 * online, which includes the altmap.
+		 */
+		if (arg->altmap_nr_pages) {
+			start = PFN_PHYS(arg->altmap_start_pfn);
+			size += PFN_PHYS(arg->altmap_nr_pages);
+		}
 		rc = sclp_mem_change_state(start, size, 1);
+		if (rc || !arg->altmap_nr_pages)
+			break;
+		/*
+		 * Set CMMA state to nodat here, since the struct page memory
+		 * at the beginning of the memory block will not go through the
+		 * buddy allocator later.
+		 */
+		__arch_set_page_nodat((void *)__va(start), arg->altmap_nr_pages);
 		break;
-	case MEM_CANCEL_ONLINE:
-		sclp_mem_change_state(start, size, 0);
-		break;
-	case MEM_OFFLINE:
+	case MEM_FINISH_OFFLINE:
+		/*
+		 * When altmap is in use, take the specified memory range
+		 * offline, which includes the altmap.
+		 */
+		if (arg->altmap_nr_pages) {
+			start = PFN_PHYS(arg->altmap_start_pfn);
+			size += PFN_PHYS(arg->altmap_nr_pages);
+		}
 		sclp_mem_change_state(start, size, 0);
 		break;
 	default:
-		rc = -EINVAL;
 		break;
 	}
-	if (!rc)
-		sclp_mem_state_changed = 1;
 	mutex_unlock(&sclp_mem_mutex);
 	return rc ? NOTIFY_BAD : NOTIFY_OK;
 }
@@ -388,11 +391,11 @@ static struct notifier_block sclp_mem_nb = {
 };
 
 static void __init align_to_block_size(unsigned long long *start,
-				       unsigned long long *size)
+				       unsigned long long *size,
+				       unsigned long long alignment)
 {
-	unsigned long long start_align, size_align, alignment;
+	unsigned long long start_align, size_align;
 
-	alignment = memory_block_size_bytes();
 	start_align = roundup(*start, alignment);
 	size_align = rounddown(*start + *size, alignment) - start_align;
 
@@ -404,8 +407,8 @@ static void __init align_to_block_size(unsigned long long *start,
 
 static void __init add_memory_merged(u16 rn)
 {
+	unsigned long long start, size, addr, block_size;
 	static u16 first_rn, num;
-	unsigned long long start, size;
 
 	if (rn && first_rn && (first_rn + num == rn)) {
 		num++;
@@ -415,17 +418,18 @@ static void __init add_memory_merged(u16 rn)
 		goto skip_add;
 	start = rn2addr(first_rn);
 	size = (unsigned long long) num * sclp.rzm;
-	if (start >= VMEM_MAX_PHYS)
+	if (start >= ident_map_size)
 		goto skip_add;
-	if (start + size > VMEM_MAX_PHYS)
-		size = VMEM_MAX_PHYS - start;
-	if (memory_end_set && (start >= memory_end))
+	if (start + size > ident_map_size)
+		size = ident_map_size - start;
+	block_size = memory_block_size_bytes();
+	align_to_block_size(&start, &size, block_size);
+	if (!size)
 		goto skip_add;
-	if (memory_end_set && (start + size > memory_end))
-		size = memory_end - start;
-	align_to_block_size(&start, &size);
-	if (size)
-		add_memory(0, start, size);
+	for (addr = start; addr < start + size; addr += block_size)
+		add_memory(0, addr, block_size,
+			   MACHINE_HAS_EDAT1 ?
+			   MHP_MEMMAP_ON_MEMORY | MHP_OFFLINE_INACCESSIBLE : MHP_NONE);
 skip_add:
 	first_rn = rn;
 	num = 1;
@@ -471,41 +475,12 @@ static void __init insert_increment(u16 rn, int standby, int assigned)
 	list_add(&new_incr->list, prev);
 }
 
-static int sclp_mem_freeze(struct device *dev)
-{
-	if (!sclp_mem_state_changed)
-		return 0;
-	pr_err("Memory hotplug state changed, suspend refused.\n");
-	return -EPERM;
-}
-
-struct read_storage_sccb {
-	struct sccb_header header;
-	u16 max_id;
-	u16 assigned;
-	u16 standby;
-	u16 :16;
-	u32 entries[0];
-} __packed;
-
-static const struct dev_pm_ops sclp_mem_pm_ops = {
-	.freeze		= sclp_mem_freeze,
-};
-
-static struct platform_driver sclp_mem_pdrv = {
-	.driver = {
-		.name	= "sclp_mem",
-		.pm	= &sclp_mem_pm_ops,
-	},
-};
-
 static int __init sclp_detect_standby_memory(void)
 {
-	struct platform_device *sclp_pdev;
 	struct read_storage_sccb *sccb;
 	int i, id, assigned, rc;
 
-	if (OLDMEM_BASE) /* No standby memory in kdump mode */
+	if (oldmem_data.start) /* No standby memory in kdump mode */
 		return 0;
 	if ((sclp.facilities & 0xe00000000000ULL) != 0xe00000000000ULL)
 		return 0;
@@ -517,7 +492,7 @@ static int __init sclp_detect_standby_memory(void)
 	for (id = 0; id <= sclp_max_storage_id; id++) {
 		memset(sccb, 0, PAGE_SIZE);
 		sccb->header.length = PAGE_SIZE;
-		rc = sclp_sync_request(0x00040001 | id << 8, sccb);
+		rc = sclp_sync_request(SCLP_CMDW_READ_STORAGE_INFO | id << 8, sccb);
 		if (rc)
 			goto out;
 		switch (sccb->header.response_code) {
@@ -554,17 +529,7 @@ static int __init sclp_detect_standby_memory(void)
 	rc = register_memory_notifier(&sclp_mem_nb);
 	if (rc)
 		goto out;
-	rc = platform_driver_register(&sclp_mem_pdrv);
-	if (rc)
-		goto out;
-	sclp_pdev = platform_device_register_simple("sclp_mem", -1, NULL, 0);
-	rc = PTR_ERR_OR_ZERO(sclp_pdev);
-	if (rc)
-		goto out_driver;
 	sclp_add_standby_memory();
-	goto out;
-out_driver:
-	platform_driver_unregister(&sclp_mem_pdrv);
 out:
 	free_page((unsigned long) sccb);
 	return rc;
@@ -572,67 +537,6 @@ out:
 __initcall(sclp_detect_standby_memory);
 
 #endif /* CONFIG_MEMORY_HOTPLUG */
-
-/*
- * PCI I/O adapter configuration related functions.
- */
-#define SCLP_CMDW_CONFIGURE_PCI			0x001a0001
-#define SCLP_CMDW_DECONFIGURE_PCI		0x001b0001
-
-#define SCLP_RECONFIG_PCI_ATPYE			2
-
-struct pci_cfg_sccb {
-	struct sccb_header header;
-	u8 atype;		/* adapter type */
-	u8 reserved1;
-	u16 reserved2;
-	u32 aid;		/* adapter identifier */
-} __packed;
-
-static int do_pci_configure(sclp_cmdw_t cmd, u32 fid)
-{
-	struct pci_cfg_sccb *sccb;
-	int rc;
-
-	if (!SCLP_HAS_PCI_RECONFIG)
-		return -EOPNOTSUPP;
-
-	sccb = (struct pci_cfg_sccb *) get_zeroed_page(GFP_KERNEL | GFP_DMA);
-	if (!sccb)
-		return -ENOMEM;
-
-	sccb->header.length = PAGE_SIZE;
-	sccb->atype = SCLP_RECONFIG_PCI_ATPYE;
-	sccb->aid = fid;
-	rc = sclp_sync_request(cmd, sccb);
-	if (rc)
-		goto out;
-	switch (sccb->header.response_code) {
-	case 0x0020:
-	case 0x0120:
-		break;
-	default:
-		pr_warn("configure PCI I/O adapter failed: cmd=0x%08x  response=0x%04x\n",
-			cmd, sccb->header.response_code);
-		rc = -EIO;
-		break;
-	}
-out:
-	free_page((unsigned long) sccb);
-	return rc;
-}
-
-int sclp_pci_configure(u32 fid)
-{
-	return do_pci_configure(SCLP_CMDW_CONFIGURE_PCI, fid);
-}
-EXPORT_SYMBOL(sclp_pci_configure);
-
-int sclp_pci_deconfigure(u32 fid)
-{
-	return do_pci_configure(SCLP_CMDW_DECONFIGURE_PCI, fid);
-}
-EXPORT_SYMBOL(sclp_pci_deconfigure);
 
 /*
  * Channel path configuration related functions.
@@ -671,9 +575,8 @@ static int do_chp_configure(sclp_cmdw_t cmd)
 	case 0x0450:
 		break;
 	default:
-		pr_warning("configure channel-path failed "
-			   "(cmd=0x%08x, response=0x%04x)\n", cmd,
-			   sccb->header.response_code);
+		pr_warn("configure channel-path failed (cmd=0x%08x, response=0x%04x)\n",
+			cmd, sccb->header.response_code);
 		rc = -EIO;
 		break;
 	}
@@ -740,8 +643,8 @@ int sclp_chp_read_info(struct sclp_chp_info *info)
 	if (rc)
 		goto out;
 	if (sccb->header.response_code != 0x0010) {
-		pr_warning("read channel-path info failed "
-			   "(response=0x%04x)\n", sccb->header.response_code);
+		pr_warn("read channel-path info failed (response=0x%04x)\n",
+			sccb->header.response_code);
 		rc = -EIO;
 		goto out;
 	}

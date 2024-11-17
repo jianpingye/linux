@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/mm/mempool.c
  *
@@ -16,11 +17,10 @@
 #include <linux/kmemleak.h>
 #include <linux/export.h>
 #include <linux/mempool.h>
-#include <linux/blkdev.h>
 #include <linux/writeback.h>
 #include "slab.h"
 
-#if defined(CONFIG_DEBUG_SLAB) || defined(CONFIG_SLUB_DEBUG_ON)
+#ifdef CONFIG_SLUB_DEBUG_ON
 static void poison_error(mempool_t *pool, void *element, size_t size,
 			 size_t byte)
 {
@@ -56,17 +56,22 @@ static void __check_element(mempool_t *pool, void *element, size_t size)
 
 static void check_element(mempool_t *pool, void *element)
 {
-	/* Mempools backed by slab allocator */
-	if (pool->free == mempool_free_slab || pool->free == mempool_kfree)
-		__check_element(pool, element, ksize(element));
+	/* Skip checking: KASAN might save its metadata in the element. */
+	if (kasan_enabled())
+		return;
 
-	/* Mempools backed by page allocator */
-	if (pool->free == mempool_free_pages) {
+	/* Mempools backed by slab allocator */
+	if (pool->free == mempool_kfree) {
+		__check_element(pool, element, (size_t)pool->pool_data);
+	} else if (pool->free == mempool_free_slab) {
+		__check_element(pool, element, kmem_cache_size(pool->pool_data));
+	} else if (pool->free == mempool_free_pages) {
+		/* Mempools backed by page allocator */
 		int order = (int)(long)pool->pool_data;
-		void *addr = kmap_atomic((struct page *)element);
+		void *addr = kmap_local_page((struct page *)element);
 
 		__check_element(pool, addr, 1UL << (PAGE_SHIFT + order));
-		kunmap_atomic(addr);
+		kunmap_local(addr);
 	}
 }
 
@@ -80,54 +85,61 @@ static void __poison_element(void *element, size_t size)
 
 static void poison_element(mempool_t *pool, void *element)
 {
-	/* Mempools backed by slab allocator */
-	if (pool->alloc == mempool_alloc_slab || pool->alloc == mempool_kmalloc)
-		__poison_element(element, ksize(element));
+	/* Skip poisoning: KASAN might save its metadata in the element. */
+	if (kasan_enabled())
+		return;
 
-	/* Mempools backed by page allocator */
-	if (pool->alloc == mempool_alloc_pages) {
+	/* Mempools backed by slab allocator */
+	if (pool->alloc == mempool_kmalloc) {
+		__poison_element(element, (size_t)pool->pool_data);
+	} else if (pool->alloc == mempool_alloc_slab) {
+		__poison_element(element, kmem_cache_size(pool->pool_data));
+	} else if (pool->alloc == mempool_alloc_pages) {
+		/* Mempools backed by page allocator */
 		int order = (int)(long)pool->pool_data;
-		void *addr = kmap_atomic((struct page *)element);
+		void *addr = kmap_local_page((struct page *)element);
 
 		__poison_element(addr, 1UL << (PAGE_SHIFT + order));
-		kunmap_atomic(addr);
+		kunmap_local(addr);
 	}
 }
-#else /* CONFIG_DEBUG_SLAB || CONFIG_SLUB_DEBUG_ON */
+#else /* CONFIG_SLUB_DEBUG_ON */
 static inline void check_element(mempool_t *pool, void *element)
 {
 }
 static inline void poison_element(mempool_t *pool, void *element)
 {
 }
-#endif /* CONFIG_DEBUG_SLAB || CONFIG_SLUB_DEBUG_ON */
+#endif /* CONFIG_SLUB_DEBUG_ON */
 
-static void kasan_poison_element(mempool_t *pool, void *element)
+static __always_inline bool kasan_poison_element(mempool_t *pool, void *element)
 {
-	if (pool->alloc == mempool_alloc_slab)
-		kasan_slab_free(pool->pool_data, element);
-	if (pool->alloc == mempool_kmalloc)
-		kasan_kfree(element);
-	if (pool->alloc == mempool_alloc_pages)
-		kasan_free_pages(element, (unsigned long)pool->pool_data);
+	if (pool->alloc == mempool_alloc_slab || pool->alloc == mempool_kmalloc)
+		return kasan_mempool_poison_object(element);
+	else if (pool->alloc == mempool_alloc_pages)
+		return kasan_mempool_poison_pages(element,
+						(unsigned long)pool->pool_data);
+	return true;
 }
 
 static void kasan_unpoison_element(mempool_t *pool, void *element)
 {
-	if (pool->alloc == mempool_alloc_slab)
-		kasan_slab_alloc(pool->pool_data, element);
 	if (pool->alloc == mempool_kmalloc)
-		kasan_krealloc(element, (size_t)pool->pool_data);
-	if (pool->alloc == mempool_alloc_pages)
-		kasan_alloc_pages(element, (unsigned long)pool->pool_data);
+		kasan_mempool_unpoison_object(element, (size_t)pool->pool_data);
+	else if (pool->alloc == mempool_alloc_slab)
+		kasan_mempool_unpoison_object(element,
+					      kmem_cache_size(pool->pool_data));
+	else if (pool->alloc == mempool_alloc_pages)
+		kasan_mempool_unpoison_pages(element,
+					     (unsigned long)pool->pool_data);
 }
 
-static void add_element(mempool_t *pool, void *element)
+static __always_inline void add_element(mempool_t *pool, void *element)
 {
 	BUG_ON(pool->curr_nr >= pool->min_nr);
 	poison_element(pool, element);
-	kasan_poison_element(pool, element);
-	pool->elements[pool->curr_nr++] = element;
+	if (kasan_poison_element(pool, element))
+		pool->elements[pool->curr_nr++] = element;
 }
 
 static void *remove_element(mempool_t *pool)
@@ -135,10 +147,32 @@ static void *remove_element(mempool_t *pool)
 	void *element = pool->elements[--pool->curr_nr];
 
 	BUG_ON(pool->curr_nr < 0);
-	check_element(pool, element);
 	kasan_unpoison_element(pool, element);
+	check_element(pool, element);
 	return element;
 }
+
+/**
+ * mempool_exit - exit a mempool initialized with mempool_init()
+ * @pool:      pointer to the memory pool which was initialized with
+ *             mempool_init().
+ *
+ * Free all reserved elements in @pool and @pool itself.  This function
+ * only sleeps if the free_fn() function sleeps.
+ *
+ * May be called on a zeroed but uninitialized mempool (i.e. allocated with
+ * kzalloc()).
+ */
+void mempool_exit(mempool_t *pool)
+{
+	while (pool->curr_nr) {
+		void *element = remove_element(pool);
+		pool->free(element, pool->pool_data);
+	}
+	kfree(pool->elements);
+	pool->elements = NULL;
+}
+EXPORT_SYMBOL(mempool_exit);
 
 /**
  * mempool_destroy - deallocate a memory pool
@@ -150,57 +184,29 @@ static void *remove_element(mempool_t *pool)
  */
 void mempool_destroy(mempool_t *pool)
 {
-	while (pool->curr_nr) {
-		void *element = remove_element(pool);
-		pool->free(element, pool->pool_data);
-	}
-	kfree(pool->elements);
+	if (unlikely(!pool))
+		return;
+
+	mempool_exit(pool);
 	kfree(pool);
 }
 EXPORT_SYMBOL(mempool_destroy);
 
-/**
- * mempool_create - create a memory pool
- * @min_nr:    the minimum number of elements guaranteed to be
- *             allocated for this pool.
- * @alloc_fn:  user-defined element-allocation function.
- * @free_fn:   user-defined element-freeing function.
- * @pool_data: optional private data available to the user-defined functions.
- *
- * this function creates and allocates a guaranteed size, preallocated
- * memory pool. The pool can be used from the mempool_alloc() and mempool_free()
- * functions. This function might sleep. Both the alloc_fn() and the free_fn()
- * functions might sleep - as long as the mempool_alloc() function is not called
- * from IRQ contexts.
- */
-mempool_t *mempool_create(int min_nr, mempool_alloc_t *alloc_fn,
-				mempool_free_t *free_fn, void *pool_data)
+int mempool_init_node(mempool_t *pool, int min_nr, mempool_alloc_t *alloc_fn,
+		      mempool_free_t *free_fn, void *pool_data,
+		      gfp_t gfp_mask, int node_id)
 {
-	return mempool_create_node(min_nr,alloc_fn,free_fn, pool_data,
-				   GFP_KERNEL, NUMA_NO_NODE);
-}
-EXPORT_SYMBOL(mempool_create);
-
-mempool_t *mempool_create_node(int min_nr, mempool_alloc_t *alloc_fn,
-			       mempool_free_t *free_fn, void *pool_data,
-			       gfp_t gfp_mask, int node_id)
-{
-	mempool_t *pool;
-	pool = kzalloc_node(sizeof(*pool), gfp_mask, node_id);
-	if (!pool)
-		return NULL;
-	pool->elements = kmalloc_node(min_nr * sizeof(void *),
-				      gfp_mask, node_id);
-	if (!pool->elements) {
-		kfree(pool);
-		return NULL;
-	}
 	spin_lock_init(&pool->lock);
-	pool->min_nr = min_nr;
+	pool->min_nr	= min_nr;
 	pool->pool_data = pool_data;
+	pool->alloc	= alloc_fn;
+	pool->free	= free_fn;
 	init_waitqueue_head(&pool->wait);
-	pool->alloc = alloc_fn;
-	pool->free = free_fn;
+
+	pool->elements = kmalloc_array_node(min_nr, sizeof(void *),
+					    gfp_mask, node_id);
+	if (!pool->elements)
+		return -ENOMEM;
 
 	/*
 	 * First pre-allocate the guaranteed number of buffers.
@@ -210,14 +216,76 @@ mempool_t *mempool_create_node(int min_nr, mempool_alloc_t *alloc_fn,
 
 		element = pool->alloc(gfp_mask, pool->pool_data);
 		if (unlikely(!element)) {
-			mempool_destroy(pool);
-			return NULL;
+			mempool_exit(pool);
+			return -ENOMEM;
 		}
 		add_element(pool, element);
 	}
+
+	return 0;
+}
+EXPORT_SYMBOL(mempool_init_node);
+
+/**
+ * mempool_init - initialize a memory pool
+ * @pool:      pointer to the memory pool that should be initialized
+ * @min_nr:    the minimum number of elements guaranteed to be
+ *             allocated for this pool.
+ * @alloc_fn:  user-defined element-allocation function.
+ * @free_fn:   user-defined element-freeing function.
+ * @pool_data: optional private data available to the user-defined functions.
+ *
+ * Like mempool_create(), but initializes the pool in (i.e. embedded in another
+ * structure).
+ *
+ * Return: %0 on success, negative error code otherwise.
+ */
+int mempool_init_noprof(mempool_t *pool, int min_nr, mempool_alloc_t *alloc_fn,
+			mempool_free_t *free_fn, void *pool_data)
+{
+	return mempool_init_node(pool, min_nr, alloc_fn, free_fn,
+				 pool_data, GFP_KERNEL, NUMA_NO_NODE);
+
+}
+EXPORT_SYMBOL(mempool_init_noprof);
+
+/**
+ * mempool_create_node - create a memory pool
+ * @min_nr:    the minimum number of elements guaranteed to be
+ *             allocated for this pool.
+ * @alloc_fn:  user-defined element-allocation function.
+ * @free_fn:   user-defined element-freeing function.
+ * @pool_data: optional private data available to the user-defined functions.
+ * @gfp_mask:  memory allocation flags
+ * @node_id:   numa node to allocate on
+ *
+ * this function creates and allocates a guaranteed size, preallocated
+ * memory pool. The pool can be used from the mempool_alloc() and mempool_free()
+ * functions. This function might sleep. Both the alloc_fn() and the free_fn()
+ * functions might sleep - as long as the mempool_alloc() function is not called
+ * from IRQ contexts.
+ *
+ * Return: pointer to the created memory pool object or %NULL on error.
+ */
+mempool_t *mempool_create_node_noprof(int min_nr, mempool_alloc_t *alloc_fn,
+				      mempool_free_t *free_fn, void *pool_data,
+				      gfp_t gfp_mask, int node_id)
+{
+	mempool_t *pool;
+
+	pool = kmalloc_node_noprof(sizeof(*pool), gfp_mask | __GFP_ZERO, node_id);
+	if (!pool)
+		return NULL;
+
+	if (mempool_init_node(pool, min_nr, alloc_fn, free_fn, pool_data,
+			      gfp_mask, node_id)) {
+		kfree(pool);
+		return NULL;
+	}
+
 	return pool;
 }
-EXPORT_SYMBOL(mempool_create_node);
+EXPORT_SYMBOL(mempool_create_node_noprof);
 
 /**
  * mempool_resize - resize an existing memory pool
@@ -234,6 +302,8 @@ EXPORT_SYMBOL(mempool_create_node);
  * Note, the caller must guarantee that no mempool_destroy is called
  * while this function is running. mempool_alloc() & mempool_free()
  * might be called (eg. from IRQ contexts) while this function executes.
+ *
+ * Return: %0 on success, negative error code otherwise.
  */
 int mempool_resize(mempool_t *pool, int new_min_nr)
 {
@@ -308,22 +378,24 @@ EXPORT_SYMBOL(mempool_resize);
  * *never* fails when called from process contexts. (it might
  * fail if called from an IRQ context.)
  * Note: using __GFP_ZERO is not supported.
+ *
+ * Return: pointer to the allocated element or %NULL on error.
  */
-void * mempool_alloc(mempool_t *pool, gfp_t gfp_mask)
+void *mempool_alloc_noprof(mempool_t *pool, gfp_t gfp_mask)
 {
 	void *element;
 	unsigned long flags;
-	wait_queue_t wait;
+	wait_queue_entry_t wait;
 	gfp_t gfp_temp;
 
 	VM_WARN_ON_ONCE(gfp_mask & __GFP_ZERO);
-	might_sleep_if(gfp_mask & __GFP_WAIT);
+	might_alloc(gfp_mask);
 
 	gfp_mask |= __GFP_NOMEMALLOC;	/* don't allocate emergency reserves */
 	gfp_mask |= __GFP_NORETRY;	/* don't loop in __alloc_pages */
 	gfp_mask |= __GFP_NOWARN;	/* failures are OK */
 
-	gfp_temp = gfp_mask & ~(__GFP_WAIT|__GFP_IO);
+	gfp_temp = gfp_mask & ~(__GFP_DIRECT_RECLAIM|__GFP_IO);
 
 repeat_alloc:
 
@@ -346,7 +418,7 @@ repeat_alloc:
 	}
 
 	/*
-	 * We use gfp mask w/o __GFP_WAIT or IO for the first round.  If
+	 * We use gfp mask w/o direct reclaim or IO for the first round.  If
 	 * alloc failed with that and @pool was empty, retry immediately.
 	 */
 	if (gfp_temp != gfp_mask) {
@@ -355,8 +427,8 @@ repeat_alloc:
 		goto repeat_alloc;
 	}
 
-	/* We must not sleep if !__GFP_WAIT */
-	if (!(gfp_mask & __GFP_WAIT)) {
+	/* We must not sleep if !__GFP_DIRECT_RECLAIM */
+	if (!(gfp_mask & __GFP_DIRECT_RECLAIM)) {
 		spin_unlock_irqrestore(&pool->lock, flags);
 		return NULL;
 	}
@@ -376,7 +448,44 @@ repeat_alloc:
 	finish_wait(&pool->wait, &wait);
 	goto repeat_alloc;
 }
-EXPORT_SYMBOL(mempool_alloc);
+EXPORT_SYMBOL(mempool_alloc_noprof);
+
+/**
+ * mempool_alloc_preallocated - allocate an element from preallocated elements
+ *                              belonging to a specific memory pool
+ * @pool:      pointer to the memory pool which was allocated via
+ *             mempool_create().
+ *
+ * This function is similar to mempool_alloc, but it only attempts allocating
+ * an element from the preallocated elements. It does not sleep and immediately
+ * returns if no preallocated elements are available.
+ *
+ * Return: pointer to the allocated element or %NULL if no elements are
+ * available.
+ */
+void *mempool_alloc_preallocated(mempool_t *pool)
+{
+	void *element;
+	unsigned long flags;
+
+	spin_lock_irqsave(&pool->lock, flags);
+	if (likely(pool->curr_nr)) {
+		element = remove_element(pool);
+		spin_unlock_irqrestore(&pool->lock, flags);
+		/* paired with rmb in mempool_free(), read comment there */
+		smp_wmb();
+		/*
+		 * Update the allocation stack trace as this is more useful
+		 * for debugging.
+		 */
+		kmemleak_update_trace(element);
+		return element;
+	}
+	spin_unlock_irqrestore(&pool->lock, flags);
+
+	return NULL;
+}
+EXPORT_SYMBOL(mempool_alloc_preallocated);
 
 /**
  * mempool_free - return an element to the pool.
@@ -426,7 +535,7 @@ void mempool_free(void *element, mempool_t *pool)
 	 * ensures that there will be frees which return elements to the
 	 * pool waking up the waiters.
 	 */
-	if (unlikely(pool->curr_nr < pool->min_nr)) {
+	if (unlikely(READ_ONCE(pool->curr_nr) < pool->min_nr)) {
 		spin_lock_irqsave(&pool->lock, flags);
 		if (likely(pool->curr_nr < pool->min_nr)) {
 			add_element(pool, element);
@@ -447,7 +556,7 @@ void *mempool_alloc_slab(gfp_t gfp_mask, void *pool_data)
 {
 	struct kmem_cache *mem = pool_data;
 	VM_BUG_ON(mem->ctor);
-	return kmem_cache_alloc(mem, gfp_mask);
+	return kmem_cache_alloc_noprof(mem, gfp_mask);
 }
 EXPORT_SYMBOL(mempool_alloc_slab);
 
@@ -465,7 +574,7 @@ EXPORT_SYMBOL(mempool_free_slab);
 void *mempool_kmalloc(gfp_t gfp_mask, void *pool_data)
 {
 	size_t size = (size_t)pool_data;
-	return kmalloc(size, gfp_mask);
+	return kmalloc_noprof(size, gfp_mask);
 }
 EXPORT_SYMBOL(mempool_kmalloc);
 
@@ -475,6 +584,19 @@ void mempool_kfree(void *element, void *pool_data)
 }
 EXPORT_SYMBOL(mempool_kfree);
 
+void *mempool_kvmalloc(gfp_t gfp_mask, void *pool_data)
+{
+	size_t size = (size_t)pool_data;
+	return kvmalloc(size, gfp_mask);
+}
+EXPORT_SYMBOL(mempool_kvmalloc);
+
+void mempool_kvfree(void *element, void *pool_data)
+{
+	kvfree(element);
+}
+EXPORT_SYMBOL(mempool_kvfree);
+
 /*
  * A simple mempool-backed page allocator that allocates pages
  * of the order specified by pool_data.
@@ -482,7 +604,7 @@ EXPORT_SYMBOL(mempool_kfree);
 void *mempool_alloc_pages(gfp_t gfp_mask, void *pool_data)
 {
 	int order = (int)(long)pool_data;
-	return alloc_pages(gfp_mask, order);
+	return alloc_pages_noprof(gfp_mask, order);
 }
 EXPORT_SYMBOL(mempool_alloc_pages);
 

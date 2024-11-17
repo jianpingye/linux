@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Cryptographic API.
  *
@@ -5,24 +6,19 @@
  *
  * Copyright (c) 2008 Neil Horman <nhorman@tuxdriver.com>
  * Copyright (c) 2015 Herbert Xu <herbert@gondor.apana.org.au>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
  */
 
-#include <linux/atomic.h>
 #include <crypto/internal/rng.h>
+#include <linux/atomic.h>
+#include <linux/cryptouser.h>
 #include <linux/err.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/random.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/cryptouser.h>
 #include <net/netlink.h>
 
 #include "internal.h"
@@ -31,11 +27,6 @@ static DEFINE_MUTEX(crypto_default_rng_lock);
 struct crypto_rng *crypto_default_rng;
 EXPORT_SYMBOL_GPL(crypto_default_rng);
 static int crypto_default_rng_refcnt;
-
-static inline struct crypto_rng *__crypto_rng_cast(struct crypto_tfm *tfm)
-{
-	return container_of(tfm, struct crypto_rng, base);
-}
 
 int crypto_rng_reset(struct crypto_rng *tfm, const u8 *seed, unsigned int slen)
 {
@@ -47,13 +38,15 @@ int crypto_rng_reset(struct crypto_rng *tfm, const u8 *seed, unsigned int slen)
 		if (!buf)
 			return -ENOMEM;
 
-		get_random_bytes(buf, slen);
+		err = get_random_bytes_wait(buf, slen);
+		if (err)
+			goto out;
 		seed = buf;
 	}
 
 	err = crypto_rng_alg(tfm)->seed(tfm, seed, slen);
-
-	kzfree(buf);
+out:
+	kfree_sensitive(buf);
 	return err;
 }
 EXPORT_SYMBOL_GPL(crypto_rng_reset);
@@ -70,32 +63,22 @@ static unsigned int seedsize(struct crypto_alg *alg)
 	return ralg->seedsize;
 }
 
-#ifdef CONFIG_NET
-static int crypto_rng_report(struct sk_buff *skb, struct crypto_alg *alg)
+static int __maybe_unused crypto_rng_report(
+	struct sk_buff *skb, struct crypto_alg *alg)
 {
 	struct crypto_report_rng rrng;
 
-	strncpy(rrng.type, "rng", sizeof(rrng.type));
+	memset(&rrng, 0, sizeof(rrng));
+
+	strscpy(rrng.type, "rng", sizeof(rrng.type));
 
 	rrng.seedsize = seedsize(alg);
 
-	if (nla_put(skb, CRYPTOCFGA_REPORT_RNG,
-		    sizeof(struct crypto_report_rng), &rrng))
-		goto nla_put_failure;
-	return 0;
-
-nla_put_failure:
-	return -EMSGSIZE;
+	return nla_put(skb, CRYPTOCFGA_REPORT_RNG, sizeof(rrng), &rrng);
 }
-#else
-static int crypto_rng_report(struct sk_buff *skb, struct crypto_alg *alg)
-{
-	return -ENOSYS;
-}
-#endif
 
 static void crypto_rng_show(struct seq_file *m, struct crypto_alg *alg)
-	__attribute__ ((unused));
+	__maybe_unused;
 static void crypto_rng_show(struct seq_file *m, struct crypto_alg *alg)
 {
 	seq_printf(m, "type         : rng\n");
@@ -108,7 +91,9 @@ static const struct crypto_type crypto_rng_type = {
 #ifdef CONFIG_PROC_FS
 	.show = crypto_rng_show,
 #endif
+#if IS_ENABLED(CONFIG_CRYPTO_USER)
 	.report = crypto_rng_report,
+#endif
 	.maskclear = ~CRYPTO_ALG_TYPE_MASK,
 	.maskset = CRYPTO_ALG_TYPE_MASK,
 	.type = CRYPTO_ALG_TYPE_RNG,

@@ -1,16 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Load Analog Devices SigmaStudio firmware files
  *
  * Copyright 2009-2011 Analog Devices Inc.
- *
- * Licensed under the GPL-2 or later.
  */
 
 #include <linux/export.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "sigmadsp.h"
 
@@ -31,7 +30,10 @@ static int sigmadsp_write_i2c(void *control_data,
 
 	kfree(buf);
 
-	return ret;
+	if (ret < 0)
+		return ret;
+
+	return 0;
 }
 
 static int sigmadsp_read_i2c(void *control_data,

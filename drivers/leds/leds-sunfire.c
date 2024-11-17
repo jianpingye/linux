@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* leds-sunfire.c: SUNW,Ultra-Enterprise LED driver.
  *
  * Copyright (C) 2008 David S. Miller <davem@davemloft.net>
@@ -16,7 +17,7 @@
 #include <asm/fhc.h>
 #include <asm/upa.h>
 
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_DESCRIPTION("Sun Fire LED driver");
 MODULE_LICENSE("GPL");
 
@@ -162,15 +163,13 @@ static int sunfire_led_generic_probe(struct platform_device *pdev,
 	return 0;
 }
 
-static int sunfire_led_generic_remove(struct platform_device *pdev)
+static void sunfire_led_generic_remove(struct platform_device *pdev)
 {
 	struct sunfire_drvdata *p = platform_get_drvdata(pdev);
 	int i;
 
 	for (i = 0; i < NUM_LEDS_PER_BOARD; i++)
 		led_classdev_unregister(&p->leds[i].led_cdev);
-
-	return 0;
 }
 
 static struct led_type clockboard_led_types[NUM_LEDS_PER_BOARD] = {
@@ -220,7 +219,7 @@ MODULE_ALIAS("platform:sunfire-fhc-leds");
 
 static struct platform_driver sunfire_clockboard_led_driver = {
 	.probe		= sunfire_clockboard_led_probe,
-	.remove		= sunfire_led_generic_remove,
+	.remove_new	= sunfire_led_generic_remove,
 	.driver		= {
 		.name	= "sunfire-clockboard-leds",
 	},
@@ -228,34 +227,25 @@ static struct platform_driver sunfire_clockboard_led_driver = {
 
 static struct platform_driver sunfire_fhc_led_driver = {
 	.probe		= sunfire_fhc_led_probe,
-	.remove		= sunfire_led_generic_remove,
+	.remove_new	= sunfire_led_generic_remove,
 	.driver		= {
 		.name	= "sunfire-fhc-leds",
 	},
 };
 
+static struct platform_driver * const drivers[] = {
+	&sunfire_clockboard_led_driver,
+	&sunfire_fhc_led_driver,
+};
+
 static int __init sunfire_leds_init(void)
 {
-	int err = platform_driver_register(&sunfire_clockboard_led_driver);
-
-	if (err) {
-		pr_err("Could not register clock board LED driver\n");
-		return err;
-	}
-
-	err = platform_driver_register(&sunfire_fhc_led_driver);
-	if (err) {
-		pr_err("Could not register FHC LED driver\n");
-		platform_driver_unregister(&sunfire_clockboard_led_driver);
-	}
-
-	return err;
+	return platform_register_drivers(drivers, ARRAY_SIZE(drivers));
 }
 
 static void __exit sunfire_leds_exit(void)
 {
-	platform_driver_unregister(&sunfire_clockboard_led_driver);
-	platform_driver_unregister(&sunfire_fhc_led_driver);
+	platform_unregister_drivers(drivers, ARRAY_SIZE(drivers));
 }
 
 module_init(sunfire_leds_init);

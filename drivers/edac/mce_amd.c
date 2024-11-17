@@ -1,33 +1,29 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/module.h>
 #include <linux/slab.h>
 
+#include <asm/cpu.h>
+
 #include "mce_amd.h"
 
-static struct amd_decoder_ops *fam_ops;
+static struct amd_decoder_ops fam_ops;
 
 static u8 xec_mask	 = 0xf;
 
-static bool report_gart_errors;
-static void (*nb_bus_decoder)(int node_id, struct mce *m);
-
-void amd_report_gart_errors(bool v)
-{
-	report_gart_errors = v;
-}
-EXPORT_SYMBOL_GPL(amd_report_gart_errors);
+static void (*decode_dram_ecc)(int node_id, struct mce *m);
 
 void amd_register_ecc_decoder(void (*f)(int, struct mce *))
 {
-	nb_bus_decoder = f;
+	decode_dram_ecc = f;
 }
 EXPORT_SYMBOL_GPL(amd_register_ecc_decoder);
 
 void amd_unregister_ecc_decoder(void (*f)(int, struct mce *))
 {
-	if (nb_bus_decoder) {
-		WARN_ON(nb_bus_decoder != f);
+	if (decode_dram_ecc) {
+		WARN_ON(decode_dram_ecc != f);
 
-		nb_bus_decoder = NULL;
+		decode_dram_ecc = NULL;
 	}
 }
 EXPORT_SYMBOL_GPL(amd_unregister_ecc_decoder);
@@ -304,7 +300,7 @@ static void decode_mc0_mce(struct mce *m)
 					    : (xec ? "multimatch" : "parity")));
 			return;
 		}
-	} else if (fam_ops->mc0_mce(ec, xec))
+	} else if (fam_ops.mc0_mce(ec, xec))
 		;
 	else
 		pr_emerg(HW_ERR "Corrupted MC0 MCE info?\n");
@@ -418,7 +414,7 @@ static void decode_mc1_mce(struct mce *m)
 			pr_cont("Hardware Assert.\n");
 		else
 			goto wrong_mc1_mce;
-	} else if (fam_ops->mc1_mce(ec, xec))
+	} else if (fam_ops.mc1_mce(ec, xec))
 		;
 	else
 		goto wrong_mc1_mce;
@@ -552,7 +548,7 @@ static void decode_mc2_mce(struct mce *m)
 
 	pr_emerg(HW_ERR "MC2 Error: ");
 
-	if (!fam_ops->mc2_mce(ec, xec))
+	if (!fam_ops.mc2_mce(ec, xec))
 		pr_cont(HW_ERR "Corrupted MC2 MCE info?\n");
 }
 
@@ -587,8 +583,8 @@ static void decode_mc3_mce(struct mce *m)
 
 static void decode_mc4_mce(struct mce *m)
 {
-	struct cpuinfo_x86 *c = &boot_cpu_data;
-	int node_id = amd_get_nb_id(m->extcpu);
+	unsigned int fam = x86_family(m->cpuid);
+	int node_id = topology_amd_node_id(m->extcpu);
 	u16 ec = EC(m->status);
 	u8 xec = XEC(m->status, 0x1f);
 	u8 offset = 0;
@@ -601,13 +597,13 @@ static void decode_mc4_mce(struct mce *m)
 		/* special handling for DRAM ECCs */
 		if (xec == 0x0 || xec == 0x8) {
 			/* no ECCs on F11h */
-			if (c->x86 == 0x11)
+			if (fam == 0x11)
 				goto wrong_mc4_mce;
 
 			pr_cont("%s.\n", mc4_mce_desc[xec]);
 
-			if (nb_bus_decoder)
-				nb_bus_decoder(node_id, m);
+			if (decode_dram_ecc)
+				decode_dram_ecc(node_id, m);
 			return;
 		}
 		break;
@@ -622,7 +618,7 @@ static void decode_mc4_mce(struct mce *m)
 		return;
 
 	case 0x19:
-		if (boot_cpu_data.x86 == 0x15 || boot_cpu_data.x86 == 0x16)
+		if (fam == 0x15 || fam == 0x16)
 			pr_cont("Compute Unit Data Error.\n");
 		else
 			goto wrong_mc4_mce;
@@ -645,11 +641,11 @@ static void decode_mc4_mce(struct mce *m)
 
 static void decode_mc5_mce(struct mce *m)
 {
-	struct cpuinfo_x86 *c = &boot_cpu_data;
+	unsigned int fam = x86_family(m->cpuid);
 	u16 ec = EC(m->status);
 	u8 xec = XEC(m->status, xec_mask);
 
-	if (c->x86 == 0xf || c->x86 == 0x11)
+	if (fam == 0xf || fam == 0x11)
 		goto wrong_mc5_mce;
 
 	pr_emerg(HW_ERR "MC5 Error: ");
@@ -691,6 +687,68 @@ static void decode_mc6_mce(struct mce *m)
 	pr_emerg(HW_ERR "Corrupted MC6 MCE info?\n");
 }
 
+static const char * const smca_long_names[] = {
+	[SMCA_LS ... SMCA_LS_V2]	= "Load Store Unit",
+	[SMCA_IF]			= "Instruction Fetch Unit",
+	[SMCA_L2_CACHE]			= "L2 Cache",
+	[SMCA_DE]			= "Decode Unit",
+	[SMCA_RESERVED]			= "Reserved",
+	[SMCA_EX]			= "Execution Unit",
+	[SMCA_FP]			= "Floating Point Unit",
+	[SMCA_L3_CACHE]			= "L3 Cache",
+	[SMCA_CS ... SMCA_CS_V2]	= "Coherent Slave",
+	[SMCA_PIE]			= "Power, Interrupts, etc.",
+
+	/* UMC v2 is separate because both of them can exist in a single system. */
+	[SMCA_UMC]			= "Unified Memory Controller",
+	[SMCA_UMC_V2]			= "Unified Memory Controller v2",
+	[SMCA_PB]			= "Parameter Block",
+	[SMCA_PSP ... SMCA_PSP_V2]	= "Platform Security Processor",
+	[SMCA_SMU ... SMCA_SMU_V2]	= "System Management Unit",
+	[SMCA_MP5]			= "Microprocessor 5 Unit",
+	[SMCA_MPDMA]			= "MPDMA Unit",
+	[SMCA_NBIO]			= "Northbridge IO Unit",
+	[SMCA_PCIE ... SMCA_PCIE_V2]	= "PCI Express Unit",
+	[SMCA_XGMI_PCS]			= "Ext Global Memory Interconnect PCS Unit",
+	[SMCA_NBIF]			= "NBIF Unit",
+	[SMCA_SHUB]			= "System Hub Unit",
+	[SMCA_SATA]			= "SATA Unit",
+	[SMCA_USB]			= "USB Unit",
+	[SMCA_GMI_PCS]			= "Global Memory Interconnect PCS Unit",
+	[SMCA_XGMI_PHY]			= "Ext Global Memory Interconnect PHY Unit",
+	[SMCA_WAFL_PHY]			= "WAFL PHY Unit",
+	[SMCA_GMI_PHY]			= "Global Memory Interconnect PHY Unit",
+};
+
+static const char *smca_get_long_name(enum smca_bank_types t)
+{
+	if (t >= N_SMCA_BANK_TYPES)
+		return NULL;
+
+	return smca_long_names[t];
+}
+
+/* Decode errors according to Scalable MCA specification */
+static void decode_smca_error(struct mce *m)
+{
+	enum smca_bank_types bank_type = smca_get_bank_type(m->extcpu, m->bank);
+	u8 xec = XEC(m->status, xec_mask);
+
+	if (bank_type >= N_SMCA_BANK_TYPES)
+		return;
+
+	if (bank_type == SMCA_RESERVED) {
+		pr_emerg(HW_ERR "Bank %d is reserved.\n", m->bank);
+		return;
+	}
+
+	pr_emerg(HW_ERR "%s Ext. Error Code: %d", smca_get_long_name(bank_type), xec);
+
+	if ((bank_type == SMCA_UMC || bank_type == SMCA_UMC_V2) &&
+	    xec == 0 && decode_dram_ecc)
+		decode_dram_ecc(topology_amd_node_id(m->extcpu), m);
+}
+
 static inline void amd_decode_err_code(u16 ec)
 {
 	if (INT_ERROR(ec)) {
@@ -715,22 +773,6 @@ static inline void amd_decode_err_code(u16 ec)
 	pr_cont("\n");
 }
 
-/*
- * Filter out unwanted MCE signatures here.
- */
-static bool amd_filter_mce(struct mce *m)
-{
-	u8 xec = (m->status >> 16) & 0x1f;
-
-	/*
-	 * NB GART TLB error reporting is disabled by default.
-	 */
-	if (m->bank == 4 && xec == 0x5 && !report_gart_errors)
-		return true;
-
-	return false;
-}
-
 static const char *decode_error_status(struct mce *m)
 {
 	if (m->status & MCI_STATUS_UC) {
@@ -742,48 +784,86 @@ static const char *decode_error_status(struct mce *m)
 	}
 
 	if (m->status & MCI_STATUS_DEFERRED)
-		return "Deferred error.";
+		return "Deferred error, no action required.";
 
 	return "Corrected error, no action required.";
 }
 
-int amd_decode_mce(struct notifier_block *nb, unsigned long val, void *data)
+static int
+amd_decode_mce(struct notifier_block *nb, unsigned long val, void *data)
 {
 	struct mce *m = (struct mce *)data;
-	struct cpuinfo_x86 *c = &cpu_data(m->extcpu);
+	unsigned int fam = x86_family(m->cpuid);
 	int ecc;
 
-	if (amd_filter_mce(m))
-		return NOTIFY_STOP;
+	if (m->kflags & MCE_HANDLED_CEC)
+		return NOTIFY_DONE;
 
 	pr_emerg(HW_ERR "%s\n", decode_error_status(m));
 
 	pr_emerg(HW_ERR "CPU:%d (%x:%x:%x) MC%d_STATUS[%s|%s|%s|%s|%s",
 		m->extcpu,
-		c->x86, c->x86_model, c->x86_mask,
+		fam, x86_model(m->cpuid), x86_stepping(m->cpuid),
 		m->bank,
 		((m->status & MCI_STATUS_OVER)	? "Over"  : "-"),
-		((m->status & MCI_STATUS_UC)	? "UE"	  : "CE"),
+		((m->status & MCI_STATUS_UC)	? "UE"	  :
+		 (m->status & MCI_STATUS_DEFERRED) ? "-"  : "CE"),
 		((m->status & MCI_STATUS_MISCV)	? "MiscV" : "-"),
-		((m->status & MCI_STATUS_PCC)	? "PCC"	  : "-"),
-		((m->status & MCI_STATUS_ADDRV)	? "AddrV" : "-"));
+		((m->status & MCI_STATUS_ADDRV)	? "AddrV" : "-"),
+		((m->status & MCI_STATUS_PCC)	? "PCC"	  : "-"));
 
-	if (c->x86 == 0x15 || c->x86 == 0x16)
-		pr_cont("|%s|%s",
-			((m->status & MCI_STATUS_DEFERRED) ? "Deferred" : "-"),
-			((m->status & MCI_STATUS_POISON)   ? "Poison"   : "-"));
+	if (boot_cpu_has(X86_FEATURE_SMCA)) {
+		u32 low, high;
+		u32 addr = MSR_AMD64_SMCA_MCx_CONFIG(m->bank);
+
+		if (!rdmsr_safe(addr, &low, &high) &&
+		    (low & MCI_CONFIG_MCAX))
+			pr_cont("|%s", ((m->status & MCI_STATUS_TCC) ? "TCC" : "-"));
+
+		pr_cont("|%s", ((m->status & MCI_STATUS_SYNDV) ? "SyndV" : "-"));
+	}
 
 	/* do the two bits[14:13] together */
 	ecc = (m->status >> 45) & 0x3;
 	if (ecc)
 		pr_cont("|%sECC", ((ecc == 2) ? "C" : "U"));
 
+	if (fam >= 0x15) {
+		pr_cont("|%s", (m->status & MCI_STATUS_DEFERRED ? "Deferred" : "-"));
+
+		/* F15h, bank4, bit 43 is part of McaStatSubCache. */
+		if (fam != 0x15 || m->bank != 4)
+			pr_cont("|%s", (m->status & MCI_STATUS_POISON ? "Poison" : "-"));
+	}
+
+	if (fam >= 0x17)
+		pr_cont("|%s", (m->status & MCI_STATUS_SCRUB ? "Scrub" : "-"));
+
 	pr_cont("]: 0x%016llx\n", m->status);
 
 	if (m->status & MCI_STATUS_ADDRV)
-		pr_emerg(HW_ERR "MC%d Error Address: 0x%016llx\n", m->bank, m->addr);
+		pr_emerg(HW_ERR "Error Addr: 0x%016llx\n", m->addr);
 
-	if (!fam_ops)
+	if (m->ppin)
+		pr_emerg(HW_ERR "PPIN: 0x%016llx\n", m->ppin);
+
+	if (boot_cpu_has(X86_FEATURE_SMCA)) {
+		pr_emerg(HW_ERR "IPID: 0x%016llx", m->ipid);
+
+		if (m->status & MCI_STATUS_SYNDV)
+			pr_cont(", Syndrome: 0x%016llx", m->synd);
+
+		pr_cont("\n");
+
+		decode_smca_error(m);
+		goto err_code;
+	}
+
+	if (m->tsc)
+		pr_emerg(HW_ERR "TSC: %llu\n", m->tsc);
+
+	/* Doesn't matter which member to test. */
+	if (!fam_ops.mc0_mce)
 		goto err_code;
 
 	switch (m->bank) {
@@ -822,77 +902,88 @@ int amd_decode_mce(struct notifier_block *nb, unsigned long val, void *data)
  err_code:
 	amd_decode_err_code(m->status & 0xffff);
 
-	return NOTIFY_STOP;
+	m->kflags |= MCE_HANDLED_EDAC;
+	return NOTIFY_OK;
 }
-EXPORT_SYMBOL_GPL(amd_decode_mce);
 
 static struct notifier_block amd_mce_dec_nb = {
 	.notifier_call	= amd_decode_mce,
+	.priority	= MCE_PRIO_EDAC,
 };
 
 static int __init mce_amd_init(void)
 {
 	struct cpuinfo_x86 *c = &boot_cpu_data;
 
-	if (c->x86_vendor != X86_VENDOR_AMD)
+	if (c->x86_vendor != X86_VENDOR_AMD &&
+	    c->x86_vendor != X86_VENDOR_HYGON)
 		return -ENODEV;
 
-	fam_ops = kzalloc(sizeof(struct amd_decoder_ops), GFP_KERNEL);
-	if (!fam_ops)
-		return -ENOMEM;
+	if (cpu_feature_enabled(X86_FEATURE_HYPERVISOR))
+		return -ENODEV;
+
+	if (boot_cpu_has(X86_FEATURE_SMCA)) {
+		xec_mask = 0x3f;
+		goto out;
+	}
 
 	switch (c->x86) {
 	case 0xf:
-		fam_ops->mc0_mce = k8_mc0_mce;
-		fam_ops->mc1_mce = k8_mc1_mce;
-		fam_ops->mc2_mce = k8_mc2_mce;
+		fam_ops.mc0_mce = k8_mc0_mce;
+		fam_ops.mc1_mce = k8_mc1_mce;
+		fam_ops.mc2_mce = k8_mc2_mce;
 		break;
 
 	case 0x10:
-		fam_ops->mc0_mce = f10h_mc0_mce;
-		fam_ops->mc1_mce = k8_mc1_mce;
-		fam_ops->mc2_mce = k8_mc2_mce;
+		fam_ops.mc0_mce = f10h_mc0_mce;
+		fam_ops.mc1_mce = k8_mc1_mce;
+		fam_ops.mc2_mce = k8_mc2_mce;
 		break;
 
 	case 0x11:
-		fam_ops->mc0_mce = k8_mc0_mce;
-		fam_ops->mc1_mce = k8_mc1_mce;
-		fam_ops->mc2_mce = k8_mc2_mce;
+		fam_ops.mc0_mce = k8_mc0_mce;
+		fam_ops.mc1_mce = k8_mc1_mce;
+		fam_ops.mc2_mce = k8_mc2_mce;
 		break;
 
 	case 0x12:
-		fam_ops->mc0_mce = f12h_mc0_mce;
-		fam_ops->mc1_mce = k8_mc1_mce;
-		fam_ops->mc2_mce = k8_mc2_mce;
+		fam_ops.mc0_mce = f12h_mc0_mce;
+		fam_ops.mc1_mce = k8_mc1_mce;
+		fam_ops.mc2_mce = k8_mc2_mce;
 		break;
 
 	case 0x14:
-		fam_ops->mc0_mce = cat_mc0_mce;
-		fam_ops->mc1_mce = cat_mc1_mce;
-		fam_ops->mc2_mce = k8_mc2_mce;
+		fam_ops.mc0_mce = cat_mc0_mce;
+		fam_ops.mc1_mce = cat_mc1_mce;
+		fam_ops.mc2_mce = k8_mc2_mce;
 		break;
 
 	case 0x15:
 		xec_mask = c->x86_model == 0x60 ? 0x3f : 0x1f;
 
-		fam_ops->mc0_mce = f15h_mc0_mce;
-		fam_ops->mc1_mce = f15h_mc1_mce;
-		fam_ops->mc2_mce = f15h_mc2_mce;
+		fam_ops.mc0_mce = f15h_mc0_mce;
+		fam_ops.mc1_mce = f15h_mc1_mce;
+		fam_ops.mc2_mce = f15h_mc2_mce;
 		break;
 
 	case 0x16:
 		xec_mask = 0x1f;
-		fam_ops->mc0_mce = cat_mc0_mce;
-		fam_ops->mc1_mce = cat_mc1_mce;
-		fam_ops->mc2_mce = f16h_mc2_mce;
+		fam_ops.mc0_mce = cat_mc0_mce;
+		fam_ops.mc1_mce = cat_mc1_mce;
+		fam_ops.mc2_mce = f16h_mc2_mce;
 		break;
+
+	case 0x17:
+	case 0x18:
+		pr_warn_once("Decoding supported only on Scalable MCA processors.\n");
+		return -EINVAL;
 
 	default:
 		printk(KERN_WARNING "Huh? What family is it: 0x%x?!\n", c->x86);
-		kfree(fam_ops);
-		fam_ops = NULL;
+		return -EINVAL;
 	}
 
+out:
 	pr_info("MCE: In-kernel MCE decoding enabled.\n");
 
 	mce_register_decode_chain(&amd_mce_dec_nb);
@@ -905,7 +996,6 @@ early_initcall(mce_amd_init);
 static void __exit mce_amd_exit(void)
 {
 	mce_unregister_decode_chain(&amd_mce_dec_nb);
-	kfree(fam_ops);
 }
 
 MODULE_DESCRIPTION("AMD MCE decoder");

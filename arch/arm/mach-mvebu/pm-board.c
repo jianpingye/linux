@@ -1,46 +1,43 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Board-level suspend/resume support.
  *
- * Copyright (C) 2014 Marvell
+ * Copyright (C) 2014-2015 Marvell
  *
  * Thomas Petazzoni <thomas.petazzoni@free-electrons.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/delay.h>
-#include <linux/gpio.h>
+#include <linux/err.h>
+#include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_gpio.h>
 #include <linux/slab.h>
 #include "common.h"
 
-#define ARMADA_XP_GP_PIC_NR_GPIOS 3
+#define ARMADA_PIC_NR_GPIOS 3
 
 static void __iomem *gpio_ctrl;
-static int pic_gpios[ARMADA_XP_GP_PIC_NR_GPIOS];
-static int pic_raw_gpios[ARMADA_XP_GP_PIC_NR_GPIOS];
+static struct gpio_desc *pic_gpios[ARMADA_PIC_NR_GPIOS];
+static int pic_raw_gpios[ARMADA_PIC_NR_GPIOS];
 
-static void mvebu_armada_xp_gp_pm_enter(void __iomem *sdram_reg, u32 srcmd)
+static void mvebu_armada_pm_enter(void __iomem *sdram_reg, u32 srcmd)
 {
 	u32 reg, ackcmd;
 	int i;
 
 	/* Put 001 as value on the GPIOs */
 	reg = readl(gpio_ctrl);
-	for (i = 0; i < ARMADA_XP_GP_PIC_NR_GPIOS; i++)
+	for (i = 0; i < ARMADA_PIC_NR_GPIOS; i++)
 		reg &= ~BIT(pic_raw_gpios[i]);
 	reg |= BIT(pic_raw_gpios[0]);
 	writel(reg, gpio_ctrl);
 
 	/* Prepare writing 111 to the GPIOs */
 	ackcmd = readl(gpio_ctrl);
-	for (i = 0; i < ARMADA_XP_GP_PIC_NR_GPIOS; i++)
+	for (i = 0; i < ARMADA_PIC_NR_GPIOS; i++)
 		ackcmd |= BIT(pic_raw_gpios[i]);
 
 	srcmd = cpu_to_le32(srcmd);
@@ -76,10 +73,10 @@ static void mvebu_armada_xp_gp_pm_enter(void __iomem *sdram_reg, u32 srcmd)
 		  [ackcmd] "r" (ackcmd), [gpio_ctrl] "r" (gpio_ctrl) : "r1");
 }
 
-static int mvebu_armada_xp_gp_pm_init(void)
+static int __init mvebu_armada_pm_init(void)
 {
 	struct device_node *np;
-	struct device_node *gpio_ctrl_np;
+	struct device_node *gpio_ctrl_np = NULL;
 	int ret = 0, i;
 
 	if (!of_machine_is_compatible("marvell,axp-gp"))
@@ -89,15 +86,9 @@ static int mvebu_armada_xp_gp_pm_init(void)
 	if (!np)
 		return -ENODEV;
 
-	for (i = 0; i < ARMADA_XP_GP_PIC_NR_GPIOS; i++) {
+	for (i = 0; i < ARMADA_PIC_NR_GPIOS; i++) {
 		char *name;
 		struct of_phandle_args args;
-
-		pic_gpios[i] = of_get_named_gpio(np, "ctrl-gpios", i);
-		if (pic_gpios[i] < 0) {
-			ret = -ENODEV;
-			goto out;
-		}
 
 		name = kasprintf(GFP_KERNEL, "pic-pin%d", i);
 		if (!name) {
@@ -105,15 +96,11 @@ static int mvebu_armada_xp_gp_pm_init(void)
 			goto out;
 		}
 
-		ret = gpio_request(pic_gpios[i], name);
-		if (ret < 0) {
-			kfree(name);
-			goto out;
-		}
-
-		ret = gpio_direction_output(pic_gpios[i], 0);
-		if (ret < 0) {
-			gpio_free(pic_gpios[i]);
+		pic_gpios[i] = fwnode_gpiod_get_index(of_fwnode_handle(np),
+						      "ctrl", i, GPIOD_OUT_HIGH,
+						      name);
+		ret = PTR_ERR_OR_ZERO(pic_gpios[i]);
+		if (ret) {
 			kfree(name);
 			goto out;
 		}
@@ -121,24 +108,37 @@ static int mvebu_armada_xp_gp_pm_init(void)
 		ret = of_parse_phandle_with_fixed_args(np, "ctrl-gpios", 2,
 						       i, &args);
 		if (ret < 0) {
-			gpio_free(pic_gpios[i]);
+			gpiod_put(pic_gpios[i]);
 			kfree(name);
 			goto out;
 		}
 
+		if (gpio_ctrl_np)
+			of_node_put(gpio_ctrl_np);
 		gpio_ctrl_np = args.np;
 		pic_raw_gpios[i] = args.args[0];
 	}
 
 	gpio_ctrl = of_iomap(gpio_ctrl_np, 0);
-	if (!gpio_ctrl)
-		return -ENOMEM;
+	if (!gpio_ctrl) {
+		ret = -ENOMEM;
+		goto out;
+	}
 
-	mvebu_pm_init(mvebu_armada_xp_gp_pm_enter);
+	mvebu_pm_suspend_init(mvebu_armada_pm_enter);
 
 out:
 	of_node_put(np);
+	of_node_put(gpio_ctrl_np);
 	return ret;
 }
 
-late_initcall(mvebu_armada_xp_gp_pm_init);
+/*
+ * Registering the mvebu_board_pm_enter callback must be done before
+ * the platform_suspend_ops will be registered. In the same time we
+ * also need to have the gpio devices registered. That's why we use a
+ * device_initcall_sync which is called after all the device_initcall
+ * (used by the gpio device) but before the late_initcall (used to
+ * register the platform_suspend_ops)
+ */
+device_initcall_sync(mvebu_armada_pm_init);

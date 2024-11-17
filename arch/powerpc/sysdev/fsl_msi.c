@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2007-2011 Freescale Semiconductor, Inc.
  *
@@ -5,22 +6,20 @@
  *	   Jason Jin <Jason.jin@freescale.com>
  *
  * The hwirq alloc and free code reuse from sysdev/mpic_msi.c
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; version 2 of the
- * License.
- *
  */
 #include <linux/irq.h>
 #include <linux/msi.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+#include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/interrupt.h>
+#include <linux/irqdomain.h>
 #include <linux/seq_file.h>
 #include <sysdev/fsl_soc.h>
-#include <asm/prom.h>
 #include <asm/hw_irq.h>
 #include <asm/ppc-pci.h>
 #include <asm/mpic.h>
@@ -110,7 +109,7 @@ static int fsl_msi_init_allocator(struct fsl_msi *msi_data)
 	int rc, hwirq;
 
 	rc = msi_bitmap_alloc(&msi_data->bitmap, NR_MSI_IRQS_MAX,
-			      msi_data->irqhost->of_node);
+			      irq_domain_get_of_node(msi_data->irqhost));
 	if (rc)
 		return rc;
 
@@ -128,18 +127,16 @@ static void fsl_teardown_msi_irqs(struct pci_dev *pdev)
 {
 	struct msi_desc *entry;
 	struct fsl_msi *msi_data;
+	irq_hw_number_t hwirq;
 
-	list_for_each_entry(entry, &pdev->msi_list, list) {
-		if (entry->irq == NO_IRQ)
-			continue;
+	msi_for_each_desc(entry, &pdev->dev, MSI_DESC_ASSOCIATED) {
+		hwirq = virq_to_hw(entry->irq);
 		msi_data = irq_get_chip_data(entry->irq);
 		irq_set_msi_desc(entry->irq, NULL);
-		msi_bitmap_free_hwirqs(&msi_data->bitmap,
-				       virq_to_hw(entry->irq), 1);
 		irq_dispose_mapping(entry->irq);
+		entry->irq = 0;
+		msi_bitmap_free_hwirqs(&msi_data->bitmap, hwirq, 1);
 	}
-
-	return;
 }
 
 static void fsl_compose_msi_msg(struct pci_dev *pdev, int hwirq,
@@ -213,13 +210,15 @@ static int fsl_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 			phandle = np->phandle;
 		else {
 			dev_err(&pdev->dev,
-				"node %s has an invalid fsl,msi phandle %u\n",
-				hose->dn->full_name, np->phandle);
+				"node %pOF has an invalid fsl,msi phandle %u\n",
+				hose->dn, np->phandle);
+			of_node_put(np);
 			return -EINVAL;
 		}
+		of_node_put(np);
 	}
 
-	list_for_each_entry(entry, &pdev->msi_list, list) {
+	msi_for_each_desc(entry, &pdev->dev, MSI_DESC_NOTASSOCIATED) {
 		/*
 		 * Loop over all the MSI devices until we find one that has an
 		 * available interrupt.
@@ -249,7 +248,7 @@ static int fsl_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 
 		virq = irq_create_mapping(msi_data->irqhost, hwirq);
 
-		if (virq == NO_IRQ) {
+		if (!virq) {
 			dev_err(&pdev->dev, "fail mapping hwirq %i\n", hwirq);
 			msi_bitmap_free_hwirqs(&msi_data->bitmap, hwirq, 1);
 			rc = -ENOSPC;
@@ -270,7 +269,6 @@ out_free:
 
 static irqreturn_t fsl_msi_cascade(int irq, void *data)
 {
-	unsigned int cascade_irq;
 	struct fsl_msi *msi_data;
 	int msir_index = -1;
 	u32 msir_value = 0;
@@ -282,9 +280,6 @@ static irqreturn_t fsl_msi_cascade(int irq, void *data)
 	msi_data = cascade_data->msi_data;
 
 	msir_index = cascade_data->index;
-
-	if (msir_index >= NR_MSI_REG_MAX)
-		cascade_irq = NO_IRQ;
 
 	switch (msi_data->feature & FSL_PIC_IP_MASK) {
 	case FSL_PIC_IP_MPIC:
@@ -309,15 +304,15 @@ static irqreturn_t fsl_msi_cascade(int irq, void *data)
 	}
 
 	while (msir_value) {
+		int err;
 		intr_index = ffs(msir_value) - 1;
 
-		cascade_irq = irq_linear_revmap(msi_data->irqhost,
+		err = generic_handle_domain_irq(msi_data->irqhost,
 				msi_hwirq(msi_data, msir_index,
 					  intr_index + have_shift));
-		if (cascade_irq != NO_IRQ) {
-			generic_handle_irq(cascade_irq);
+		if (!err)
 			ret = IRQ_HANDLED;
-		}
+
 		have_shift += intr_index + 1;
 		msir_value = msir_value >> (intr_index + 1);
 	}
@@ -325,7 +320,7 @@ static irqreturn_t fsl_msi_cascade(int irq, void *data)
 	return ret;
 }
 
-static int fsl_of_msi_remove(struct platform_device *ofdev)
+static void fsl_of_msi_remove(struct platform_device *ofdev)
 {
 	struct fsl_msi *msi = platform_get_drvdata(ofdev);
 	int virq, i;
@@ -336,7 +331,7 @@ static int fsl_of_msi_remove(struct platform_device *ofdev)
 		if (msi->cascade_array[i]) {
 			virq = msi->cascade_array[i]->virq;
 
-			BUG_ON(virq == NO_IRQ);
+			BUG_ON(!virq);
 
 			free_irq(virq, msi->cascade_array[i]);
 			kfree(msi->cascade_array[i]);
@@ -348,11 +343,10 @@ static int fsl_of_msi_remove(struct platform_device *ofdev)
 	if ((msi->feature & FSL_PIC_IP_MASK) != FSL_PIC_IP_VMPIC)
 		iounmap(msi->msi_regs);
 	kfree(msi);
-
-	return 0;
 }
 
 static struct lock_class_key fsl_msi_irq_class;
+static struct lock_class_key fsl_msi_irq_request_class;
 
 static int fsl_msi_setup_hwirq(struct fsl_msi *msi, struct platform_device *dev,
 			       int offset, int irq_index)
@@ -361,7 +355,7 @@ static int fsl_msi_setup_hwirq(struct fsl_msi *msi, struct platform_device *dev,
 	int virt_msir, i, ret;
 
 	virt_msir = irq_of_parse_and_map(dev->dev.of_node, irq_index);
-	if (virt_msir == NO_IRQ) {
+	if (!virt_msir) {
 		dev_err(&dev->dev, "%s: Cannot translate IRQ index %d\n",
 			__func__, irq_index);
 		return 0;
@@ -372,7 +366,8 @@ static int fsl_msi_setup_hwirq(struct fsl_msi *msi, struct platform_device *dev,
 		dev_err(&dev->dev, "No memory for MSI cascade data\n");
 		return -ENOMEM;
 	}
-	irq_set_lockdep_class(virt_msir, &fsl_msi_irq_class);
+	irq_set_lockdep_class(virt_msir, &fsl_msi_irq_class,
+			      &fsl_msi_irq_request_class);
 	cascade_data->index = offset;
 	cascade_data->msi_data = msi;
 	cascade_data->virq = virt_msir;
@@ -397,7 +392,6 @@ static int fsl_msi_setup_hwirq(struct fsl_msi *msi, struct platform_device *dev,
 static const struct of_device_id fsl_of_msi_ids[];
 static int fsl_of_msi_probe(struct platform_device *dev)
 {
-	const struct of_device_id *match;
 	struct fsl_msi *msi;
 	struct resource res, msiir;
 	int err, i, j, irq_index, count;
@@ -407,10 +401,7 @@ static int fsl_of_msi_probe(struct platform_device *dev)
 	u32 offset;
 	struct pci_controller *phb;
 
-	match = of_match_device(fsl_of_msi_ids, &dev->dev);
-	if (!match)
-		return -EINVAL;
-	features = match->data;
+	features = device_get_match_data(&dev->dev);
 
 	printk(KERN_DEBUG "Setting up Freescale MSI support\n");
 
@@ -437,16 +428,16 @@ static int fsl_of_msi_probe(struct platform_device *dev)
 	if ((features->fsl_pic_ip & FSL_PIC_IP_MASK) != FSL_PIC_IP_VMPIC) {
 		err = of_address_to_resource(dev->dev.of_node, 0, &res);
 		if (err) {
-			dev_err(&dev->dev, "invalid resource for node %s\n",
-				dev->dev.of_node->full_name);
+			dev_err(&dev->dev, "invalid resource for node %pOF\n",
+				dev->dev.of_node);
 			goto error_out;
 		}
 
 		msi->msi_regs = ioremap(res.start, resource_size(&res));
 		if (!msi->msi_regs) {
 			err = -ENOMEM;
-			dev_err(&dev->dev, "could not map node %s\n",
-				dev->dev.of_node->full_name);
+			dev_err(&dev->dev, "could not map node %pOF\n",
+				dev->dev.of_node);
 			goto error_out;
 		}
 		msi->msiir_offset =
@@ -521,8 +512,8 @@ static int fsl_of_msi_probe(struct platform_device *dev)
 		for (irq_index = 0, i = 0; i < len / (2 * sizeof(u32)); i++) {
 			if (p[i * 2] % IRQS_PER_MSI_REG ||
 			    p[i * 2 + 1] % IRQS_PER_MSI_REG) {
-				pr_warn("%s: %s: msi available range of %u at %u is not IRQ-aligned\n",
-				       __func__, dev->dev.of_node->full_name,
+				pr_warn("%s: %pOF: msi available range of %u at %u is not IRQ-aligned\n",
+				       __func__, dev->dev.of_node,
 				       p[i * 2 + 1], p[i * 2]);
 				err = -EINVAL;
 				goto error_out;
@@ -573,10 +564,12 @@ static const struct fsl_msi_feature ipic_msi_feature = {
 	.msiir_offset = 0x38,
 };
 
+#ifdef CONFIG_EPAPR_PARAVIRT
 static const struct fsl_msi_feature vmpic_msi_feature = {
 	.fsl_pic_ip = FSL_PIC_IP_VMPIC,
 	.msiir_offset = 0,
 };
+#endif
 
 static const struct of_device_id fsl_of_msi_ids[] = {
 	{

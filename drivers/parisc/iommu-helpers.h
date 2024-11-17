@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/prefetch.h>
 
 /**
@@ -13,13 +14,13 @@
 static inline unsigned int
 iommu_fill_pdir(struct ioc *ioc, struct scatterlist *startsg, int nents, 
 		unsigned long hint,
-		void (*iommu_io_pdir_entry)(u64 *, space_t, unsigned long,
+		void (*iommu_io_pdir_entry)(__le64 *, space_t, unsigned long,
 					    unsigned long))
 {
 	struct scatterlist *dma_sg = startsg;	/* pointer to current DMA */
 	unsigned int n_mappings = 0;
 	unsigned long dma_offset = 0, dma_len = 0;
-	u64 *pdirp = NULL;
+	__le64 *pdirp = NULL;
 
 	/* Horrible hack.  For efficiency's sake, dma_sg starts one 
 	 * entry below the true start (it is immediately incremented
@@ -30,8 +31,8 @@ iommu_fill_pdir(struct ioc *ioc, struct scatterlist *startsg, int nents,
 		unsigned long vaddr;
 		long size;
 
-		DBG_RUN_SG(" %d : %08lx/%05x %p/%05x\n", nents,
-			   (unsigned long)sg_dma_address(startsg), cnt,
+		DBG_RUN_SG(" %d : %08lx %p/%05x\n", nents,
+			   (unsigned long)sg_dma_address(startsg),
 			   sg_virt(startsg), startsg->length
 		);
 
@@ -104,7 +105,11 @@ iommu_coalesce_chunks(struct ioc *ioc, struct device *dev,
 	struct scatterlist *contig_sg;	   /* contig chunk head */
 	unsigned long dma_offset, dma_len; /* start/len of DMA stream */
 	unsigned int n_mappings = 0;
-	unsigned int max_seg_size = dma_get_max_seg_size(dev);
+	unsigned int max_seg_size = min(dma_get_max_seg_size(dev),
+					(unsigned)DMA_CHUNK_SIZE);
+	unsigned int max_seg_boundary = dma_get_seg_boundary(dev) + 1;
+	if (max_seg_boundary)	/* check if the addition above didn't overflow */
+		max_seg_size = min(max_seg_size, max_seg_boundary);
 
 	while (nents > 0) {
 
@@ -138,14 +143,11 @@ iommu_coalesce_chunks(struct ioc *ioc, struct device *dev,
 
 			/*
 			** First make sure current dma stream won't
-			** exceed DMA_CHUNK_SIZE if we coalesce the
+			** exceed max_seg_size if we coalesce the
 			** next entry.
 			*/   
-			if(unlikely(ALIGN(dma_len + dma_offset + startsg->length,
-					    IOVP_SIZE) > DMA_CHUNK_SIZE))
-				break;
-
-			if (startsg->length + dma_len > max_seg_size)
+			if (unlikely(ALIGN(dma_len + dma_offset + startsg->length, IOVP_SIZE) >
+				     max_seg_size))
 				break;
 
 			/*

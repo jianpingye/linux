@@ -1,8 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/suspend.h>
 #include <linux/suspend_ioctls.h>
 #include <linux/utsname.h>
 #include <linux/freezer.h>
 #include <linux/compiler.h>
+#include <linux/cpu.h>
+#include <linux/cpuidle.h>
+#include <linux/crypto.h>
 
 struct swsusp_info {
 	struct new_utsname	uts;
@@ -23,15 +27,12 @@ extern void __init hibernate_image_size_init(void);
 /* Maximum size of architecture specific data in a hibernation header */
 #define MAX_ARCH_HEADER_SIZE	(sizeof(struct new_utsname) + 4)
 
-extern int arch_hibernation_header_save(void *addr, unsigned int max_size);
-extern int arch_hibernation_header_restore(void *addr);
-
 static inline int init_header_complete(struct swsusp_info *info)
 {
 	return arch_hibernation_header_save(info, MAX_ARCH_HEADER_SIZE);
 }
 
-static inline char *check_image_kernel(struct swsusp_info *info)
+static inline const char *check_image_kernel(struct swsusp_info *info)
 {
 	return arch_hibernation_header_restore(info) ?
 			"architecture specific data" : NULL;
@@ -54,18 +55,27 @@ asmlinkage int swsusp_save(void);
 
 /* kernel/power/hibernate.c */
 extern bool freezer_test_done;
+extern char hib_comp_algo[CRYPTO_MAX_ALG_NAME];
+
+/* kernel/power/swap.c */
+extern unsigned int swsusp_header_flags;
 
 extern int hibernation_snapshot(int platform_mode);
 extern int hibernation_restore(int platform_mode);
 extern int hibernation_platform_enter(void);
+
+#ifdef CONFIG_STRICT_KERNEL_RWX
+/* kernel/power/snapshot.c */
+extern void enable_restore_image_protection(void);
+#else
+static inline void enable_restore_image_protection(void) {}
+#endif /* CONFIG_STRICT_KERNEL_RWX */
 
 #else /* !CONFIG_HIBERNATION */
 
 static inline void hibernate_reserved_size_init(void) {}
 static inline void hibernate_image_size_init(void) {}
 #endif /* !CONFIG_HIBERNATION */
-
-extern int pfn_is_nosave(unsigned long);
 
 #define power_attr(_name) \
 static struct kobj_attribute _name##_attr = {	\
@@ -77,6 +87,15 @@ static struct kobj_attribute _name##_attr = {	\
 	.store	= _name##_store,		\
 }
 
+#define power_attr_ro(_name) \
+static struct kobj_attribute _name##_attr = {	\
+	.attr	= {				\
+		.name = __stringify(_name),	\
+		.mode = S_IRUGO,		\
+	},					\
+	.show	= _name##_show,			\
+}
+
 /* Preferred image size in bytes (default 500 MB) */
 extern unsigned long image_size;
 /* Size of memory reserved for drivers (default SPARE_PAGES x PAGE_SIZE) */
@@ -85,12 +104,11 @@ extern int in_suspend;
 extern dev_t swsusp_resume_device;
 extern sector_t swsusp_resume_block;
 
-extern asmlinkage int swsusp_arch_suspend(void);
-extern asmlinkage int swsusp_arch_resume(void);
-
 extern int create_basic_memory_bitmaps(void);
 extern void free_basic_memory_bitmaps(void);
 extern int hibernate_preallocate_memory(void);
+
+extern void clear_or_poison_free_pages(void);
 
 /**
  *	Auxiliary structure used for reading the snapshot image data and
@@ -135,11 +153,11 @@ extern unsigned int snapshot_additional_pages(struct zone *zone);
 extern unsigned long snapshot_get_image_size(void);
 extern int snapshot_read_next(struct snapshot_handle *handle);
 extern int snapshot_write_next(struct snapshot_handle *handle);
-extern void snapshot_write_finalize(struct snapshot_handle *handle);
+int snapshot_write_finalize(struct snapshot_handle *handle);
 extern int snapshot_image_loaded(struct snapshot_handle *handle);
 
-/* If unset, the snapshot device cannot be open. */
-extern atomic_t snapshot_device_available;
+extern bool hibernate_acquire(void);
+extern void hibernate_release(void);
 
 extern sector_t alloc_swapdev_block(int swap);
 extern void free_all_swap_pages(int swap);
@@ -149,31 +167,51 @@ extern int swsusp_swap_in_use(void);
  * Flags that can be passed from the hibernatig hernel to the "boot" kernel in
  * the image header.
  */
+#define SF_COMPRESSION_ALG_LZO	0 /* dummy, details given  below */
 #define SF_PLATFORM_MODE	1
 #define SF_NOCOMPRESS_MODE	2
 #define SF_CRC32_MODE	        4
+#define SF_HW_SIG		8
+
+/*
+ * Bit to indicate the compression algorithm to be used(for LZ4). The same
+ * could be checked while saving/loading image to/from disk to use the
+ * corresponding algorithms.
+ *
+ * By default, LZO compression is enabled if SF_CRC32_MODE is set. Use
+ * SF_COMPRESSION_ALG_LZ4 to override this behaviour and use LZ4.
+ *
+ * SF_CRC32_MODE, SF_COMPRESSION_ALG_LZO(dummy) -> Compression, LZO
+ * SF_CRC32_MODE, SF_COMPRESSION_ALG_LZ4 -> Compression, LZ4
+ */
+#define SF_COMPRESSION_ALG_LZ4	16
 
 /* kernel/power/hibernate.c */
-extern int swsusp_check(void);
+int swsusp_check(bool exclusive);
 extern void swsusp_free(void);
 extern int swsusp_read(unsigned int *flags_p);
 extern int swsusp_write(unsigned int flags);
-extern void swsusp_close(fmode_t);
+void swsusp_close(void);
 #ifdef CONFIG_SUSPEND
 extern int swsusp_unmark(void);
+#else
+static inline int swsusp_unmark(void) { return 0; }
 #endif
 
-struct timeval;
+struct __kernel_old_timeval;
 /* kernel/power/swsusp.c */
 extern void swsusp_show_speed(ktime_t, ktime_t, unsigned int, char *);
 
 #ifdef CONFIG_SUSPEND
 /* kernel/power/suspend.c */
-extern const char *pm_labels[];
+extern const char * const pm_labels[];
 extern const char *pm_states[];
+extern const char *mem_sleep_states[];
 
 extern int suspend_devices_and_enter(suspend_state_t state);
 #else /* !CONFIG_SUSPEND */
+#define mem_sleep_current	PM_SUSPEND_ON
+
 static inline int suspend_devices_and_enter(suspend_state_t state)
 {
 	return -ENOSYS;
@@ -191,7 +229,13 @@ static inline void suspend_test_finish(const char *label) {}
 
 #ifdef CONFIG_PM_SLEEP
 /* kernel/power/main.c */
+extern int pm_notifier_call_chain_robust(unsigned long val_up, unsigned long val_down);
 extern int pm_notifier_call_chain(unsigned long val);
+void pm_restrict_gfp_mask(void);
+void pm_restore_gfp_mask(void);
+#else
+static inline void pm_restrict_gfp_mask(void) {}
+static inline void pm_restore_gfp_mask(void) {}
 #endif
 
 #ifdef CONFIG_HIGHMEM
@@ -219,7 +263,11 @@ enum {
 #define TEST_FIRST	TEST_NONE
 #define TEST_MAX	(__TEST_AFTER_LAST - 1)
 
+#ifdef CONFIG_PM_SLEEP_DEBUG
 extern int pm_test_level;
+#else
+#define pm_test_level	(TEST_NONE)
+#endif
 
 #ifdef CONFIG_SUSPEND_FREEZER
 static inline int suspend_freeze_processes(void)
@@ -286,3 +334,17 @@ extern int pm_wake_lock(const char *buf);
 extern int pm_wake_unlock(const char *buf);
 
 #endif /* !CONFIG_PM_WAKELOCKS */
+
+static inline int pm_sleep_disable_secondary_cpus(void)
+{
+	cpuidle_pause();
+	return suspend_disable_secondary_cpus();
+}
+
+static inline void pm_sleep_enable_secondary_cpus(void)
+{
+	suspend_enable_secondary_cpus();
+	cpuidle_resume();
+}
+
+void dpm_save_errno(int err);

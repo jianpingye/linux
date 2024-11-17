@@ -1,21 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause */
 /*
  *   Copyright (c) 2011, 2012, Qualcomm Atheros Communications Inc.
  *   Copyright (c) 2014, I2SE GmbH
- *
- *   Permission to use, copy, modify, and/or distribute this software
- *   for any purpose with or without fee is hereby granted, provided
- *   that the above copyright notice and this permission notice appear
- *   in all copies.
- *
- *   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
- *   WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
- *   WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL
- *   THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR
- *   CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
- *   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
- *   NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- *   CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
  */
 
 /*   Qualcomm Atheros SPI register definition.
@@ -54,19 +40,18 @@
 #define SPI_REG_ACTION_CTRL     0x1B00
 
 /*   SPI_CONFIG register definition;             */
-#define QCASPI_SLAVE_RESET_BIT (1 << 6)
+#define QCASPI_SLAVE_RESET_BIT  BIT(6)
 
 /*   INTR_CAUSE/ENABLE register definition.      */
-#define SPI_INT_WRBUF_BELOW_WM (1 << 10)
-#define SPI_INT_CPU_ON         (1 << 6)
-#define SPI_INT_ADDR_ERR       (1 << 3)
-#define SPI_INT_WRBUF_ERR      (1 << 2)
-#define SPI_INT_RDBUF_ERR      (1 << 1)
-#define SPI_INT_PKT_AVLBL      (1 << 0)
+#define SPI_INT_WRBUF_BELOW_WM  BIT(10)
+#define SPI_INT_CPU_ON          BIT(6)
+#define SPI_INT_ADDR_ERR        BIT(3)
+#define SPI_INT_WRBUF_ERR       BIT(2)
+#define SPI_INT_RDBUF_ERR       BIT(1)
+#define SPI_INT_PKT_AVLBL       BIT(0)
 
 void qcaspi_spi_error(struct qcaspi *qca);
 int qcaspi_read_register(struct qcaspi *qca, u16 reg, u16 *result);
-int qcaspi_write_register(struct qcaspi *qca, u16 reg, u16 value);
-int qcaspi_tx_cmd(struct qcaspi *qca, u16 cmd);
+int qcaspi_write_register(struct qcaspi *qca, u16 reg, u16 value, int retry);
 
 #endif /* _QCA_7K_H */

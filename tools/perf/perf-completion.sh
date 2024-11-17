@@ -1,4 +1,5 @@
 # perf bash and zsh completion
+# SPDX-License-Identifier: GPL-2.0
 
 # Taken from git.git's completion script.
 __my_reassemble_comp_words_by_ref()
@@ -107,6 +108,8 @@ __perf__ltrim_colon_completions()
 
 __perfcomp ()
 {
+	# Expansion of spaces to array is deliberate.
+	# shellcheck disable=SC2207
 	COMPREPLY=( $( compgen -W "$1" -- "$2" ) )
 }
 
@@ -126,13 +129,13 @@ __perf_prev_skip_opts ()
 
 	let i=cword-1
 	cmds_=$($cmd $1 --list-cmds)
-	prev_skip_opts=()
+	prev_skip_opts=""
 	while [ $i -ge 0 ]; do
-		if [[ ${words[i]} == $1 ]]; then
+		if [[ ${words[i]} == "$1" ]]; then
 			return
 		fi
 		for cmd_ in $cmds_; do
-			if [[ ${words[i]} == $cmd_ ]]; then
+			if [[ ${words[i]} == "$cmd_" ]]; then
 				prev_skip_opts=${words[i]}
 				return
 			fi
@@ -161,8 +164,55 @@ __perf_main ()
 	# List possible events for -e option
 	elif [[ $prev == @("-e"|"--event") &&
 		$prev_skip_opts == @(record|stat|top) ]]; then
-		evts=$($cmd list --raw-dump)
-		__perfcomp_colon "$evts" "$cur"
+
+		local cur1=${COMP_WORDS[COMP_CWORD]}
+		local raw_evts
+		local arr s tmp result cpu_evts
+
+		raw_evts=$($cmd list --raw-dump hw sw cache tracepoint pmu sdt)
+		# aarch64 doesn't have /sys/bus/event_source/devices/cpu/events
+		if [[ `uname -m` != aarch64 ]]; then
+			cpu_evts=$(ls /sys/bus/event_source/devices/cpu/events)
+		fi
+
+		if [[ "$cur1" == */* && ${cur1#*/} =~ ^[A-Z] ]]; then
+			OLD_IFS="$IFS"
+			IFS=" "
+			# Expansion of spaces to array is deliberate.
+			# shellcheck disable=SC2206
+			arr=($raw_evts)
+			IFS="$OLD_IFS"
+
+			for s in "${arr[@]}"
+			do
+				if [[ "$s" == *cpu/* ]]; then
+					tmp=${s#*cpu/}
+					result=$result" ""cpu/"${tmp^^}
+				else
+					result=$result" "$s
+				fi
+			done
+
+			evts=${result}" "${cpu_evts}
+		else
+			evts=${raw_evts}" "${cpu_evts}
+		fi
+
+		if [[ "$cur1" == , ]]; then
+			__perfcomp_colon "$evts" ""
+		else
+			__perfcomp_colon "$evts" "$cur1"
+		fi
+	elif [[ $prev == @("--pfm-events") &&
+		$prev_skip_opts == @(record|stat|top) ]]; then
+		local evts
+		evts=$($cmd list --raw-dump pfm)
+		__perfcomp "$evts" "$cur"
+	elif [[ $prev == @("-M"|"--metrics") &&
+		$prev_skip_opts == @(stat) ]]; then
+		local metrics
+		metrics=$($cmd list --raw-dump metric metricgroup)
+		__perfcomp "$metrics" "$cur"
 	else
 		# List subcommands for perf commands
 		if [[ $prev_skip_opts == @(kvm|kmem|mem|lock|sched|
@@ -235,6 +285,8 @@ if [[ -n ${ZSH_VERSION-} ]]; then
 		let cword=CURRENT-1
 		emulate ksh -c __perf_main
 		let _ret && _default && _ret=0
+		# _ret is only assigned 0 or 1, disable inaccurate analysis.
+		# shellcheck disable=SC2152
 		return _ret
 	}
 
@@ -245,11 +297,21 @@ fi
 type perf &>/dev/null &&
 _perf()
 {
+	if [[ "$COMP_WORDBREAKS" != *,* ]]; then
+		COMP_WORDBREAKS="${COMP_WORDBREAKS},"
+		export COMP_WORDBREAKS
+	fi
+
+	if [[ "$COMP_WORDBREAKS" == *:* ]]; then
+		COMP_WORDBREAKS="${COMP_WORDBREAKS/:/}"
+		export COMP_WORDBREAKS
+	fi
+
 	local cur words cword prev
 	if [ $preload_get_comp_words_by_ref = "true" ]; then
-		_get_comp_words_by_ref -n =: cur words cword prev
+		_get_comp_words_by_ref -n =:, cur words cword prev
 	else
-		__perf_get_comp_words_by_ref -n =: cur words cword prev
+		__perf_get_comp_words_by_ref -n =:, cur words cword prev
 	fi
 	__perf_main
 } &&

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-tegra/board-paz00.c
  *
@@ -5,48 +6,51 @@
  *
  * Based on board-harmony.c
  * Copyright (C) 2010 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
+#include <linux/err.h>
 #include <linux/gpio/machine.h>
+#include <linux/gpio/property.h>
 #include <linux/platform_device.h>
-#include <linux/rfkill-gpio.h>
+#include <linux/printk.h>
+#include <linux/property.h>
 
 #include "board.h"
 
-static struct rfkill_gpio_platform_data wifi_rfkill_platform_data = {
-	.name	= "wifi_rfkill",
-	.type	= RFKILL_TYPE_WLAN,
+static const struct software_node tegra_gpiochip_node = {
+	.name	= "tegra-gpio",
 };
 
-static struct platform_device wifi_rfkill_device = {
-	.name	= "rfkill_gpio",
-	.id	= -1,
-	.dev	= {
-		.platform_data = &wifi_rfkill_platform_data,
-	},
+static const struct property_entry wifi_rfkill_prop[] __initconst = {
+	PROPERTY_ENTRY_STRING("name", "wifi_rfkill"),
+	PROPERTY_ENTRY_STRING("type", "wlan"),
+	PROPERTY_ENTRY_GPIO("reset-gpios",
+			    &tegra_gpiochip_node, 25, GPIO_ACTIVE_HIGH),
+	PROPERTY_ENTRY_GPIO("shutdown-gpios",
+			    &tegra_gpiochip_node, 85, GPIO_ACTIVE_HIGH),
+	{ }
 };
 
-static struct gpiod_lookup_table wifi_gpio_lookup = {
-	.dev_id = "rfkill_gpio",
-	.table = {
-		GPIO_LOOKUP_IDX("tegra-gpio", 25, NULL, 0, 0),
-		GPIO_LOOKUP_IDX("tegra-gpio", 85, NULL, 1, 0),
-		{ },
-	},
+static const struct platform_device_info wifi_rfkill_info __initconst = {
+	.name		= "rfkill_gpio",
+	.id		= PLATFORM_DEVID_NONE,
+	.properties	= wifi_rfkill_prop,
 };
 
 void __init tegra_paz00_wifikill_init(void)
 {
-	gpiod_add_lookup_table(&wifi_gpio_lookup);
-	platform_device_register(&wifi_rfkill_device);
+	struct platform_device *pd;
+	int err;
+
+	err = software_node_register(&tegra_gpiochip_node);
+	if (err) {
+		pr_err("failed to register %s node: %d\n",
+		       tegra_gpiochip_node.name, err);
+		return;
+	}
+
+	pd = platform_device_register_full(&wifi_rfkill_info);
+	err = PTR_ERR_OR_ZERO(pd);
+	if (err)
+		pr_err("failed to register WiFi rfkill device: %d\n", err);
 }

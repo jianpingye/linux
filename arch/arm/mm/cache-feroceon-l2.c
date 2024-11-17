@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mm/cache-feroceon-l2.c - Feroceon L2 cache controller support
  *
  * Copyright (C) 2008 Marvell Semiconductor
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  *
  * References:
  * - Unified Layer 2 Cache for Feroceon CPU Cores,
@@ -368,7 +365,6 @@ int __init feroceon_of_init(void)
 	struct device_node *node;
 	void __iomem *base;
 	bool l2_wt_override = false;
-	struct resource res;
 
 #if defined(CONFIG_CACHE_FEROCEON_L2_WRITETHROUGH)
 	l2_wt_override = true;
@@ -376,10 +372,7 @@ int __init feroceon_of_init(void)
 
 	node = of_find_matching_node(NULL, feroceon_ids);
 	if (node && of_device_is_compatible(node, "marvell,kirkwood-cache")) {
-		if (of_address_to_resource(node, 0, &res))
-			return -ENODEV;
-
-		base = ioremap(res.start, resource_size(&res));
+		base = of_iomap(node, 0);
 		if (!base)
 			return -ENOMEM;
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * driver/usb/gadget/fsl_qe_udc.c
  *
@@ -11,11 +12,6 @@
  * Freescle QE/CPM USB Pheripheral Controller Driver
  * The controller can be found on MPC8360, MPC8272, and etc.
  * MPC8360 Rev 1.1 may need QE mircocode update
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation;  either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #undef USB_TRACE
@@ -31,14 +27,15 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/moduleparam.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 #include <linux/usb/otg.h>
-#include <asm/qe.h>
+#include <soc/fsl/qe/qe.h>
 #include <asm/cpm.h>
 #include <asm/dma.h>
 #include <asm/reg.h>
@@ -62,7 +59,7 @@ static const char *const ep_name[] = {
 	"ep3",
 };
 
-static struct usb_endpoint_descriptor qe_ep0_desc = {
+static const struct usb_endpoint_descriptor qe_ep0_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 
@@ -421,10 +418,8 @@ static int qe_ep_rxbd_update(struct qe_ep *ep)
 	bd = ep->rxbase;
 
 	ep->rxframe = kmalloc(sizeof(*ep->rxframe), GFP_ATOMIC);
-	if (ep->rxframe == NULL) {
-		dev_err(ep->udc->dev, "malloc rxframe failed\n");
+	if (!ep->rxframe)
 		return -ENOMEM;
-	}
 
 	qe_frame_init(ep->rxframe);
 
@@ -435,9 +430,7 @@ static int qe_ep_rxbd_update(struct qe_ep *ep)
 
 	size = (ep->ep.maxpacket + USB_CRC_SIZE + 2) * (bdring_len + 1);
 	ep->rxbuffer = kzalloc(size, GFP_ATOMIC);
-	if (ep->rxbuffer == NULL) {
-		dev_err(ep->udc->dev, "malloc rxbuffer failed,size=%d\n",
-				size);
+	if (!ep->rxbuffer) {
 		kfree(ep->rxframe);
 		return -ENOMEM;
 	}
@@ -549,6 +542,7 @@ static int qe_ep_init(struct qe_udc *udc,
 			case USB_SPEED_HIGH:
 			if ((max == 128) || (max == 256) || (max == 512))
 				break;
+			fallthrough;
 			default:
 				switch (max) {
 				case 4:
@@ -570,9 +564,11 @@ static int qe_ep_init(struct qe_udc *udc,
 			case USB_SPEED_HIGH:
 				if (max <= 1024)
 					break;
+				fallthrough;
 			case USB_SPEED_FULL:
 				if (max <= 64)
 					break;
+				fallthrough;
 			default:
 				if (max <= 8)
 					break;
@@ -587,9 +583,11 @@ static int qe_ep_init(struct qe_udc *udc,
 			case USB_SPEED_HIGH:
 				if (max <= 1024)
 					break;
+				fallthrough;
 			case USB_SPEED_FULL:
 				if (max <= 1023)
 					break;
+				fallthrough;
 			default:
 				goto en_done;
 			}
@@ -613,6 +611,7 @@ static int qe_ep_init(struct qe_udc *udc,
 				default:
 					goto en_done;
 				}
+				fallthrough;
 			case USB_SPEED_LOW:
 				switch (max) {
 				case 1:
@@ -668,10 +667,8 @@ static int qe_ep_init(struct qe_udc *udc,
 
 	if ((ep->tm == USBP_TM_CTL) || (ep->dir == USB_DIR_IN)) {
 		ep->txframe = kmalloc(sizeof(*ep->txframe), GFP_ATOMIC);
-		if (ep->txframe == NULL) {
-			dev_err(udc->dev, "malloc txframe failed\n");
+		if (!ep->txframe)
 			goto en_done2;
-		}
 		qe_frame_init(ep->txframe);
 	}
 
@@ -933,9 +930,9 @@ static int qe_ep_rxframe_handle(struct qe_ep *ep)
 	return 0;
 }
 
-static void ep_rx_tasklet(unsigned long data)
+static void ep_rx_tasklet(struct tasklet_struct *t)
 {
-	struct qe_udc *udc = (struct qe_udc *)data;
+	struct qe_udc *udc = from_tasklet(udc, t, rx_tasklet);
 	struct qe_ep *ep;
 	struct qe_frame *pframe;
 	struct qe_bd __iomem *bd;
@@ -1780,7 +1777,8 @@ static int qe_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 static int qe_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 {
 	struct qe_ep *ep = container_of(_ep, struct qe_ep, ep);
-	struct qe_req *req;
+	struct qe_req *req = NULL;
+	struct qe_req *iter;
 	unsigned long flags;
 
 	if (!_ep || !_req)
@@ -1789,12 +1787,14 @@ static int qe_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	spin_lock_irqsave(&ep->udc->lock, flags);
 
 	/* make sure it's actually queued on this endpoint */
-	list_for_each_entry(req, &ep->queue, queue) {
-		if (&req->req == _req)
-			break;
+	list_for_each_entry(iter, &ep->queue, queue) {
+		if (&iter->req != _req)
+			continue;
+		req = iter;
+		break;
 	}
 
-	if (&req->req != _req) {
+	if (!req) {
 		spin_unlock_irqrestore(&ep->udc->lock, flags);
 		return -EINVAL;
 	}
@@ -1853,7 +1853,7 @@ out:
 	return status;
 }
 
-static struct usb_ep_ops qe_ep_ops = {
+static const struct usb_ep_ops qe_ep_ops = {
 	.enable = qe_ep_enable,
 	.disable = qe_ep_disable,
 
@@ -1878,11 +1878,8 @@ static int qe_get_frame(struct usb_gadget *gadget)
 
 	tmp = in_be16(&udc->usb_param->frame_n);
 	if (tmp & 0x8000)
-		tmp = tmp & 0x07ff;
-	else
-		tmp = -EINVAL;
-
-	return (int)tmp;
+		return tmp & 0x07ff;
+	return -EINVAL;
 }
 
 static int fsl_qe_start(struct usb_gadget *gadget,
@@ -1963,6 +1960,8 @@ static void ch9getstatus(struct qe_udc *udc, u8 request_type, u16 value,
 	} else if ((request_type & USB_RECIP_MASK) == USB_RECIP_ENDPOINT) {
 		/* Get endpoint status */
 		int pipe = index & USB_ENDPOINT_NUMBER_MASK;
+		if (pipe >= USB_MAX_ENDPOINTS)
+			goto stall;
 		struct qe_ep *target_ep = &udc->eps[pipe];
 		u16 usep;
 
@@ -2053,7 +2052,7 @@ static void setup_received_handle(struct qe_udc *udc,
 			struct qe_ep *ep;
 
 			if (wValue != 0 || wLength != 0
-				|| pipe > USB_MAX_ENDPOINTS)
+				|| pipe >= USB_MAX_ENDPOINTS)
 				break;
 			ep = &udc->eps[pipe];
 
@@ -2289,7 +2288,6 @@ static int fsl_qe_start(struct usb_gadget *gadget,
 	/* lock is needed but whether should use this lock or another */
 	spin_lock_irqsave(&udc->lock, flags);
 
-	driver->driver.bus = NULL;
 	/* hook up the driver */
 	udc->driver = driver;
 	udc->gadget.speed = driver->max_speed;
@@ -2340,17 +2338,15 @@ static struct qe_udc *qe_udc_config(struct platform_device *ofdev)
 {
 	struct qe_udc *udc;
 	struct device_node *np = ofdev->dev.of_node;
-	unsigned int tmp_addr = 0;
+	unsigned long tmp_addr = 0;
 	struct usb_device_para __iomem *usbpram;
 	unsigned int i;
 	u64 size;
 	u32 offset;
 
 	udc = kzalloc(sizeof(*udc), GFP_KERNEL);
-	if (udc == NULL) {
-		dev_err(&ofdev->dev, "malloc udc failed\n");
+	if (!udc)
 		goto cleanup;
-	}
 
 	udc->dev = &ofdev->dev;
 
@@ -2417,6 +2413,17 @@ static int qe_ep_config(struct qe_udc *udc, unsigned char pipe_num)
 	strcpy(ep->name, ep_name[pipe_num]);
 	ep->ep.name = ep_name[pipe_num];
 
+	if (pipe_num == 0) {
+		ep->ep.caps.type_control = true;
+	} else {
+		ep->ep.caps.type_iso = true;
+		ep->ep.caps.type_bulk = true;
+		ep->ep.caps.type_int = true;
+	}
+
+	ep->ep.caps.dir_in = true;
+	ep->ep.caps.dir_out = true;
+
 	ep->ep.ops = &qe_ep_ops;
 	ep->stopped = 1;
 	usb_ep_set_maxpacket_limit(&ep->ep, (unsigned short) ~0);
@@ -2465,16 +2472,11 @@ static const struct of_device_id qe_udc_match[];
 static int qe_udc_probe(struct platform_device *ofdev)
 {
 	struct qe_udc *udc;
-	const struct of_device_id *match;
 	struct device_node *np = ofdev->dev.of_node;
 	struct qe_ep *ep;
 	unsigned int ret = 0;
 	unsigned int i;
 	const void *prop;
-
-	match = of_match_device(qe_udc_match, &ofdev->dev);
-	if (!match)
-		return -EINVAL;
 
 	prop = of_get_property(np, "mode", NULL);
 	if (!prop || strcmp(prop, "peripheral"))
@@ -2487,7 +2489,7 @@ static int qe_udc_probe(struct platform_device *ofdev)
 		return -ENOMEM;
 	}
 
-	udc->soc_type = (unsigned long)match->data;
+	udc->soc_type = (unsigned long)device_get_match_data(&ofdev->dev);
 	udc->usb_regs = of_iomap(np, 0);
 	if (!udc->usb_regs) {
 		ret = -ENOMEM;
@@ -2557,8 +2559,7 @@ static int qe_udc_probe(struct platform_device *ofdev)
 					DMA_TO_DEVICE);
 	}
 
-	tasklet_init(&udc->rx_tasklet, ep_rx_tasklet,
-			(unsigned long)udc);
+	tasklet_setup(&udc->rx_tasklet, ep_rx_tasklet);
 	/* request irq and disable DR  */
 	udc->usb_irq = irq_of_parse_and_map(np, 0);
 	if (!udc->usb_irq) {
@@ -2625,7 +2626,7 @@ static int qe_udc_resume(struct platform_device *dev)
 }
 #endif
 
-static int qe_udc_remove(struct platform_device *ofdev)
+static void qe_udc_remove(struct platform_device *ofdev)
 {
 	struct qe_udc *udc = platform_get_drvdata(ofdev);
 	struct qe_ep *ep;
@@ -2676,8 +2677,6 @@ static int qe_udc_remove(struct platform_device *ofdev)
 
 	/* wait for release() of gadget.dev to free udc */
 	wait_for_completion(&done);
-
-	return 0;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -2705,7 +2704,7 @@ static struct platform_driver udc_driver = {
 		.of_match_table = qe_udc_match,
 	},
 	.probe          = qe_udc_probe,
-	.remove         = qe_udc_remove,
+	.remove_new     = qe_udc_remove,
 #ifdef CONFIG_PM
 	.suspend        = qe_udc_suspend,
 	.resume         = qe_udc_resume,

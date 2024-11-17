@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) by Paul Barton-Davis 1998-1999
- *
- * This file is distributed under the GNU GENERAL PUBLIC LICENSE (GPL)
- * Version 2 (June 1991). See the "COPYING" file distributed with this
- * software for more info.  
  */
 
 /* The low level driver for the WaveFront ICS2115 MIDI interface(s)
@@ -242,7 +239,8 @@ static int snd_wavefront_midi_input_open(struct snd_rawmidi_substream *substream
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL)
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 	        return -EIO;
 
 	spin_lock_irqsave (&midi->open, flags);
@@ -266,7 +264,8 @@ static int snd_wavefront_midi_output_open(struct snd_rawmidi_substream *substrea
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL)
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 	        return -EIO;
 
 	spin_lock_irqsave (&midi->open, flags);
@@ -290,7 +289,8 @@ static int snd_wavefront_midi_input_close(struct snd_rawmidi_substream *substrea
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL)
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 	        return -EIO;
 
 	spin_lock_irqsave (&midi->open, flags);
@@ -313,7 +313,8 @@ static int snd_wavefront_midi_output_close(struct snd_rawmidi_substream *substre
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL)
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 	        return -EIO;
 
 	spin_lock_irqsave (&midi->open, flags);
@@ -336,9 +337,9 @@ static void snd_wavefront_midi_input_trigger(struct snd_rawmidi_substream *subst
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL) {
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 		return;
-	}
 
 	spin_lock_irqsave (&midi->virtual, flags);
 	if (up) {
@@ -349,10 +350,10 @@ static void snd_wavefront_midi_input_trigger(struct snd_rawmidi_substream *subst
 	spin_unlock_irqrestore (&midi->virtual, flags);
 }
 
-static void snd_wavefront_midi_output_timer(unsigned long data)
+static void snd_wavefront_midi_output_timer(struct timer_list *t)
 {
-	snd_wavefront_card_t *card = (snd_wavefront_card_t *)data;
-	snd_wavefront_midi_t *midi = &card->wavefront.midi;
+	snd_wavefront_midi_t *midi = from_timer(midi, t, timer);
+	snd_wavefront_card_t *card = midi->timer_card;
 	unsigned long flags;
 	
 	spin_lock_irqsave (&midi->virtual, flags);
@@ -375,17 +376,17 @@ static void snd_wavefront_midi_output_trigger(struct snd_rawmidi_substream *subs
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
-	if ((midi = get_wavefront_midi (substream)) == NULL) {
+	midi = get_wavefront_midi(substream);
+	if (!midi)
 		return;
-	}
 
 	spin_lock_irqsave (&midi->virtual, flags);
 	if (up) {
 		if ((midi->mode[mpu] & MPU401_MODE_OUTPUT_TRIGGER) == 0) {
 			if (!midi->istimer) {
-				setup_timer(&midi->timer,
+				timer_setup(&midi->timer,
 					    snd_wavefront_midi_output_timer,
-					    (unsigned long) substream->rmidi->card->private_data);
+					    0);
 				mod_timer(&midi->timer, 1 + jiffies);
 			}
 			midi->istimer++;
@@ -500,7 +501,8 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	for (i = 0; i < 30000 && !output_ready (midi); i++);
 
 	if (!output_ready (midi)) {
-		snd_printk ("MIDI interface not ready for command\n");
+		dev_err(card->wavefront.card->dev,
+			"MIDI interface not ready for command\n");
 		return -1;
 	}
 
@@ -522,7 +524,8 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	}
 
 	if (!ok) {
-		snd_printk ("cannot set UART mode for MIDI interface");
+		dev_err(card->wavefront.card->dev,
+			"cannot set UART mode for MIDI interface");
 		dev->interrupts_are_midi = 0;
 		return -1;
 	}
@@ -530,7 +533,8 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	/* Route external MIDI to WaveFront synth (by default) */
     
 	if (snd_wavefront_cmd (dev, WFC_MISYNTH_ON, rbuf, wbuf)) {
-		snd_printk ("can't enable MIDI-IN-2-synth routing.\n");
+		dev_warn(card->wavefront.card->dev,
+			 "can't enable MIDI-IN-2-synth routing.\n");
 		/* XXX error ? */
 	}
 
@@ -546,27 +550,29 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	*/
 
 	if (snd_wavefront_cmd (dev, WFC_VMIDI_OFF, rbuf, wbuf)) { 
-		snd_printk ("virtual MIDI mode not disabled\n");
+		dev_warn(card->wavefront.card->dev,
+			 "virtual MIDI mode not disabled\n");
 		return 0; /* We're OK, but missing the external MIDI dev */
 	}
 
 	snd_wavefront_midi_enable_virtual (card);
 
 	if (snd_wavefront_cmd (dev, WFC_VMIDI_ON, rbuf, wbuf)) {
-		snd_printk ("cannot enable virtual MIDI mode.\n");
+		dev_warn(card->wavefront.card->dev,
+			 "cannot enable virtual MIDI mode.\n");
 		snd_wavefront_midi_disable_virtual (card);
 	} 
 	return 0;
 }
 
-struct snd_rawmidi_ops snd_wavefront_midi_output =
+const struct snd_rawmidi_ops snd_wavefront_midi_output =
 {
 	.open =		snd_wavefront_midi_output_open,
 	.close =	snd_wavefront_midi_output_close,
 	.trigger =	snd_wavefront_midi_output_trigger,
 };
 
-struct snd_rawmidi_ops snd_wavefront_midi_input =
+const struct snd_rawmidi_ops snd_wavefront_midi_input =
 {
 	.open =		snd_wavefront_midi_input_open,
 	.close =	snd_wavefront_midi_input_close,

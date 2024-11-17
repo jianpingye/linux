@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Miscellaneous procedures for dealing with the PowerMac hardware.
  * Contains support for the backlight.
@@ -8,13 +9,11 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/fb.h>
 #include <linux/backlight.h>
 #include <linux/adb.h>
 #include <linux/pmu.h>
 #include <linux/atomic.h>
 #include <linux/export.h>
-#include <asm/prom.h>
 #include <asm/backlight.h>
 
 #define OLD_BACKLIGHT_MAX 15
@@ -70,31 +69,6 @@ int pmac_has_backlight_type(const char *type)
 	}
 
 	return 0;
-}
-
-int pmac_backlight_curve_lookup(struct fb_info *info, int value)
-{
-	int level = (FB_BACKLIGHT_LEVELS - 1);
-
-	if (info && info->bl_dev) {
-		int i, max = 0;
-
-		/* Look for biggest value */
-		for (i = 0; i < FB_BACKLIGHT_LEVELS; i++)
-			max = max((int)info->bl_curve[i], max);
-
-		/* Look for nearest value */
-		for (i = 0; i < FB_BACKLIGHT_LEVELS; i++) {
-			int diff = abs(info->bl_curve[i] - value);
-			if (diff < max) {
-				max = diff;
-				level = i;
-			}
-		}
-
-	}
-
-	return level;
 }
 
 static void pmac_backlight_key_worker(struct work_struct *work)
@@ -186,7 +160,7 @@ int pmac_backlight_set_legacy_brightness(int brightness)
 	return __pmac_backlight_set_legacy_brightness(brightness);
 }
 
-int pmac_backlight_get_legacy_brightness()
+int pmac_backlight_get_legacy_brightness(void)
 {
 	int result = -ENXIO;
 
@@ -205,12 +179,12 @@ int pmac_backlight_get_legacy_brightness()
 	return result;
 }
 
-void pmac_backlight_disable()
+void pmac_backlight_disable(void)
 {
 	atomic_inc(&kernel_backlight_disabled);
 }
 
-void pmac_backlight_enable()
+void pmac_backlight_enable(void)
 {
 	atomic_dec(&kernel_backlight_disabled);
 }

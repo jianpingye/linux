@@ -1,25 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2002 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #include <linux/init.h>
-#include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/task_stack.h>
+#include <linux/sched/task.h>
+
+#include <asm/tlbflush.h>
+
 #include <as-layout.h>
 #include <kern.h>
 #include <os.h>
 #include <skas.h>
+#include <kern_util.h>
 
 extern void start_kernel(void);
 
 static int __init start_kernel_proc(void *unused)
 {
-	int pid;
+	block_signals_trace();
 
-	block_signals();
-	pid = os_getpid();
-
-	cpu_tasks[0].pid = pid;
 	cpu_tasks[0].task = current;
 
 	start_kernel();
@@ -37,8 +39,8 @@ int __init start_uml(void)
 
 	init_new_thread_signals();
 
-	init_task.thread.request.u.thread.proc = start_kernel_proc;
-	init_task.thread.request.u.thread.arg = NULL;
+	init_task.thread.request.thread.proc = start_kernel_proc;
+	init_task.thread.request.thread.arg = NULL;
 	return start_idle_thread(task_stack_page(&init_task),
 				 &init_task.thread.switch_buf);
 }
@@ -49,4 +51,20 @@ unsigned long current_stub_stack(void)
 		return 0;
 
 	return current->mm->context.id.stack;
+}
+
+struct mm_id *current_mm_id(void)
+{
+	if (current->mm == NULL)
+		return NULL;
+
+	return &current->mm->context.id;
+}
+
+void current_mm_sync(void)
+{
+	if (current->mm == NULL)
+		return;
+
+	um_tlb_sync(current->mm);
 }

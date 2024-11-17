@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __CFG802154_RDEV_OPS
 #define __CFG802154_RDEV_OPS
 
@@ -21,6 +22,26 @@ rdev_del_virtual_intf_deprecated(struct cfg802154_registered_device *rdev,
 				 struct net_device *dev)
 {
 	rdev->ops->del_virtual_intf_deprecated(&rdev->wpan_phy, dev);
+}
+
+static inline int
+rdev_suspend(struct cfg802154_registered_device *rdev)
+{
+	int ret;
+	trace_802154_rdev_suspend(&rdev->wpan_phy);
+	ret = rdev->ops->suspend(&rdev->wpan_phy);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
+}
+
+static inline int
+rdev_resume(struct cfg802154_registered_device *rdev)
+{
+	int ret;
+	trace_802154_rdev_resume(&rdev->wpan_phy);
+	ret = rdev->ops->resume(&rdev->wpan_phy);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
 }
 
 static inline int
@@ -174,5 +195,213 @@ rdev_set_lbt_mode(struct cfg802154_registered_device *rdev,
 	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
 	return ret;
 }
+
+static inline int
+rdev_set_ackreq_default(struct cfg802154_registered_device *rdev,
+			struct wpan_dev *wpan_dev, bool ackreq)
+{
+	int ret;
+
+	trace_802154_rdev_set_ackreq_default(&rdev->wpan_phy, wpan_dev,
+					     ackreq);
+	ret = rdev->ops->set_ackreq_default(&rdev->wpan_phy, wpan_dev, ackreq);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
+}
+
+static inline int rdev_trigger_scan(struct cfg802154_registered_device *rdev,
+				    struct cfg802154_scan_request *request)
+{
+	int ret;
+
+	if (!rdev->ops->trigger_scan)
+		return -EOPNOTSUPP;
+
+	trace_802154_rdev_trigger_scan(&rdev->wpan_phy, request);
+	ret = rdev->ops->trigger_scan(&rdev->wpan_phy, request);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
+}
+
+static inline int rdev_abort_scan(struct cfg802154_registered_device *rdev,
+				  struct wpan_dev *wpan_dev)
+{
+	int ret;
+
+	if (!rdev->ops->abort_scan)
+		return -EOPNOTSUPP;
+
+	trace_802154_rdev_abort_scan(&rdev->wpan_phy, wpan_dev);
+	ret = rdev->ops->abort_scan(&rdev->wpan_phy, wpan_dev);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
+}
+
+static inline int rdev_send_beacons(struct cfg802154_registered_device *rdev,
+				    struct cfg802154_beacon_request *request)
+{
+	int ret;
+
+	if (!rdev->ops->send_beacons)
+		return -EOPNOTSUPP;
+
+	trace_802154_rdev_send_beacons(&rdev->wpan_phy, request);
+	ret = rdev->ops->send_beacons(&rdev->wpan_phy, request);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
+}
+
+static inline int rdev_stop_beacons(struct cfg802154_registered_device *rdev,
+				    struct wpan_dev *wpan_dev)
+{
+	int ret;
+
+	if (!rdev->ops->stop_beacons)
+		return -EOPNOTSUPP;
+
+	trace_802154_rdev_stop_beacons(&rdev->wpan_phy, wpan_dev);
+	ret = rdev->ops->stop_beacons(&rdev->wpan_phy, wpan_dev);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
+}
+
+static inline int rdev_associate(struct cfg802154_registered_device *rdev,
+				 struct wpan_dev *wpan_dev,
+				 struct ieee802154_addr *coord)
+{
+	int ret;
+
+	if (!rdev->ops->associate)
+		return -EOPNOTSUPP;
+
+	trace_802154_rdev_associate(&rdev->wpan_phy, wpan_dev, coord);
+	ret = rdev->ops->associate(&rdev->wpan_phy, wpan_dev, coord);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
+}
+
+static inline int rdev_disassociate(struct cfg802154_registered_device *rdev,
+				    struct wpan_dev *wpan_dev,
+				    struct ieee802154_addr *target)
+{
+	int ret;
+
+	if (!rdev->ops->disassociate)
+		return -EOPNOTSUPP;
+
+	trace_802154_rdev_disassociate(&rdev->wpan_phy, wpan_dev, target);
+	ret = rdev->ops->disassociate(&rdev->wpan_phy, wpan_dev, target);
+	trace_802154_rdev_return_int(&rdev->wpan_phy, ret);
+	return ret;
+}
+
+#ifdef CONFIG_IEEE802154_NL802154_EXPERIMENTAL
+/* TODO this is already a nl802154, so move into ieee802154 */
+static inline void
+rdev_get_llsec_table(struct cfg802154_registered_device *rdev,
+		     struct wpan_dev *wpan_dev,
+		     struct ieee802154_llsec_table **table)
+{
+	rdev->ops->get_llsec_table(&rdev->wpan_phy, wpan_dev, table);
+}
+
+static inline void
+rdev_lock_llsec_table(struct cfg802154_registered_device *rdev,
+		      struct wpan_dev *wpan_dev)
+{
+	rdev->ops->lock_llsec_table(&rdev->wpan_phy, wpan_dev);
+}
+
+static inline void
+rdev_unlock_llsec_table(struct cfg802154_registered_device *rdev,
+			struct wpan_dev *wpan_dev)
+{
+	rdev->ops->unlock_llsec_table(&rdev->wpan_phy, wpan_dev);
+}
+
+static inline int
+rdev_get_llsec_params(struct cfg802154_registered_device *rdev,
+		      struct wpan_dev *wpan_dev,
+		      struct ieee802154_llsec_params *params)
+{
+	return rdev->ops->get_llsec_params(&rdev->wpan_phy, wpan_dev, params);
+}
+
+static inline int
+rdev_set_llsec_params(struct cfg802154_registered_device *rdev,
+		      struct wpan_dev *wpan_dev,
+		      const struct ieee802154_llsec_params *params,
+		      u32 changed)
+{
+	return rdev->ops->set_llsec_params(&rdev->wpan_phy, wpan_dev, params,
+					   changed);
+}
+
+static inline int
+rdev_add_llsec_key(struct cfg802154_registered_device *rdev,
+		   struct wpan_dev *wpan_dev,
+		   const struct ieee802154_llsec_key_id *id,
+		   const struct ieee802154_llsec_key *key)
+{
+	return rdev->ops->add_llsec_key(&rdev->wpan_phy, wpan_dev, id, key);
+}
+
+static inline int
+rdev_del_llsec_key(struct cfg802154_registered_device *rdev,
+		   struct wpan_dev *wpan_dev,
+		   const struct ieee802154_llsec_key_id *id)
+{
+	return rdev->ops->del_llsec_key(&rdev->wpan_phy, wpan_dev, id);
+}
+
+static inline int
+rdev_add_seclevel(struct cfg802154_registered_device *rdev,
+		  struct wpan_dev *wpan_dev,
+		  const struct ieee802154_llsec_seclevel *sl)
+{
+	return rdev->ops->add_seclevel(&rdev->wpan_phy, wpan_dev, sl);
+}
+
+static inline int
+rdev_del_seclevel(struct cfg802154_registered_device *rdev,
+		  struct wpan_dev *wpan_dev,
+		  const struct ieee802154_llsec_seclevel *sl)
+{
+	return rdev->ops->del_seclevel(&rdev->wpan_phy, wpan_dev, sl);
+}
+
+static inline int
+rdev_add_device(struct cfg802154_registered_device *rdev,
+		struct wpan_dev *wpan_dev,
+		const struct ieee802154_llsec_device *dev_desc)
+{
+	return rdev->ops->add_device(&rdev->wpan_phy, wpan_dev, dev_desc);
+}
+
+static inline int
+rdev_del_device(struct cfg802154_registered_device *rdev,
+		struct wpan_dev *wpan_dev, __le64 extended_addr)
+{
+	return rdev->ops->del_device(&rdev->wpan_phy, wpan_dev, extended_addr);
+}
+
+static inline int
+rdev_add_devkey(struct cfg802154_registered_device *rdev,
+		struct wpan_dev *wpan_dev, __le64 extended_addr,
+		const struct ieee802154_llsec_device_key *devkey)
+{
+	return rdev->ops->add_devkey(&rdev->wpan_phy, wpan_dev, extended_addr,
+				     devkey);
+}
+
+static inline int
+rdev_del_devkey(struct cfg802154_registered_device *rdev,
+		struct wpan_dev *wpan_dev, __le64 extended_addr,
+		const struct ieee802154_llsec_device_key *devkey)
+{
+	return rdev->ops->del_devkey(&rdev->wpan_phy, wpan_dev, extended_addr,
+				     devkey);
+}
+#endif /* CONFIG_IEEE802154_NL802154_EXPERIMENTAL */
 
 #endif /* __CFG802154_RDEV_OPS */

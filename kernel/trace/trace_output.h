@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef __TRACE_EVENTS_H
 #define __TRACE_EVENTS_H
 
@@ -14,13 +15,12 @@ trace_print_printk_msg_only(struct trace_iterator *iter);
 extern int
 seq_print_ip_sym(struct trace_seq *s, unsigned long ip,
 		unsigned long sym_flags);
-extern int seq_print_userip_objs(const struct userstack_entry *entry,
-				 struct trace_seq *s, unsigned long sym_flags);
-extern int seq_print_user_ip(struct trace_seq *s, struct mm_struct *mm,
-			     unsigned long ip, unsigned long sym_flags);
 
+extern void trace_seq_print_sym(struct trace_seq *s, unsigned long address, bool offset);
 extern int trace_print_context(struct trace_iterator *iter);
 extern int trace_print_lat_context(struct trace_iterator *iter);
+extern enum print_line_t print_event_fields(struct trace_iterator *iter,
+					    struct trace_event *event);
 
 extern void trace_event_read_lock(void);
 extern void trace_event_read_unlock(void);

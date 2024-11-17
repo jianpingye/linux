@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* uctrl.c: TS102 Microcontroller interface on Tadpole Sparcbook 3
  *
  * Copyright 1999 Derrick J Brashear (shadow@dementia.org)
@@ -14,15 +15,12 @@
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
 #include <asm/openprom.h>
 #include <asm/oplib.h>
 #include <asm/irq.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
-
-#define UCTRL_MINOR	174
 
 #define DEBUG 1
 #ifdef DEBUG
@@ -223,7 +221,6 @@ static irqreturn_t uctrl_interrupt(int irq, void *dev_id)
 
 static const struct file_operations uctrl_fops = {
 	.owner =	THIS_MODULE,
-	.llseek =	no_llseek,
 	.unlocked_ioctl =	uctrl_ioctl,
 	.open =		uctrl_open,
 };
@@ -379,8 +376,8 @@ static int uctrl_probe(struct platform_device *op)
 	}
 
 	sbus_writel(UCTRL_INTR_RXNE_REQ|UCTRL_INTR_RXNE_MSK, &p->regs->uctrl_intr);
-	printk(KERN_INFO "%s: uctrl regs[0x%p] (irq %d)\n",
-	       op->dev.of_node->full_name, p->regs, p->irq);
+	printk(KERN_INFO "%pOF: uctrl regs[0x%p] (irq %d)\n",
+	       op->dev.of_node, p->regs, p->irq);
 	uctrl_get_event_status(p);
 	uctrl_get_external_status(p);
 
@@ -401,7 +398,7 @@ out_free:
 	goto out;
 }
 
-static int uctrl_remove(struct platform_device *op)
+static void uctrl_remove(struct platform_device *op)
 {
 	struct uctrl_driver *p = dev_get_drvdata(&op->dev);
 
@@ -411,7 +408,6 @@ static int uctrl_remove(struct platform_device *op)
 		of_iounmap(&op->resource[0], p->regs, resource_size(&op->resource[0]));
 		kfree(p);
 	}
-	return 0;
 }
 
 static const struct of_device_id uctrl_match[] = {
@@ -428,10 +424,11 @@ static struct platform_driver uctrl_driver = {
 		.of_match_table = uctrl_match,
 	},
 	.probe		= uctrl_probe,
-	.remove		= uctrl_remove,
+	.remove_new	= uctrl_remove,
 };
 
 
 module_platform_driver(uctrl_driver);
 
+MODULE_DESCRIPTION("Tadpole TS102 Microcontroller driver");
 MODULE_LICENSE("GPL");

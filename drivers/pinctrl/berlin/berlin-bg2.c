@@ -1,18 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Marvell Berlin BG2 pinctrl driver.
  *
  * Copyright (C) 2014 Marvell Technology Group Ltd.
  *
- * Antoine TÃ©nart <antoine.tenart@free-electrons.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
+ * Antoine Ténart <antoine.tenart@free-electrons.com>
  */
 
-#include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/init.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 
 #include "berlin.h"
@@ -227,14 +225,10 @@ static const struct of_device_id berlin2_pinctrl_match[] = {
 	},
 	{}
 };
-MODULE_DEVICE_TABLE(of, berlin2_pinctrl_match);
 
 static int berlin2_pinctrl_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *match =
-		of_match_device(berlin2_pinctrl_match, &pdev->dev);
-
-	return berlin_pinctrl_probe(pdev, match->data);
+	return berlin_pinctrl_probe(pdev, device_get_match_data(&pdev->dev));
 }
 
 static struct platform_driver berlin2_pinctrl_driver = {
@@ -244,8 +238,4 @@ static struct platform_driver berlin2_pinctrl_driver = {
 		.of_match_table = berlin2_pinctrl_match,
 	},
 };
-module_platform_driver(berlin2_pinctrl_driver);
-
-MODULE_AUTHOR("Antoine TÃ©nart <antoine.tenart@free-electrons.com>");
-MODULE_DESCRIPTION("Marvell Berlin BG2 pinctrl driver");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(berlin2_pinctrl_driver);

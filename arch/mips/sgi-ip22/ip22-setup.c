@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ip22-setup.c: SGI specific setup, including init of the feature struct.
  *
@@ -8,7 +9,6 @@
 #include <linux/kernel.h>
 #include <linux/kdev_t.h>
 #include <linux/types.h>
-#include <linux/module.h>
 #include <linux/console.h>
 #include <linux/sched.h>
 #include <linux/tty.h>
@@ -25,8 +25,6 @@
 #include <asm/sgi/mc.h>
 #include <asm/sgi/hpc3.h>
 #include <asm/sgi/ip22.h>
-
-extern void ip22_be_init(void) __init;
 
 void __init plat_mem_setup(void)
 {

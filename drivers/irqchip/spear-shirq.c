@@ -18,13 +18,12 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/irqchip.h>
 #include <linux/irqdomain.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/spinlock.h>
-
-#include "irqchip.h"
 
 /*
  * struct spear_shirq: shared irq structure
@@ -150,6 +149,8 @@ static struct spear_shirq spear320_shirq_ras3 = {
 	.offset		= 0,
 	.nr_irqs	= 7,
 	.mask		= ((0x1 << 7) - 1) << 0,
+	.irq_chip	= &dummy_irq_chip,
+	.status_reg	= SPEAR320_INT_STS_MASK_REG,
 };
 
 static struct spear_shirq spear320_shirq_ras1 = {
@@ -183,9 +184,9 @@ static struct spear_shirq *spear320_shirq_blocks[] = {
 	&spear320_shirq_intrcomm_ras,
 };
 
-static void shirq_handler(unsigned irq, struct irq_desc *desc)
+static void shirq_handler(struct irq_desc *desc)
 {
-	struct spear_shirq *shirq = irq_get_handler_data(irq);
+	struct spear_shirq *shirq = irq_desc_get_handler_data(desc);
 	u32 pend;
 
 	pend = readl(shirq->base + shirq->status_reg) & shirq->mask;
@@ -212,7 +213,6 @@ static void __init spear_shirq_register(struct spear_shirq *shirq,
 	for (i = 0; i < shirq->nr_irqs; i++) {
 		irq_set_chip_and_handler(shirq->virq_base + i,
 					 shirq->irq_chip, handle_simple_irq);
-		set_irq_flags(shirq->virq_base + i, IRQF_VALID);
 		irq_set_chip_data(shirq->virq_base + i, shirq);
 	}
 }
@@ -234,7 +234,7 @@ static int __init shirq_init(struct spear_shirq **shirq_blocks, int block_nr,
 		nr_irqs += shirq_blocks[i]->nr_irqs;
 
 	virq_base = irq_alloc_descs(-1, 0, nr_irqs, 0);
-	if (IS_ERR_VALUE(virq_base)) {
+	if (virq_base < 0) {
 		pr_err("%s: irq desc alloc failed\n", __func__);
 		goto err_unmap;
 	}

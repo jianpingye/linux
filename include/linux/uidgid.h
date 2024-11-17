@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_UIDGID_H
 #define _LINUX_UIDGID_H
 
@@ -11,20 +12,12 @@
  * to detect when we overlook these differences.
  *
  */
-#include <linux/types.h>
+#include <linux/uidgid_types.h>
 #include <linux/highuid.h>
 
 struct user_namespace;
 extern struct user_namespace init_user_ns;
-
-typedef struct {
-	uid_t val;
-} kuid_t;
-
-
-typedef struct {
-	gid_t val;
-} kgid_t;
+struct uid_gid_map;
 
 #define KUIDT_INIT(value) (kuid_t){ value }
 #define KGIDT_INIT(value) (kgid_t){ value }
@@ -137,6 +130,9 @@ static inline bool kgid_has_mapping(struct user_namespace *ns, kgid_t gid)
 	return from_kgid(ns, gid) != (gid_t) -1;
 }
 
+u32 map_id_down(struct uid_gid_map *map, u32 id);
+u32 map_id_up(struct uid_gid_map *map, u32 id);
+
 #else
 
 static inline kuid_t make_kuid(struct user_namespace *from, uid_t uid)
@@ -177,14 +173,23 @@ static inline gid_t from_kgid_munged(struct user_namespace *to, kgid_t kgid)
 
 static inline bool kuid_has_mapping(struct user_namespace *ns, kuid_t uid)
 {
-	return true;
+	return uid_valid(uid);
 }
 
 static inline bool kgid_has_mapping(struct user_namespace *ns, kgid_t gid)
 {
-	return true;
+	return gid_valid(gid);
 }
 
+static inline u32 map_id_down(struct uid_gid_map *map, u32 id)
+{
+	return id;
+}
+
+static inline u32 map_id_up(struct uid_gid_map *map, u32 id)
+{
+	return id;
+}
 #endif /* CONFIG_USER_NS */
 
 #endif /* _LINUX_UIDGID_H */

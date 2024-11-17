@@ -25,8 +25,10 @@
  *          Rafał Miłecki
  */
 #include <linux/hdmi.h>
-#include <drm/drmP.h>
+
+#include <drm/drm_edid.h>
 #include <drm/radeon_drm.h>
+#include "evergreen_hdmi.h"
 #include "radeon.h"
 #include "radeon_asic.h"
 #include "radeon_audio.h"
@@ -206,7 +208,7 @@ void evergreen_hdmi_write_sad_regs(struct drm_encoder *encoder,
  * build a AVI Info Frame
  */
 void evergreen_set_avi_packet(struct radeon_device *rdev, u32 offset,
-    unsigned char *buffer, size_t size)
+			      unsigned char *buffer, size_t size)
 {
 	uint8_t *frame = buffer + 3;
 
@@ -289,6 +291,16 @@ void dce4_dp_audio_set_dto(struct radeon_device *rdev,
 	 * number (coefficient of two integer numbers.  DCCG_AUDIO_DTOx_PHASE
 	 * is the numerator, DCCG_AUDIO_DTOx_MODULE is the denominator
 	 */
+	if (ASIC_IS_DCE41(rdev)) {
+		unsigned int div = (RREG32(DCE41_DENTIST_DISPCLK_CNTL) &
+			DENTIST_DPREFCLK_WDIVIDER_MASK) >>
+			DENTIST_DPREFCLK_WDIVIDER_SHIFT;
+		div = radeon_audio_decode_dfs_div(div);
+
+		if (div)
+			clock = 100 * clock / div;
+	}
+
 	WREG32(DCCG_AUDIO_DTO1_PHASE, 24000);
 	WREG32(DCCG_AUDIO_DTO1_MODULE, clock);
 }
@@ -400,7 +412,7 @@ void evergreen_hdmi_enable(struct drm_encoder *encoder, bool enable)
 	if (enable) {
 		struct drm_connector *connector = radeon_get_connector_for_encoder(encoder);
 
-		if (connector && drm_detect_monitor_audio(radeon_connector_edid(connector))) {
+		if (connector && connector->display_info.has_audio) {
 			WREG32(HDMI_INFOFRAME_CONTROL0 + dig->afmt->offset,
 			       HDMI_AVI_INFO_SEND | /* enable AVI info frames */
 			       HDMI_AVI_INFO_CONT | /* required for audio info values to be updated */
@@ -438,8 +450,7 @@ void evergreen_dp_enable(struct drm_encoder *encoder, bool enable)
 	if (!dig || !dig->afmt)
 		return;
 
-	if (enable && connector &&
-	    drm_detect_monitor_audio(radeon_connector_edid(connector))) {
+	if (enable && connector && connector->display_info.has_audio) {
 		struct drm_connector *connector = radeon_get_connector_for_encoder(encoder);
 		struct radeon_connector *radeon_connector = to_radeon_connector(connector);
 		struct radeon_connector_atom_dig *dig_connector;

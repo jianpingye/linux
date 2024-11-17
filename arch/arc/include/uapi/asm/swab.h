@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
  *
@@ -61,7 +62,7 @@
  * 8051fdc4:	st     r2,[r1,20]	; Mem op : save result back to mem
  *
  * Joern suggested a better "C" algorithm which is great since
- * (1) It is portable to any architecure
+ * (1) It is portable to any architecture
  * (2) At the same time it takes advantage of ARC ISA (rotate intrns)
  */
 
@@ -74,7 +75,7 @@
 	__tmp ^ __in;						\
 })
 
-#elif (ARC_BSWAP_TYPE == 2)	/* Custom single cycle bwap instruction */
+#elif (ARC_BSWAP_TYPE == 2)	/* Custom single cycle bswap instruction */
 
 #define __arch_swab32(x)						\
 ({									\

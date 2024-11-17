@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * driver for the i2c-tiny-usb adapter - 1.0
  * http://www.harbaum.org/till/i2c_tiny_usb
  *
  * Copyright (C) 2006-2007 Till Harbaum (Till@Harbaum.org)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2.
- *
  */
 
 #include <linux/kernel.h>
@@ -58,8 +54,6 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs, int num)
 	struct i2c_msg *pmsg;
 	int i, ret;
 
-	dev_dbg(&adapter->dev, "master xfer %d messages:\n", num);
-
 	pstatus = kmalloc(sizeof(*pstatus), GFP_KERNEL);
 	if (!pstatus)
 		return -ENOMEM;
@@ -88,7 +82,7 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs, int num)
 				     pmsg->buf, pmsg->len) != pmsg->len) {
 				dev_err(&adapter->dev,
 					"failure reading data\n");
-				ret = -EREMOTEIO;
+				ret = -EIO;
 				goto out;
 			}
 		} else {
@@ -98,7 +92,7 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs, int num)
 				      pmsg->buf, pmsg->len) != pmsg->len) {
 				dev_err(&adapter->dev,
 					"failure writing data\n");
-				ret = -EREMOTEIO;
+				ret = -EIO;
 				goto out;
 			}
 		}
@@ -106,13 +100,13 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs, int num)
 		/* read status */
 		if (usb_read(adapter, CMD_GET_STATUS, 0, 0, pstatus, 1) != 1) {
 			dev_err(&adapter->dev, "failure reading status\n");
-			ret = -EREMOTEIO;
+			ret = -EIO;
 			goto out;
 		}
 
 		dev_dbg(&adapter->dev, "  status = %d\n", *pstatus);
 		if (*pstatus == STATUS_ADDRESS_NAK) {
-			ret = -EREMOTEIO;
+			ret = -ENXIO;
 			goto out;
 		}
 	}
@@ -146,8 +140,8 @@ out:
 
 /* This is the actual algorithm we define */
 static const struct i2c_algorithm usb_algorithm = {
-	.master_xfer	= usb_xfer,
-	.functionality	= usb_func,
+	.xfer = usb_xfer,
+	.functionality = usb_func,
 };
 
 /* ----- end of i2c layer ------------------------------------------------ */
@@ -178,22 +172,39 @@ static int usb_read(struct i2c_adapter *adapter, int cmd,
 		    int value, int index, void *data, int len)
 {
 	struct i2c_tiny_usb *dev = (struct i2c_tiny_usb *)adapter->algo_data;
+	void *dmadata = kmalloc(len, GFP_KERNEL);
+	int ret;
+
+	if (!dmadata)
+		return -ENOMEM;
 
 	/* do control transfer */
-	return usb_control_msg(dev->usb_dev, usb_rcvctrlpipe(dev->usb_dev, 0),
+	ret = usb_control_msg(dev->usb_dev, usb_rcvctrlpipe(dev->usb_dev, 0),
 			       cmd, USB_TYPE_VENDOR | USB_RECIP_INTERFACE |
-			       USB_DIR_IN, value, index, data, len, 2000);
+			       USB_DIR_IN, value, index, dmadata, len, 2000);
+
+	memcpy(data, dmadata, len);
+	kfree(dmadata);
+	return ret;
 }
 
 static int usb_write(struct i2c_adapter *adapter, int cmd,
 		     int value, int index, void *data, int len)
 {
 	struct i2c_tiny_usb *dev = (struct i2c_tiny_usb *)adapter->algo_data;
+	void *dmadata = kmemdup(data, len, GFP_KERNEL);
+	int ret;
+
+	if (!dmadata)
+		return -ENOMEM;
 
 	/* do control transfer */
-	return usb_control_msg(dev->usb_dev, usb_sndctrlpipe(dev->usb_dev, 0),
+	ret = usb_control_msg(dev->usb_dev, usb_sndctrlpipe(dev->usb_dev, 0),
 			       cmd, USB_TYPE_VENDOR | USB_RECIP_INTERFACE,
-			       value, index, data, len, 2000);
+			       value, index, dmadata, len, 2000);
+
+	kfree(dmadata);
+	return ret;
 }
 
 static void i2c_tiny_usb_free(struct i2c_tiny_usb *dev)
@@ -209,14 +220,16 @@ static int i2c_tiny_usb_probe(struct usb_interface *interface,
 	int retval = -ENOMEM;
 	u16 version;
 
+	if (interface->intf_assoc &&
+	    interface->intf_assoc->bFunctionClass != USB_CLASS_VENDOR_SPEC)
+		return -ENODEV;
+
 	dev_dbg(&interface->dev, "probing usb device\n");
 
 	/* allocate memory for our device state and initialize it */
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (dev == NULL) {
-		dev_err(&interface->dev, "Out of memory\n");
+	if (!dev)
 		goto error;
-	}
 
 	dev->usb_dev = usb_get_dev(interface_to_usbdev(interface));
 	dev->interface = interface;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * lib80211 -- common bits for IEEE802.11 drivers
  *
@@ -25,8 +26,6 @@
 
 #include <net/lib80211.h>
 
-#define DRV_NAME        "lib80211"
-
 #define DRV_DESCRIPTION	"common routines for IEEE802.11 drivers"
 
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
@@ -35,7 +34,7 @@ MODULE_LICENSE("GPL");
 
 struct lib80211_crypto_alg {
 	struct list_head list;
-	struct lib80211_crypto_ops *ops;
+	const struct lib80211_crypto_ops *ops;
 };
 
 static LIST_HEAD(lib80211_crypto_algs);
@@ -44,7 +43,7 @@ static DEFINE_SPINLOCK(lib80211_crypto_lock);
 static void lib80211_crypt_deinit_entries(struct lib80211_crypt_info *info,
 					  int force);
 static void lib80211_crypt_quiescing(struct lib80211_crypt_info *info);
-static void lib80211_crypt_deinit_handler(unsigned long data);
+static void lib80211_crypt_deinit_handler(struct timer_list *t);
 
 int lib80211_crypt_info_init(struct lib80211_crypt_info *info, char *name,
 				spinlock_t *lock)
@@ -55,8 +54,8 @@ int lib80211_crypt_info_init(struct lib80211_crypt_info *info, char *name,
 	info->lock = lock;
 
 	INIT_LIST_HEAD(&info->crypt_deinit_list);
-	setup_timer(&info->crypt_deinit_timer, lib80211_crypt_deinit_handler,
-			(unsigned long)info);
+	timer_setup(&info->crypt_deinit_timer, lib80211_crypt_deinit_handler,
+		    0);
 
 	return 0;
 }
@@ -116,9 +115,10 @@ static void lib80211_crypt_quiescing(struct lib80211_crypt_info *info)
 	spin_unlock_irqrestore(info->lock, flags);
 }
 
-static void lib80211_crypt_deinit_handler(unsigned long data)
+static void lib80211_crypt_deinit_handler(struct timer_list *t)
 {
-	struct lib80211_crypt_info *info = (struct lib80211_crypt_info *)data;
+	struct lib80211_crypt_info *info = from_timer(info, t,
+						      crypt_deinit_timer);
 	unsigned long flags;
 
 	lib80211_crypt_deinit_entries(info, 0);
@@ -161,7 +161,7 @@ void lib80211_crypt_delayed_deinit(struct lib80211_crypt_info *info,
 }
 EXPORT_SYMBOL(lib80211_crypt_delayed_deinit);
 
-int lib80211_register_crypto_ops(struct lib80211_crypto_ops *ops)
+int lib80211_register_crypto_ops(const struct lib80211_crypto_ops *ops)
 {
 	unsigned long flags;
 	struct lib80211_crypto_alg *alg;
@@ -183,7 +183,7 @@ int lib80211_register_crypto_ops(struct lib80211_crypto_ops *ops)
 }
 EXPORT_SYMBOL(lib80211_register_crypto_ops);
 
-int lib80211_unregister_crypto_ops(struct lib80211_crypto_ops *ops)
+int lib80211_unregister_crypto_ops(const struct lib80211_crypto_ops *ops)
 {
 	struct lib80211_crypto_alg *alg;
 	unsigned long flags;
@@ -206,7 +206,7 @@ int lib80211_unregister_crypto_ops(struct lib80211_crypto_ops *ops)
 }
 EXPORT_SYMBOL(lib80211_unregister_crypto_ops);
 
-struct lib80211_crypto_ops *lib80211_get_crypto_ops(const char *name)
+const struct lib80211_crypto_ops *lib80211_get_crypto_ops(const char *name)
 {
 	struct lib80211_crypto_alg *alg;
 	unsigned long flags;
@@ -234,7 +234,7 @@ static void lib80211_crypt_null_deinit(void *priv)
 {
 }
 
-static struct lib80211_crypto_ops lib80211_crypt_null = {
+static const struct lib80211_crypto_ops lib80211_crypt_null = {
 	.name = "NULL",
 	.init = lib80211_crypt_null_init,
 	.deinit = lib80211_crypt_null_deinit,

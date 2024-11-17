@@ -1,17 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /************************************************************************
  * Copyright 2003 Digi International (www.digi.com)
  *
  * Copyright (C) 2004 IBM Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY, EXPRESS OR IMPLIED; without even the
- * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
- * PURPOSE.  See the GNU General Public License for more details.
  *
  * Contact Information:
  * Scott H Kilau <Scott_Kilau@digi.com>
@@ -291,9 +282,6 @@ static void neo_copy_data_from_uart_to_queue(struct jsm_channel *ch)
 	u16 head;
 	u16 tail;
 
-	if (!ch)
-		return;
-
 	/* cache head and tail of queue */
 	head = ch->ch_r_head & RQUEUEMASK;
 	tail = ch->ch_r_tail & RQUEUEMASK;
@@ -303,7 +291,8 @@ static void neo_copy_data_from_uart_to_queue(struct jsm_channel *ch)
 	ch->ch_cached_lsr = 0;
 
 	/* Store how much space we have left in the queue */
-	if ((qleft = tail - head - 1) < 0)
+	qleft = tail - head - 1;
+	if (qleft < 0)
 		qleft += RQUEUEMASK + 1;
 
 	/*
@@ -485,21 +474,21 @@ static void neo_copy_data_from_uart_to_queue(struct jsm_channel *ch)
 
 static void neo_copy_data_from_queue_to_uart(struct jsm_channel *ch)
 {
-	u16 head;
-	u16 tail;
+	struct tty_port *tport;
+	unsigned char *tail;
+	unsigned char c;
 	int n;
 	int s;
 	int qlen;
 	u32 len_written = 0;
-	struct circ_buf *circ;
 
 	if (!ch)
 		return;
 
-	circ = &ch->uart_port.state->xmit;
+	tport = &ch->uart_port.state->port;
 
 	/* No data to write to the UART */
-	if (uart_circ_empty(circ))
+	if (kfifo_is_empty(&tport->xmit_fifo))
 		return;
 
 	/* If port is "stopped", don't send any data to the UART */
@@ -515,10 +504,9 @@ static void neo_copy_data_from_queue_to_uart(struct jsm_channel *ch)
 		if (ch->ch_cached_lsr & UART_LSR_THRE) {
 			ch->ch_cached_lsr &= ~(UART_LSR_THRE);
 
-			writeb(circ->buf[circ->tail], &ch->ch_neo_uart->txrx);
-			jsm_dbg(WRITE, &ch->ch_bd->pci_dev,
-				"Tx data: %x\n", circ->buf[circ->tail]);
-			circ->tail = (circ->tail + 1) & (UART_XMIT_SIZE - 1);
+			WARN_ON_ONCE(!kfifo_get(&tport->xmit_fifo, &c));
+			writeb(c, &ch->ch_neo_uart->txrx);
+			jsm_dbg(WRITE, &ch->ch_bd->pci_dev, "Tx data: %x\n", c);
 			ch->ch_txcount++;
 		}
 		return;
@@ -531,38 +519,27 @@ static void neo_copy_data_from_queue_to_uart(struct jsm_channel *ch)
 		return;
 
 	n = UART_17158_TX_FIFOSIZE - ch->ch_t_tlevel;
-
-	/* cache head and tail of queue */
-	head = circ->head & (UART_XMIT_SIZE - 1);
-	tail = circ->tail & (UART_XMIT_SIZE - 1);
-	qlen = uart_circ_chars_pending(circ);
+	qlen = kfifo_len(&tport->xmit_fifo);
 
 	/* Find minimum of the FIFO space, versus queue length */
 	n = min(n, qlen);
 
 	while (n > 0) {
-
-		s = ((head >= tail) ? head : UART_XMIT_SIZE) - tail;
-		s = min(s, n);
-
+		s = kfifo_out_linear_ptr(&tport->xmit_fifo, &tail, n);
 		if (s <= 0)
 			break;
 
-		memcpy_toio(&ch->ch_neo_uart->txrxburst, circ->buf + tail, s);
-		/* Add and flip queue if needed */
-		tail = (tail + s) & (UART_XMIT_SIZE - 1);
+		memcpy_toio(&ch->ch_neo_uart->txrxburst, tail, s);
+		kfifo_skip_count(&tport->xmit_fifo, s);
 		n -= s;
 		ch->ch_txcount += s;
 		len_written += s;
 	}
 
-	/* Update the final tail */
-	circ->tail = tail & (UART_XMIT_SIZE - 1);
-
 	if (len_written >= ch->ch_t_tlevel)
 		ch->ch_flags &= ~(CH_TX_FIFO_EMPTY | CH_TX_FIFO_LWM);
 
-	if (uart_circ_empty(circ))
+	if (kfifo_is_empty(&tport->xmit_fifo))
 		uart_write_wakeup(&ch->uart_port);
 }
 
@@ -714,7 +691,7 @@ static void neo_clear_break(struct jsm_channel *ch)
 /*
  * Parse the ISR register.
  */
-static inline void neo_parse_isr(struct jsm_board *brd, u32 port)
+static void neo_parse_isr(struct jsm_board *brd, u32 port)
 {
 	struct jsm_channel *ch;
 	u8 isr;
@@ -827,7 +804,9 @@ static inline void neo_parse_isr(struct jsm_board *brd, u32 port)
 		/* Parse any modem signal changes */
 		jsm_dbg(INTR, &ch->ch_bd->pci_dev,
 			"MOD_STAT: sending to parse_modem_sigs\n");
+		uart_port_lock_irqsave(&ch->uart_port, &lock_flags);
 		neo_parse_modem(ch, readb(&ch->ch_neo_uart->msr));
+		uart_port_unlock_irqrestore(&ch->uart_port, lock_flags);
 	}
 }
 
@@ -947,7 +926,7 @@ static void neo_param(struct jsm_channel *ch)
 	/*
 	 * If baud rate is zero, flush queues, and set mval to drop DTR.
 	 */
-	if ((ch->ch_c_cflag & (CBAUD)) == 0) {
+	if ((ch->ch_c_cflag & CBAUD) == B0) {
 		ch->ch_r_head = ch->ch_r_tail = 0;
 		ch->ch_e_head = ch->ch_e_tail = 0;
 
@@ -1006,33 +985,13 @@ static void neo_param(struct jsm_channel *ch)
 	if (!(ch->ch_c_cflag & PARODD))
 		lcr |= UART_LCR_EPAR;
 
-	/*
-	 * Not all platforms support mark/space parity,
-	 * so this will hide behind an ifdef.
-	 */
-#ifdef CMSPAR
 	if (ch->ch_c_cflag & CMSPAR)
 		lcr |= UART_LCR_SPAR;
-#endif
 
 	if (ch->ch_c_cflag & CSTOPB)
 		lcr |= UART_LCR_STOP;
 
-	switch (ch->ch_c_cflag & CSIZE) {
-	case CS5:
-		lcr |= UART_LCR_WLEN5;
-		break;
-	case CS6:
-		lcr |= UART_LCR_WLEN6;
-		break;
-	case CS7:
-		lcr |= UART_LCR_WLEN7;
-		break;
-	case CS8:
-	default:
-		lcr |= UART_LCR_WLEN8;
-	break;
-	}
+	lcr |= UART_LCR_WLEN(tty_get_char_size(ch->ch_c_cflag));
 
 	ier = readb(&ch->ch_neo_uart->ier);
 	uart_lcr = readb(&ch->ch_neo_uart->lcr);
@@ -1184,6 +1143,9 @@ static irqreturn_t neo_intr(int irq, void *voidbrd)
 				continue;
 
 			ch = brd->channels[port];
+			if (!ch)
+				continue;
+
 			neo_copy_data_from_uart_to_queue(ch);
 
 			/* Call our tty layer to enforce queue flow control if needed. */
@@ -1335,25 +1297,6 @@ static void neo_uart_off(struct jsm_channel *ch)
 	writeb(0, &ch->ch_neo_uart->ier);
 }
 
-static u32 neo_get_uart_bytes_left(struct jsm_channel *ch)
-{
-	u8 left = 0;
-	u8 lsr = readb(&ch->ch_neo_uart->lsr);
-
-	/* We must cache the LSR as some of the bits get reset once read... */
-	ch->ch_cached_lsr |= lsr;
-
-	/* Determine whether the Transmitter is empty or not */
-	if (!(lsr & UART_LSR_TEMT))
-		left = 1;
-	else {
-		ch->ch_flags |= (CH_TX_FIFO_EMPTY | CH_TX_FIFO_LWM);
-		left = 0;
-	}
-
-	return left;
-}
-
 /* Channel lock MUST be held by the calling function! */
 static void neo_send_break(struct jsm_channel *ch)
 {
@@ -1374,25 +1317,6 @@ static void neo_send_break(struct jsm_channel *ch)
 	}
 }
 
-/*
- * neo_send_immediate_char.
- *
- * Sends a specific character as soon as possible to the UART,
- * jumping over any bytes that might be in the write queue.
- *
- * The channel lock MUST be held by the calling function.
- */
-static void neo_send_immediate_char(struct jsm_channel *ch, unsigned char c)
-{
-	if (!ch)
-		return;
-
-	writeb(c, &ch->ch_neo_uart->txrx);
-
-	/* flush write operation */
-	neo_pci_posting_flush(ch->ch_bd);
-}
-
 struct board_ops jsm_neo_ops = {
 	.intr				= neo_intr,
 	.uart_init			= neo_uart_init,
@@ -1408,6 +1332,4 @@ struct board_ops jsm_neo_ops = {
 	.send_start_character		= neo_send_start_character,
 	.send_stop_character		= neo_send_stop_character,
 	.copy_data_from_queue_to_uart	= neo_copy_data_from_queue_to_uart,
-	.get_uart_bytes_left		= neo_get_uart_bytes_left,
-	.send_immediate_char		= neo_send_immediate_char
 };

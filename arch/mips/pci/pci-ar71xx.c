@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Atheros AR71xx PCI host controller driver
  *
@@ -5,10 +6,6 @@
  *  Copyright (C) 2008 Imre Kaloz <kaloz@openwrt.org>
  *
  *  Parts of this file are based on Atheros' 2.6.15 BSP
- *
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License version 2 as published
- *  by the Free Software Foundation.
  */
 
 #include <linux/resource.h>
@@ -18,7 +15,7 @@
 #include <linux/pci.h>
 #include <linux/pci_regs.h>
 #include <linux/interrupt.h>
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/platform_device.h>
 
 #include <asm/mach-ath79/ar71xx_regs.h>
@@ -226,7 +223,7 @@ static struct pci_ops ar71xx_pci_ops = {
 	.write	= ar71xx_pci_write_config,
 };
 
-static void ar71xx_pci_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void ar71xx_pci_irq_handler(struct irq_desc *desc)
 {
 	struct ar71xx_pci_controller *apc;
 	void __iomem *base = ath79_reset_base;
@@ -312,8 +309,8 @@ static void ar71xx_pci_irq_init(struct ar71xx_pci_controller *apc)
 		irq_set_chip_data(i, apc);
 	}
 
-	irq_set_handler_data(apc->irq, apc);
-	irq_set_chained_handler(apc->irq, ar71xx_pci_irq_handler);
+	irq_set_chained_handler_and_data(apc->irq, ar71xx_pci_irq_handler,
+					 apc);
 }
 
 static void ar71xx_pci_reset(void)
@@ -339,8 +336,8 @@ static int ar71xx_pci_probe(struct platform_device *pdev)
 	if (!apc)
 		return -ENOMEM;
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cfg_base");
-	apc->cfg_base = devm_ioremap_resource(&pdev->dev, res);
+	apc->cfg_base = devm_platform_ioremap_resource_byname(pdev,
+							      "cfg_base");
 	if (IS_ERR(apc->cfg_base))
 		return PTR_ERR(apc->cfg_base);
 

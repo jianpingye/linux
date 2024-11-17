@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __UM_X86_PTRACE_H
 #define __UM_X86_PTRACE_H
 
@@ -53,6 +54,8 @@ extern int ptrace_get_thread_area(struct task_struct *child, int idx,
 extern int ptrace_set_thread_area(struct task_struct *child, int idx,
                                   struct user_desc __user *user_desc);
 
+extern int arch_switch_tls(struct task_struct *to);
+
 #else
 
 #define PT_REGS_R8(r) UPT_R8(&(r)->regs)
@@ -78,9 +81,13 @@ static inline int ptrace_set_thread_area(struct task_struct *child, int idx,
         return -ENOSYS;
 }
 
-extern long arch_prctl(struct task_struct *task, int code,
+extern long arch_prctl(struct task_struct *task, int option,
 		       unsigned long __user *addr);
 
 #endif
+
 #define user_stack_pointer(regs) PT_REGS_SP(regs)
+
+extern void arch_switch_to(struct task_struct *to);
+
 #endif /* __UM_X86_PTRACE_H */

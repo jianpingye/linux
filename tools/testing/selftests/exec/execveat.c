@@ -1,12 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014 Google, Inc.
- *
- * Licensed under the terms of the GNU GPL License version 2
  *
  * Selftests for execveat(2).
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE  /* to get O_PATH, AT_EMPTY_PATH */
+#endif
 #include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -19,6 +20,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "../kselftest.h"
+
+#define TESTS_EXPECTED 51
+#define TEST_NAME_LEN (PATH_MAX * 4)
 
 static char longpath[2 * PATH_MAX] = "";
 static char *envp[] = { "IN_TEST=yes", NULL, NULL };
@@ -40,71 +46,84 @@ static int execveat_(int fd, const char *path, char **argv, char **envp,
 static int _check_execveat_fail(int fd, const char *path, int flags,
 				int expected_errno, const char *errno_str)
 {
+	char test_name[TEST_NAME_LEN];
 	int rc;
 
 	errno = 0;
-	printf("Check failure of execveat(%d, '%s', %d) with %s... ",
-		fd, path?:"(null)", flags, errno_str);
+	snprintf(test_name, sizeof(test_name),
+		 "Check failure of execveat(%d, '%s', %d) with %s",
+		 fd, path?:"(null)", flags, errno_str);
 	rc = execveat_(fd, path, argv, envp, flags);
 
 	if (rc > 0) {
-		printf("[FAIL] (unexpected success from execveat(2))\n");
+		ksft_print_msg("unexpected success from execveat(2)\n");
+		ksft_test_result_fail("%s\n", test_name);
 		return 1;
 	}
 	if (errno != expected_errno) {
-		printf("[FAIL] (expected errno %d (%s) not %d (%s)\n",
-			expected_errno, strerror(expected_errno),
-			errno, strerror(errno));
+		ksft_print_msg("expected errno %d (%s) not %d (%s)\n",
+			       expected_errno, strerror(expected_errno),
+			       errno, strerror(errno));
+		ksft_test_result_fail("%s\n", test_name);
 		return 1;
 	}
-	printf("[OK]\n");
+	ksft_test_result_pass("%s\n", test_name);
 	return 0;
 }
 
 static int check_execveat_invoked_rc(int fd, const char *path, int flags,
 				     int expected_rc, int expected_rc2)
 {
+	char test_name[TEST_NAME_LEN];
 	int status;
 	int rc;
 	pid_t child;
 	int pathlen = path ? strlen(path) : 0;
 
 	if (pathlen > 40)
-		printf("Check success of execveat(%d, '%.20s...%s', %d)... ",
-			fd, path, (path + pathlen - 20), flags);
+		snprintf(test_name, sizeof(test_name),
+			 "Check success of execveat(%d, '%.20s...%s', %d)... ",
+			 fd, path, (path + pathlen - 20), flags);
 	else
-		printf("Check success of execveat(%d, '%s', %d)... ",
-			fd, path?:"(null)", flags);
+		snprintf(test_name, sizeof(test_name),
+			 "Check success of execveat(%d, '%s', %d)... ",
+			 fd, path?:"(null)", flags);
+
 	child = fork();
 	if (child < 0) {
-		printf("[FAIL] (fork() failed)\n");
+		ksft_perror("fork() failed");
+		ksft_test_result_fail("%s\n", test_name);
 		return 1;
 	}
 	if (child == 0) {
 		/* Child: do execveat(). */
 		rc = execveat_(fd, path, argv, envp, flags);
-		printf("[FAIL]: execveat() failed, rc=%d errno=%d (%s)\n",
-			rc, errno, strerror(errno));
-		exit(1);  /* should not reach here */
+		ksft_print_msg("child execveat() failed, rc=%d errno=%d (%s)\n",
+			       rc, errno, strerror(errno));
+		exit(errno);
 	}
 	/* Parent: wait for & check child's exit status. */
 	rc = waitpid(child, &status, 0);
 	if (rc != child) {
-		printf("[FAIL] (waitpid(%d,...) returned %d)\n", child, rc);
+		ksft_print_msg("waitpid(%d,...) returned %d\n", child, rc);
+		ksft_test_result_fail("%s\n", test_name);
 		return 1;
 	}
 	if (!WIFEXITED(status)) {
-		printf("[FAIL] (child %d did not exit cleanly, status=%08x)\n",
-			child, status);
+		ksft_print_msg("child %d did not exit cleanly, status=%08x\n",
+			       child, status);
+		ksft_test_result_fail("%s\n", test_name);
 		return 1;
 	}
 	if ((WEXITSTATUS(status) != expected_rc) &&
 	    (WEXITSTATUS(status) != expected_rc2)) {
-		printf("[FAIL] (child %d exited with %d not %d nor %d)\n",
-			child, WEXITSTATUS(status), expected_rc, expected_rc2);
+		ksft_print_msg("child %d exited with %d neither %d nor %d\n",
+			       child, WEXITSTATUS(status), expected_rc,
+			       expected_rc2);
+		ksft_test_result_fail("%s\n", test_name);
 		return 1;
 	}
-	printf("[OK]\n");
+	ksft_test_result_pass("%s\n", test_name);
 	return 0;
 }
 
@@ -126,11 +145,9 @@ static int open_or_die(const char *filename, int flags)
 {
 	int fd = open(filename, flags);
 
-	if (fd < 0) {
-		printf("Failed to open '%s'; "
+	if (fd < 0)
+		ksft_exit_fail_msg("Failed to open '%s'; "
 			"check prerequisites are available\n", filename);
-		exit(1);
-	}
 	return fd;
 }
 
@@ -147,7 +164,7 @@ static void exe_cp(const char *src, const char *dest)
 }
 
 #define XX_DIR_LEN 200
-static int check_execveat_pathmax(int dot_dfd, const char *src, int is_script)
+static int check_execveat_pathmax(int root_dfd, const char *src, int is_script)
 {
 	int fail = 0;
 	int ii, count, len;
@@ -156,20 +173,29 @@ static int check_execveat_pathmax(int dot_dfd, const char *src, int is_script)
 
 	if (*longpath == '\0') {
 		/* Create a filename close to PATH_MAX in length */
+		char *cwd = getcwd(NULL, 0);
+
+		if (!cwd) {
+			ksft_perror("Failed to getcwd()");
+			return 2;
+		}
+		strcpy(longpath, cwd);
+		strcat(longpath, "/");
 		memset(longname, 'x', XX_DIR_LEN - 1);
 		longname[XX_DIR_LEN - 1] = '/';
 		longname[XX_DIR_LEN] = '\0';
-		count = (PATH_MAX - 3) / XX_DIR_LEN;
+		count = (PATH_MAX - 3 - strlen(cwd)) / XX_DIR_LEN;
 		for (ii = 0; ii < count; ii++) {
 			strcat(longpath, longname);
 			mkdir(longpath, 0755);
 		}
-		len = (PATH_MAX - 3) - (count * XX_DIR_LEN);
+		len = (PATH_MAX - 3 - strlen(cwd)) - (count * XX_DIR_LEN);
 		if (len <= 0)
 			len = 1;
 		memset(longname, 'y', len);
 		longname[len] = '\0';
 		strcat(longpath, longname);
+		free(cwd);
 	}
 	exe_cp(src, longpath);
 
@@ -180,17 +206,17 @@ static int check_execveat_pathmax(int dot_dfd, const char *src, int is_script)
 	 */
 	fd = open(longpath, O_RDONLY);
 	if (fd > 0) {
-		printf("Invoke copy of '%s' via filename of length %zu:\n",
-			src, strlen(longpath));
+		ksft_print_msg("Invoke copy of '%s' via filename of length %zu:\n",
+			       src, strlen(longpath));
 		fail += check_execveat(fd, "", AT_EMPTY_PATH);
 	} else {
-		printf("Failed to open length %zu filename, errno=%d (%s)\n",
-			strlen(longpath), errno, strerror(errno));
+		ksft_print_msg("Failed to open length %zu filename, errno=%d (%s)\n",
+			       strlen(longpath), errno, strerror(errno));
 		fail++;
 	}
 
 	/*
-	 * Execute as a long pathname relative to ".".  If this is a script,
+	 * Execute as a long pathname relative to "/".  If this is a script,
 	 * the interpreter will launch but fail to open the script because its
 	 * name ("/dev/fd/5/xxx....") is bigger than PATH_MAX.
 	 *
@@ -199,11 +225,14 @@ static int check_execveat_pathmax(int dot_dfd, const char *src, int is_script)
 	 * "If the command name is found, but it is not an executable utility,
 	 * the exit status shall be 126."), so allow either.
 	 */
-	if (is_script)
-		fail += check_execveat_invoked_rc(dot_dfd, longpath, 0,
+	if (is_script) {
+		ksft_print_msg("Invoke script via root_dfd and relative filename\n");
+		fail += check_execveat_invoked_rc(root_dfd, longpath + 1, 0,
 						  127, 126);
-	else
-		fail += check_execveat(dot_dfd, longpath, 0);
+	} else {
+		ksft_print_msg("Invoke exec via root_dfd and relative filename\n");
+		fail += check_execveat(root_dfd, longpath + 1, 0);
+	}
 
 	return fail;
 }
@@ -218,6 +247,7 @@ static int run_tests(void)
 	int subdir_dfd_ephemeral = open_or_die("subdir.ephemeral",
 					       O_DIRECTORY|O_RDONLY);
 	int dot_dfd = open_or_die(".", O_DIRECTORY|O_RDONLY);
+	int root_dfd = open_or_die("/", O_DIRECTORY|O_RDONLY);
 	int dot_dfd_path = open_or_die(".", O_DIRECTORY|O_RDONLY|O_PATH);
 	int dot_dfd_cloexec = open_or_die(".", O_DIRECTORY|O_RDONLY|O_CLOEXEC);
 	int fd = open_or_die("execveat", O_RDONLY);
@@ -238,8 +268,8 @@ static int run_tests(void)
 	errno = 0;
 	execveat_(-1, NULL, NULL, NULL, 0);
 	if (errno == ENOSYS) {
-		printf("[FAIL] ENOSYS calling execveat - no kernel support?\n");
-		return 1;
+		ksft_exit_skip(
+			"ENOSYS calling execveat - no kernel support?\n");
 	}
 
 	/* Change file position to confirm it doesn't affect anything */
@@ -299,6 +329,10 @@ static int run_tests(void)
 	fail += check_execveat_fail(AT_FDCWD, fullname_symlink,
 				    AT_SYMLINK_NOFOLLOW, ELOOP);
 
+	/*  Non-regular file failure */
+	fail += check_execveat_fail(dot_dfd, "pipe", 0, EACCES);
+	unlink("pipe");
+
 	/* Shell script wrapping executable file: */
 	/*   dfd + path */
 	fail += check_execveat(subdir_dfd, "../script", 0);
@@ -353,15 +387,15 @@ static int run_tests(void)
 	/* Attempt to execute relative to non-directory => ENOTDIR */
 	fail += check_execveat_fail(fd, "execveat", 0, ENOTDIR);
 
-	fail += check_execveat_pathmax(dot_dfd, "execveat", 0);
-	fail += check_execveat_pathmax(dot_dfd, "script", 1);
+	fail += check_execveat_pathmax(root_dfd, "execveat", 0);
+	fail += check_execveat_pathmax(root_dfd, "script", 1);
 	return fail;
 }
 
 static void prerequisites(void)
 {
 	int fd;
-	const char *script = "#!/bin/sh\nexit $*\n";
+	const char *script = "#!/bin/bash\nexit $*\n";
 
 	/* Create ephemeral copies of files */
 	exe_cp("execveat", "execveat.ephemeral");
@@ -372,6 +406,8 @@ static void prerequisites(void)
 	fd = open("subdir.ephemeral/script", O_RDWR|O_CREAT|O_TRUNC, 0755);
 	write(fd, script, strlen(script));
 	close(fd);
+
+	mkfifo("pipe", 0755);
 }
 
 int main(int argc, char **argv)
@@ -385,28 +421,31 @@ int main(int argc, char **argv)
 		const char *in_test = getenv("IN_TEST");
 
 		if (verbose) {
-			printf("  invoked with:");
+			ksft_print_msg("invoked with:\n");
 			for (ii = 0; ii < argc; ii++)
-				printf(" [%d]='%s'", ii, argv[ii]);
-			printf("\n");
+				ksft_print_msg("\t[%d]='%s\n'", ii, argv[ii]);
 		}
 
 		/* Check expected environment transferred. */
 		if (!in_test || strcmp(in_test, "yes") != 0) {
-			printf("[FAIL] (no IN_TEST=yes in env)\n");
+			ksft_print_msg("no IN_TEST=yes in env\n");
 			return 1;
 		}
 
 		/* Use the final argument as an exit code. */
 		rc = atoi(argv[argc - 1]);
-		fflush(stdout);
+		exit(rc);
 	} else {
+		ksft_print_header();
+		ksft_set_plan(TESTS_EXPECTED);
 		prerequisites();
 		if (verbose)
 			envp[1] = "VERBOSE=1";
 		rc = run_tests();
 		if (rc > 0)
 			printf("%d tests failed\n", rc);
+		ksft_finished();
 	}
+
 	return rc;
 }

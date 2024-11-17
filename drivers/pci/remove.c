@@ -1,33 +1,48 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/pci.h>
 #include <linux/module.h>
-#include <linux/pci-aspm.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
+
 #include "pci.h"
 
 static void pci_free_resources(struct pci_dev *dev)
 {
-	int i;
+	struct resource *res;
 
-	pci_cleanup_rom(dev);
-	for (i = 0; i < PCI_NUM_RESOURCES; i++) {
-		struct resource *res = dev->resource + i;
+	pci_dev_for_each_resource(dev, res) {
 		if (res->parent)
 			release_resource(res);
 	}
+}
+
+static int pci_pwrctl_unregister(struct device *dev, void *data)
+{
+	struct device_node *pci_node = data, *plat_node = dev_of_node(dev);
+
+	if (dev_is_platform(dev) && plat_node && plat_node == pci_node) {
+		of_device_unregister(to_platform_device(dev));
+		of_node_clear_flag(plat_node, OF_POPULATED);
+	}
+
+	return 0;
 }
 
 static void pci_stop_dev(struct pci_dev *dev)
 {
 	pci_pme_active(dev, false);
 
-	if (dev->is_added) {
+	if (pci_dev_is_added(dev)) {
+		device_for_each_child(dev->dev.parent, dev_of_node(&dev->dev),
+				      pci_pwrctl_unregister);
+		device_release_driver(&dev->dev);
 		pci_proc_detach_device(dev);
 		pci_remove_sysfs_dev_files(dev);
-		device_release_driver(&dev->dev);
-		dev->is_added = 0;
-	}
+		of_pci_remove_node(dev);
 
-	if (dev->bus->self)
-		pcie_aspm_exit_link_state(dev);
+		pci_dev_assign_added(dev, false);
+	}
 }
 
 static void pci_destroy_dev(struct pci_dev *dev)
@@ -35,12 +50,17 @@ static void pci_destroy_dev(struct pci_dev *dev)
 	if (!dev->dev.kobj.parent)
 		return;
 
+	pci_npem_remove(dev);
+
 	device_del(&dev->dev);
 
 	down_write(&pci_bus_sem);
 	list_del(&dev->bus_list);
 	up_write(&pci_bus_sem);
 
+	pci_doe_destroy(dev);
+	pcie_aspm_exit_link_state(dev);
+	pci_bridge_d3_update(dev);
 	pci_free_resources(dev);
 	put_device(&dev->dev);
 }
@@ -54,6 +74,10 @@ void pci_remove_bus(struct pci_bus *bus)
 	pci_bus_release_busn_res(bus);
 	up_write(&pci_bus_sem);
 	pci_remove_legacy_files(bus);
+
+	if (bus->ops->remove_bus)
+		bus->ops->remove_bus(bus);
+
 	pcibios_remove_bus(bus);
 	device_unregister(&bus->dev);
 }
@@ -153,10 +177,17 @@ void pci_remove_root_bus(struct pci_bus *bus)
 	list_for_each_entry_safe(child, tmp,
 				 &bus->devices, bus_list)
 		pci_remove_bus_device(child);
+
+#ifdef CONFIG_PCI_DOMAINS_GENERIC
+	/* Release domain_nr if it was dynamically allocated */
+	if (host_bridge->domain_nr == PCI_DOMAIN_NR_NOT_SET)
+		pci_bus_release_domain_nr(host_bridge->dev.parent, bus->domain_nr);
+#endif
+
 	pci_remove_bus(bus);
 	host_bridge->bus = NULL;
 
 	/* remove the host bridge */
-	device_unregister(&host_bridge->dev);
+	device_del(&host_bridge->dev);
 }
 EXPORT_SYMBOL_GPL(pci_remove_root_bus);

@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Maxtor Shared Storage II Board Setup
  *
  * Maintainer: Sylver Bruneau <sylver.bruneau@googlemail.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -17,8 +13,8 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
-#include <mach/orion5x.h>
-#include <mach/bridge-regs.h>
+#include "orion5x.h"
+#include "bridge-regs.h"
 #include "common.h"
 
 /*****************************************************************************
@@ -86,5 +82,5 @@ static void mss2_power_off(void)
 void __init mss2_init(void)
 {
 	/* register mss2 specific power-off method */
-	pm_power_off = mss2_power_off;
+	register_platform_power_off(mss2_power_off);
 }

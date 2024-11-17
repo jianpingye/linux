@@ -357,7 +357,7 @@ found:
 		default:
 			break;
 		}
-		/*FALLTHROUGH*/
+		fallthrough;
 	default:
 		bridge->driver = &ali_generic_bridge;
 	}
@@ -381,7 +381,7 @@ static void agp_ali_remove(struct pci_dev *pdev)
 	agp_put_bridge(bridge);
 }
 
-static struct pci_device_id agp_ali_pci_table[] = {
+static const struct pci_device_id agp_ali_pci_table[] = {
 	{
 	.class		= (PCI_CLASS_BRIDGE_HOST << 8),
 	.class_mask	= ~0,
@@ -418,5 +418,6 @@ module_init(agp_ali_init);
 module_exit(agp_ali_cleanup);
 
 MODULE_AUTHOR("Dave Jones");
+MODULE_DESCRIPTION("ALi AGPGART routines");
 MODULE_LICENSE("GPL and additional rights");
 

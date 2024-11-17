@@ -1,19 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * RNG: Random Number Generator  algorithms under the crypto API
  *
  * Copyright (c) 2008 Neil Horman <nhorman@tuxdriver.com>
  * Copyright (c) 2015 Herbert Xu <herbert@gondor.apana.org.au>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
  */
 
 #ifndef _CRYPTO_RNG_H
 #define _CRYPTO_RNG_H
 
+#include <linux/atomic.h>
+#include <linux/container_of.h>
 #include <linux/crypto.h>
 
 struct crypto_rng;
@@ -99,6 +96,11 @@ static inline struct crypto_tfm *crypto_rng_tfm(struct crypto_rng *tfm)
 	return &tfm->base;
 }
 
+static inline struct rng_alg *__crypto_rng_alg(struct crypto_alg *alg)
+{
+	return container_of(alg, struct rng_alg, base);
+}
+
 /**
  * crypto_rng_alg - obtain name of RNG
  * @tfm: cipher handle
@@ -109,13 +111,14 @@ static inline struct crypto_tfm *crypto_rng_tfm(struct crypto_rng *tfm)
  */
 static inline struct rng_alg *crypto_rng_alg(struct crypto_rng *tfm)
 {
-	return container_of(crypto_rng_tfm(tfm)->__crt_alg,
-			    struct rng_alg, base);
+	return __crypto_rng_alg(crypto_rng_tfm(tfm)->__crt_alg);
 }
 
 /**
  * crypto_free_rng() - zeroize and free RNG handle
  * @tfm: cipher handle to be freed
+ *
+ * If @tfm is a NULL or error pointer, this function does nothing.
  */
 static inline void crypto_free_rng(struct crypto_rng *tfm)
 {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * leon_pci_grpci1.c: GRPCI1 Host PCI driver
  *
@@ -12,10 +13,11 @@
  * Contributors: Daniel Hellstrom <daniel@gaisler.com>
  */
 
-#include <linux/of_device.h>
 #include <linux/export.h>
 #include <linux/kernel.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
+#include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/pci.h>
 
@@ -357,7 +359,7 @@ static struct irq_chip grpci1_irq = {
 };
 
 /* Handle one or multiple IRQs from the PCI core */
-static void grpci1_pci_flow_irq(unsigned int irq, struct irq_desc *desc)
+static void grpci1_pci_flow_irq(struct irq_desc *desc)
 {
 	struct grpci1_priv *priv = grpci1priv;
 	int i, ack = 0;
@@ -695,7 +697,7 @@ err1:
 	return err;
 }
 
-static struct of_device_id grpci1_of_match[] = {
+static const struct of_device_id grpci1_of_match[] = {
 	{
 	 .name = "GAISLER_PCIFBRG",
 	 },

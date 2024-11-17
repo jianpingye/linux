@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Combined Ethernet driver for Motorola MPC8xx and MPC82xx.
  *
@@ -6,10 +7,6 @@
  *
  * 2005 (c) MontaVista Software, Inc.
  * Vitaly Bordug <vbordug@ru.mvista.com>
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2. This program is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  */
 
 #include <linux/module.h>
@@ -29,8 +26,8 @@
 
 struct bb_info {
 	struct mdiobb_ctrl ctrl;
-	__be32 __iomem *dir;
-	__be32 __iomem *dat;
+	u32 __iomem *dir;
+	u32 __iomem *dat;
 	u32 mdio_msk;
 	u32 mdc_msk;
 };
@@ -100,7 +97,7 @@ static inline void mdc(struct mdiobb_ctrl *ctrl, int what)
 	in_be32(bitbang->dat);
 }
 
-static struct mdiobb_ops bb_ops = {
+static const struct mdiobb_ops bb_ops = {
 	.owner = THIS_MODULE,
 	.set_mdc = mdc,
 	.set_mdio_dir = mdio_dir,
@@ -172,23 +169,16 @@ static int fs_enet_mdio_probe(struct platform_device *ofdev)
 		goto out_free_bus;
 
 	new_bus->phy_mask = ~0;
-	new_bus->irq = kmalloc(sizeof(int) * PHY_MAX_ADDR, GFP_KERNEL);
-	if (!new_bus->irq) {
-		ret = -ENOMEM;
-		goto out_unmap_regs;
-	}
 
 	new_bus->parent = &ofdev->dev;
 	platform_set_drvdata(ofdev, new_bus);
 
 	ret = of_mdiobus_register(new_bus, ofdev->dev.of_node);
 	if (ret)
-		goto out_free_irqs;
+		goto out_unmap_regs;
 
 	return 0;
 
-out_free_irqs:
-	kfree(new_bus->irq);
 out_unmap_regs:
 	iounmap(bitbang->dir);
 out_free_bus:
@@ -199,18 +189,15 @@ out:
 	return ret;
 }
 
-static int fs_enet_mdio_remove(struct platform_device *ofdev)
+static void fs_enet_mdio_remove(struct platform_device *ofdev)
 {
 	struct mii_bus *bus = platform_get_drvdata(ofdev);
 	struct bb_info *bitbang = bus->priv;
 
 	mdiobus_unregister(bus);
-	kfree(bus->irq);
 	free_mdio_bitbang(bus);
 	iounmap(bitbang->dir);
 	kfree(bitbang);
-
-	return 0;
 }
 
 static const struct of_device_id fs_enet_mdio_bb_match[] = {
@@ -227,7 +214,8 @@ static struct platform_driver fs_enet_bb_mdio_driver = {
 		.of_match_table = fs_enet_mdio_bb_match,
 	},
 	.probe = fs_enet_mdio_probe,
-	.remove = fs_enet_mdio_remove,
+	.remove_new = fs_enet_mdio_remove,
 };
 
 module_platform_driver(fs_enet_bb_mdio_driver);
+MODULE_LICENSE("GPL");

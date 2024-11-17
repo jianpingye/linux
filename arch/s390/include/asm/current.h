@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  S390 version
  *    Copyright IBM Corp. 1999
@@ -13,6 +14,6 @@
 
 struct task_struct;
 
-#define current ((struct task_struct *const)S390_lowcore.current_task)
+#define current ((struct task_struct *const)get_lowcore()->current_task)
 
 #endif /* !(_S390_CURRENT_H) */

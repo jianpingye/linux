@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * This program is used to generate definitions needed by
  * assembly language modules.
@@ -11,20 +12,21 @@
  */
 
 #include <linux/sched.h>
+#include <linux/mm_types.h>
 // #include <linux/mm.h>
 #include <linux/kbuild.h>
 
 #include <asm/hibernate.h>
 
 #ifdef CONFIG_SPARC32
-int sparc32_foo(void)
+static int __used sparc32_foo(void)
 {
 	DEFINE(AOFF_thread_fork_kpsr,
 			offsetof(struct thread_struct, fork_kpsr));
 	return 0;
 }
 #else
-int sparc64_foo(void)
+static int __used sparc64_foo(void)
 {
 #ifdef CONFIG_HIBERNATION
 	BLANK();
@@ -43,7 +45,7 @@ int sparc64_foo(void)
 }
 #endif
 
-int foo(void)
+static int __used foo(void)
 {
 	BLANK();
 	DEFINE(AOFF_task_thread, offsetof(struct task_struct, thread));

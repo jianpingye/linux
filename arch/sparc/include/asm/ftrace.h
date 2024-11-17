@@ -1,18 +1,23 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_SPARC64_FTRACE
 #define _ASM_SPARC64_FTRACE
 
 #ifdef CONFIG_MCOUNT
-#define MCOUNT_ADDR		((long)(_mcount))
+#define MCOUNT_ADDR		((unsigned long)(_mcount))
 #define MCOUNT_INSN_SIZE	4 /* sizeof mcount call */
 
 #ifndef __ASSEMBLY__
 void _mcount(void);
 #endif
 
+#endif /* CONFIG_MCOUNT */
+
+#if defined(CONFIG_SPARC64) && !defined(CC_USE_FENTRY)
+#define HAVE_FUNCTION_GRAPH_FP_TEST
 #endif
 
 #ifdef CONFIG_DYNAMIC_FTRACE
-/* reloction of mcount call site is the same as the address */
+/* relocation of mcount call site is the same as the address */
 static inline unsigned long ftrace_call_adjust(unsigned long addr)
 {
 	return addr;

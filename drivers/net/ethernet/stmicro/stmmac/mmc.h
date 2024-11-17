@@ -1,23 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*******************************************************************************
   MMC Header file
 
   Copyright (C) 2011  STMicroelectronics Ltd
 
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
 
   Author: Giuseppe Cavallaro <peppe.cavallaro@st.com>
 *******************************************************************************/
@@ -35,6 +21,11 @@
 						 * current value.*/
 #define MMC_CNTRL_PRESET		0x10
 #define MMC_CNTRL_FULL_HALF_PRESET	0x20
+
+#define MMC_GMAC4_OFFSET		0x700
+#define MMC_GMAC3_X_OFFSET		0x100
+#define MMC_XGMAC_OFFSET		0x800
+
 struct stmmac_counters {
 	unsigned int mmc_tx_octetcount_gb;
 	unsigned int mmc_tx_framecount_gb;
@@ -61,6 +52,9 @@ struct stmmac_counters {
 	unsigned int mmc_tx_excessdef;
 	unsigned int mmc_tx_pause_frame;
 	unsigned int mmc_tx_vlan_frame_g;
+	unsigned int mmc_tx_oversize_g;
+	unsigned int mmc_tx_lpi_usec;
+	unsigned int mmc_tx_lpi_tran;
 
 	/* MMC RX counter registers */
 	unsigned int mmc_rx_framecount_gb;
@@ -87,9 +81,13 @@ struct stmmac_counters {
 	unsigned int mmc_rx_fifo_overflow;
 	unsigned int mmc_rx_vlan_frames_gb;
 	unsigned int mmc_rx_watchdog_error;
-	/* IPC */
-	unsigned int mmc_rx_ipc_intr_mask;
-	unsigned int mmc_rx_ipc_intr;
+	unsigned int mmc_rx_error;
+	unsigned int mmc_rx_lpi_usec;
+	unsigned int mmc_rx_lpi_tran;
+	unsigned int mmc_rx_discard_frames_gb;
+	unsigned int mmc_rx_discard_octets_gb;
+	unsigned int mmc_rx_align_err_frames;
+
 	/* IPv4 */
 	unsigned int mmc_rx_ipv4_gd;
 	unsigned int mmc_rx_ipv4_hderr;
@@ -126,10 +124,19 @@ struct stmmac_counters {
 	unsigned int mmc_rx_tcp_err_octets;
 	unsigned int mmc_rx_icmp_gd_octets;
 	unsigned int mmc_rx_icmp_err_octets;
-};
 
-void dwmac_mmc_ctrl(void __iomem *ioaddr, unsigned int mode);
-void dwmac_mmc_intr_all_mask(void __iomem *ioaddr);
-void dwmac_mmc_read(void __iomem *ioaddr, struct stmmac_counters *mmc);
+	/* Stream-Gate Filter */
+	unsigned int mmc_sgf_pass_fragment_cntr;
+	unsigned int mmc_sgf_fail_fragment_cntr;
+
+	/* FPE */
+	unsigned int mmc_tx_fpe_fragment_cntr;
+	unsigned int mmc_tx_hold_req_cntr;
+	unsigned int mmc_tx_gate_overrun_cntr;
+	unsigned int mmc_rx_packet_assembly_err_cntr;
+	unsigned int mmc_rx_packet_smd_err_cntr;
+	unsigned int mmc_rx_packet_assembly_ok_cntr;
+	unsigned int mmc_rx_fpe_fragment_cntr;
+};
 
 #endif /* __MMC_H__ */

@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * i2sbus driver -- bus control routines
  *
  * Copyright 2006 Johannes Berg <johannes@sipsolutions.net>
- *
- * GPL v2, can be found in COPYING.
  */
 
 #include <linux/kernel.h>
@@ -11,7 +10,6 @@
 #include <linux/slab.h>
 #include <linux/io.h>
 
-#include <asm/prom.h>
 #include <asm/macio.h>
 #include <asm/pmac_feature.h>
 #include <asm/pmac_pfunc.h>

@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * ci.h - common structures, functions, and macros of the ChipIdea driver
  *
  * Copyright (C) 2008 Chipidea - MIPS Technologies, Inc. All rights reserved.
  *
  * Author: David Lopo
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __DRIVERS_USB_CHIPIDEA_CI_H
@@ -18,6 +15,9 @@
 #include <linux/usb.h>
 #include <linux/usb/gadget.h>
 #include <linux/usb/otg-fsm.h>
+#include <linux/usb/otg.h>
+#include <linux/usb/role.h>
+#include <linux/ulpi/interface.h>
 
 /******************************************************************************
  * DEFINE
@@ -25,6 +25,7 @@
 #define TD_PAGE_COUNT      5
 #define CI_HDRC_PAGE_SIZE  4096ul /* page size for TD's */
 #define ENDPT_MAX          32
+#define CI_MAX_BUF_SIZE	(TD_PAGE_COUNT * CI_HDRC_PAGE_SIZE)
 
 /******************************************************************************
  * REGISTERS
@@ -48,8 +49,12 @@ enum ci_hw_regs {
 	OP_USBCMD,
 	OP_USBSTS,
 	OP_USBINTR,
+	OP_FRINDEX,
 	OP_DEVICEADDR,
 	OP_ENDPTLISTADDR,
+	OP_TTCTRL,
+	OP_BURSTSIZE,
+	OP_ULPI_VIEWPORT,
 	OP_PORTSC,
 	OP_DEVLC,
 	OP_OTGSC,
@@ -122,12 +127,16 @@ enum ci_revision {
  * struct ci_role_driver - host/gadget role driver
  * @start: start this role
  * @stop: stop this role
+ * @suspend: system suspend handler for this role
+ * @resume: system resume handler for this role
  * @irq: irq handler for this role
  * @name: role name string (host/gadget)
  */
 struct ci_role_driver {
 	int		(*start)(struct ci_hdrc *);
 	void		(*stop)(struct ci_hdrc *);
+	void		(*suspend)(struct ci_hdrc *ci);
+	void		(*resume)(struct ci_hdrc *ci, bool power_lost);
 	irqreturn_t	(*irq)(struct ci_hdrc *);
 	const char	*name;
 };
@@ -167,11 +176,13 @@ struct hw_bank {
  * @enabled_otg_timer_bits: bits of enabled otg timers
  * @next_otg_timer: next nearest enabled timer to be expired
  * @work: work for role changing
+ * @power_lost_work: work for power lost handling
  * @wq: workqueue thread
  * @qh_pool: allocation pool for queue heads
  * @td_pool: allocation pool for transfer descriptors
  * @gadget: device side representation for peripheral controller
  * @driver: gadget driver
+ * @resume_state: save the state of gadget suspend from
  * @hw_ep_max: total number of endpoints supported by hardware
  * @ci_hw_ep: array of endpoints
  * @ep0_dir: ep0 direction
@@ -185,10 +196,11 @@ struct hw_bank {
  * @test_mode: the selected test mode
  * @platdata: platform specific information supplied by parent device
  * @vbus_active: is VBUS active
+ * @ulpi: pointer to ULPI device, if any
+ * @ulpi_ops: ULPI read/write ops for this device
  * @phy: pointer to PHY, if any
  * @usb_phy: pointer to USB PHY, if any and if using the USB PHY framework
  * @hcd: pointer to usb_hcd for ehci host driver
- * @debugfs: root dentry for this controller in debugfs
  * @id_event: indicates there is an id event, and handled at ci_otg_work
  * @b_sess_valid_event: indicates there is a vbus event, and handled
  * at ci_otg_work
@@ -197,6 +209,7 @@ struct hw_bank {
  * @in_lpm: if the core in low power mode
  * @wakeup_int: if wakeup interrupt occur
  * @rev: The revision number for controller
+ * @mutex: protect code from concorrent running when doing role switch
  */
 struct ci_hdrc {
 	struct device			*dev;
@@ -212,7 +225,9 @@ struct ci_hdrc {
 	ktime_t				hr_timeouts[NUM_OTG_FSM_TIMERS];
 	unsigned			enabled_otg_timer_bits;
 	enum otg_fsm_timer		next_otg_timer;
+	struct usb_role_switch		*role_switch;
 	struct work_struct		work;
+	struct work_struct		power_lost_work;
 	struct workqueue_struct		*wq;
 
 	struct dma_pool			*qh_pool;
@@ -220,6 +235,7 @@ struct ci_hdrc {
 
 	struct usb_gadget		gadget;
 	struct usb_gadget_driver	*driver;
+	enum usb_device_state		resume_state;
 	unsigned			hw_ep_max;
 	struct ci_hw_ep			ci_hw_ep[ENDPT_MAX];
 	u32				ep0_dir;
@@ -234,18 +250,21 @@ struct ci_hdrc {
 
 	struct ci_hdrc_platform_data	*platdata;
 	int				vbus_active;
+	struct ulpi			*ulpi;
+	struct ulpi_ops 		ulpi_ops;
 	struct phy			*phy;
 	/* old usb_phy interface */
 	struct usb_phy			*usb_phy;
 	struct usb_hcd			*hcd;
-	struct dentry			*debugfs;
 	bool				id_event;
 	bool				b_sess_valid_event;
 	bool				imx28_write_fix;
+	bool				has_portsc_pec_bug;
 	bool				supports_runtime_pm;
 	bool				in_lpm;
 	bool				wakeup_int;
 	enum ci_revision		rev;
+	struct mutex                    mutex;
 };
 
 static inline struct ci_role_driver *ci_role(struct ci_hdrc *ci)
@@ -265,8 +284,19 @@ static inline int ci_role_start(struct ci_hdrc *ci, enum ci_role role)
 		return -ENXIO;
 
 	ret = ci->roles[role]->start(ci);
-	if (!ret)
-		ci->role = role;
+	if (ret)
+		return ret;
+
+	ci->role = role;
+
+	if (ci->usb_phy) {
+		if (role == CI_ROLE_HOST)
+			usb_phy_set_event(ci->usb_phy, USB_EVENT_ID);
+		else
+			/* in device mode but vbus is invalid*/
+			usb_phy_set_event(ci->usb_phy, USB_EVENT_NONE);
+	}
+
 	return ret;
 }
 
@@ -280,6 +310,29 @@ static inline void ci_role_stop(struct ci_hdrc *ci)
 	ci->role = CI_ROLE_END;
 
 	ci->roles[role]->stop(ci);
+
+	if (ci->usb_phy)
+		usb_phy_set_event(ci->usb_phy, USB_EVENT_NONE);
+}
+
+static inline enum usb_role ci_role_to_usb_role(struct ci_hdrc *ci)
+{
+	if (ci->role == CI_ROLE_HOST)
+		return USB_ROLE_HOST;
+	else if (ci->role == CI_ROLE_GADGET && ci->vbus_active)
+		return USB_ROLE_DEVICE;
+	else
+		return USB_ROLE_NONE;
+}
+
+static inline enum ci_role usb_role_to_ci_role(enum usb_role role)
+{
+	if (role == USB_ROLE_HOST)
+		return CI_ROLE_HOST;
+	else if (role == USB_ROLE_DEVICE)
+		return CI_ROLE_GADGET;
+	else
+		return CI_ROLE_END;
 }
 
 /**
@@ -406,12 +459,19 @@ static inline u32 hw_test_and_write(struct ci_hdrc *ci, enum ci_hw_regs reg,
 static inline bool ci_otg_is_fsm_mode(struct ci_hdrc *ci)
 {
 #ifdef CONFIG_USB_OTG_FSM
+	struct usb_otg_caps *otg_caps = &ci->platdata->ci_otg_caps;
+
 	return ci->is_otg && ci->roles[CI_ROLE_HOST] &&
-					ci->roles[CI_ROLE_GADGET];
+		ci->roles[CI_ROLE_GADGET] && (otg_caps->srp_support ||
+		otg_caps->hnp_support || otg_caps->adp_support);
 #else
 	return false;
 #endif
 }
+
+int ci_ulpi_init(struct ci_hdrc *ci);
+void ci_ulpi_exit(struct ci_hdrc *ci);
+int ci_ulpi_resume(struct ci_hdrc *ci);
 
 u32 hw_read_intr_enable(struct ci_hdrc *ci);
 
@@ -423,7 +483,11 @@ int hw_port_test_set(struct ci_hdrc *ci, u8 mode);
 
 u8 hw_port_test_get(struct ci_hdrc *ci);
 
-int hw_wait_reg(struct ci_hdrc *ci, enum ci_hw_regs reg, u32 mask,
-				u32 value, unsigned int timeout_ms);
+void hw_phymode_configure(struct ci_hdrc *ci);
 
+void ci_platform_configure(struct ci_hdrc *ci);
+
+void dbg_create_files(struct ci_hdrc *ci);
+
+void dbg_remove_files(struct ci_hdrc *ci);
 #endif	/* __DRIVERS_USB_CHIPIDEA_CI_H */

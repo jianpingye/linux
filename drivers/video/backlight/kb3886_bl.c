@@ -1,22 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Backlight Driver for the KB3886 Backlight
  *
  *  Copyright (c) 2007-2008 Claudio Nieder
  *
  *  Based on corgi_bl.c by Richard Purdie and kb3886 driver by Robert Woerle
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
  */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
-#include <linux/fb.h>
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/dmi.h>
@@ -78,7 +74,7 @@ static struct kb3886bl_machinfo *bl_machinfo;
 static unsigned long kb3886bl_flags;
 #define KB3886BL_SUSPENDED     0x01
 
-static struct dmi_system_id kb3886bl_device_table[] __initdata = {
+static const struct dmi_system_id kb3886bl_device_table[] __initconst = {
 	{
 		.ident = "Sahara Touch-iT",
 		.matches = {
@@ -91,12 +87,8 @@ static struct dmi_system_id kb3886bl_device_table[] __initdata = {
 
 static int kb3886bl_send_intensity(struct backlight_device *bd)
 {
-	int intensity = bd->props.brightness;
+	int intensity = backlight_get_brightness(bd);
 
-	if (bd->props.power != FB_BLANK_UNBLANK)
-		intensity = 0;
-	if (bd->props.fb_blank != FB_BLANK_UNBLANK)
-		intensity = 0;
 	if (kb3886bl_flags & KB3886BL_SUSPENDED)
 		intensity = 0;
 
@@ -159,7 +151,7 @@ static int kb3886bl_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, kb3886_backlight_device);
 
-	kb3886_backlight_device->props.power = FB_BLANK_UNBLANK;
+	kb3886_backlight_device->props.power = BACKLIGHT_POWER_ON;
 	kb3886_backlight_device->props.brightness = machinfo->default_intensity;
 	backlight_update_status(kb3886_backlight_device);
 

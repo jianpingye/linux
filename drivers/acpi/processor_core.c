@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2005 Intel Corporation
  * Copyright (C) 2009 Hewlett-Packard Development Company, L.P.
@@ -12,9 +13,6 @@
 #include <linux/export.h>
 #include <linux/acpi.h>
 #include <acpi/processor.h>
-
-#define _COMPONENT		ACPI_PROCESSOR_COMPONENT
-ACPI_MODULE_NAME("processor_core");
 
 static struct acpi_table_madt *get_madt_table(void)
 {
@@ -92,7 +90,8 @@ static int map_gicc_mpidr(struct acpi_subtable_header *entry,
 	struct acpi_madt_generic_interrupt *gicc =
 	    container_of(entry, struct acpi_madt_generic_interrupt, header);
 
-	if (!(gicc->flags & ACPI_MADT_ENABLED))
+	if (!(gicc->flags &
+	      (ACPI_MADT_ENABLED | ACPI_MADT_GICC_ONLINE_CAPABLE)))
 		return -ENODEV;
 
 	/* device_declaration means Device object in DSDT, in the
@@ -108,13 +107,62 @@ static int map_gicc_mpidr(struct acpi_subtable_header *entry,
 	return -EINVAL;
 }
 
-static phys_cpuid_t map_madt_entry(int type, u32 acpi_id)
+/*
+ * Retrieve the RISC-V hartid for the processor
+ */
+static int map_rintc_hartid(struct acpi_subtable_header *entry,
+			    int device_declaration, u32 acpi_id,
+			    phys_cpuid_t *hartid)
+{
+	struct acpi_madt_rintc *rintc =
+	    container_of(entry, struct acpi_madt_rintc, header);
+
+	if (!(rintc->flags & ACPI_MADT_ENABLED))
+		return -ENODEV;
+
+	/* device_declaration means Device object in DSDT, in the
+	 * RISC-V, logical processors are required to
+	 * have a Processor Device object in the DSDT, so we should
+	 * check device_declaration here
+	 */
+	if (device_declaration && rintc->uid == acpi_id) {
+		*hartid = rintc->hart_id;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+/*
+ * Retrieve LoongArch CPU physical id
+ */
+static int map_core_pic_id(struct acpi_subtable_header *entry,
+		int device_declaration, u32 acpi_id, phys_cpuid_t *phys_id)
+{
+	struct acpi_madt_core_pic *core_pic =
+		container_of(entry, struct acpi_madt_core_pic, header);
+
+	if (!(core_pic->flags & ACPI_MADT_ENABLED))
+		return -ENODEV;
+
+	/* device_declaration means Device object in DSDT, in LoongArch
+	 * system, logical processor acpi_id is required in _UID property
+	 * of DSDT table, so we should check device_declaration here
+	 */
+	if (device_declaration && (core_pic->processor_id == acpi_id)) {
+		*phys_id = core_pic->core_id;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+static phys_cpuid_t map_madt_entry(struct acpi_table_madt *madt,
+				   int type, u32 acpi_id)
 {
 	unsigned long madt_end, entry;
 	phys_cpuid_t phys_id = PHYS_CPUID_INVALID;	/* CPU hardware ID */
-	struct acpi_table_madt *madt;
 
-	madt = get_madt_table();
 	if (!madt)
 		return phys_id;
 
@@ -139,10 +187,48 @@ static phys_cpuid_t map_madt_entry(int type, u32 acpi_id)
 		} else if (header->type == ACPI_MADT_TYPE_GENERIC_INTERRUPT) {
 			if (!map_gicc_mpidr(header, type, acpi_id, &phys_id))
 				break;
+		} else if (header->type == ACPI_MADT_TYPE_RINTC) {
+			if (!map_rintc_hartid(header, type, acpi_id, &phys_id))
+				break;
+		} else if (header->type == ACPI_MADT_TYPE_CORE_PIC) {
+			if (!map_core_pic_id(header, type, acpi_id, &phys_id))
+				break;
 		}
 		entry += header->length;
 	}
 	return phys_id;
+}
+
+phys_cpuid_t __init acpi_map_madt_entry(u32 acpi_id)
+{
+	struct acpi_table_madt *madt = NULL;
+	phys_cpuid_t rv;
+
+	acpi_get_table(ACPI_SIG_MADT, 0,
+		       (struct acpi_table_header **)&madt);
+	if (!madt)
+		return PHYS_CPUID_INVALID;
+
+	rv = map_madt_entry(madt, 1, acpi_id);
+
+	acpi_put_table((struct acpi_table_header *)madt);
+
+	return rv;
+}
+
+int __init acpi_get_madt_revision(void)
+{
+	struct acpi_table_header *madt = NULL;
+	int revision;
+
+	if (ACPI_FAILURE(acpi_get_table(ACPI_SIG_MADT, 0, &madt)))
+		return -EINVAL;
+
+	revision = madt->revision;
+
+	acpi_put_table(madt);
+
+	return revision;
 }
 
 static phys_cpuid_t map_mat_entry(acpi_handle handle, int type, u32 acpi_id)
@@ -173,6 +259,8 @@ static phys_cpuid_t map_mat_entry(acpi_handle handle, int type, u32 acpi_id)
 		map_x2apic_id(header, type, acpi_id, &phys_id);
 	else if (header->type == ACPI_MADT_TYPE_GENERIC_INTERRUPT)
 		map_gicc_mpidr(header, type, acpi_id, &phys_id);
+	else if (header->type == ACPI_MADT_TYPE_CORE_PIC)
+		map_core_pic_id(header, type, acpi_id, &phys_id);
 
 exit:
 	kfree(buffer.pointer);
@@ -185,10 +273,11 @@ phys_cpuid_t acpi_get_phys_id(acpi_handle handle, int type, u32 acpi_id)
 
 	phys_id = map_mat_entry(handle, type, acpi_id);
 	if (invalid_phys_cpuid(phys_id))
-		phys_id = map_madt_entry(type, acpi_id);
+		phys_id = map_madt_entry(get_madt_table(), type, acpi_id);
 
 	return phys_id;
 }
+EXPORT_SYMBOL_GPL(acpi_get_phys_id);
 
 int acpi_map_cpuid(phys_cpuid_t phys_id, u32 acpi_id)
 {

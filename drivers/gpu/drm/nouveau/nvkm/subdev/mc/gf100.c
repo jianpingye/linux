@@ -21,56 +21,62 @@
  *
  * Authors: Ben Skeggs
  */
-#include "nv04.h"
+#include "priv.h"
 
-const struct nvkm_mc_intr
-gf100_mc_intr[] = {
-	{ 0x04000000, NVDEV_ENGINE_DISP },  /* DISP first, so pageflip timestamps work. */
-	{ 0x00000001, NVDEV_ENGINE_MSPPP },
-	{ 0x00000020, NVDEV_ENGINE_CE0 },
-	{ 0x00000040, NVDEV_ENGINE_CE1 },
-	{ 0x00000080, NVDEV_ENGINE_CE2 },
-	{ 0x00000100, NVDEV_ENGINE_FIFO },
-	{ 0x00001000, NVDEV_ENGINE_GR },
-	{ 0x00002000, NVDEV_SUBDEV_FB },
-	{ 0x00008000, NVDEV_ENGINE_MSVLD },
-	{ 0x00040000, NVDEV_SUBDEV_THERM },
-	{ 0x00020000, NVDEV_ENGINE_MSPDEC },
-	{ 0x00100000, NVDEV_SUBDEV_TIMER },
-	{ 0x00200000, NVDEV_SUBDEV_GPIO },	/* PMGR->GPIO */
-	{ 0x00200000, NVDEV_SUBDEV_I2C },	/* PMGR->I2C/AUX */
-	{ 0x01000000, NVDEV_SUBDEV_PMU },
-	{ 0x02000000, NVDEV_SUBDEV_LTC },
-	{ 0x08000000, NVDEV_SUBDEV_FB },
-	{ 0x10000000, NVDEV_SUBDEV_BUS },
-	{ 0x40000000, NVDEV_SUBDEV_IBUS },
-	{ 0x80000000, NVDEV_ENGINE_SW },
+static const struct nvkm_mc_map
+gf100_mc_reset[] = {
+	{ 0x00020000, NVKM_ENGINE_MSPDEC },
+	{ 0x00008000, NVKM_ENGINE_MSVLD },
+	{ 0x00002000, NVKM_SUBDEV_PMU, 0, true },
+	{ 0x00001000, NVKM_ENGINE_GR },
+	{ 0x00000100, NVKM_ENGINE_FIFO },
+	{ 0x00000080, NVKM_ENGINE_CE, 1 },
+	{ 0x00000040, NVKM_ENGINE_CE, 0 },
+	{ 0x00000002, NVKM_ENGINE_MSPPP },
+	{}
+};
+
+static const struct nvkm_intr_data
+gf100_mc_intrs[] = {
+	{ NVKM_ENGINE_DISP    , 0, 0, 0x04000000, true },
+	{ NVKM_ENGINE_MSPDEC  , 0, 0, 0x00020000, true },
+	{ NVKM_ENGINE_MSVLD   , 0, 0, 0x00008000, true },
+	{ NVKM_ENGINE_GR      , 0, 0, 0x00001000 },
+	{ NVKM_ENGINE_FIFO    , 0, 0, 0x00000100 },
+	{ NVKM_ENGINE_CE      , 1, 0, 0x00000040, true },
+	{ NVKM_ENGINE_CE      , 0, 0, 0x00000020, true },
+	{ NVKM_ENGINE_MSPPP   , 0, 0, 0x00000001, true },
+	{ NVKM_SUBDEV_PRIVRING, 0, 0, 0x40000000, true },
+	{ NVKM_SUBDEV_BUS     , 0, 0, 0x10000000, true },
+	{ NVKM_SUBDEV_FB      , 0, 0, 0x08002000, true },
+	{ NVKM_SUBDEV_LTC     , 0, 0, 0x02000000, true },
+	{ NVKM_SUBDEV_PMU     , 0, 0, 0x01000000, true },
+	{ NVKM_SUBDEV_GPIO    , 0, 0, 0x00200000, true },
+	{ NVKM_SUBDEV_I2C     , 0, 0, 0x00200000, true },
+	{ NVKM_SUBDEV_TIMER   , 0, 0, 0x00100000, true },
+	{ NVKM_SUBDEV_THERM   , 0, 0, 0x00040000, true },
 	{},
 };
 
-static void
-gf100_mc_msi_rearm(struct nvkm_mc *pmc)
-{
-	struct nv04_mc_priv *priv = (void *)pmc;
-	nv_wr32(priv, 0x088704, 0x00000000);
-}
-
 void
-gf100_mc_unk260(struct nvkm_mc *pmc, u32 data)
+gf100_mc_unk260(struct nvkm_mc *mc, u32 data)
 {
-	nv_wr32(pmc, 0x000260, data);
+	nvkm_wr32(mc->subdev.device, 0x000260, data);
 }
 
-struct nvkm_oclass *
-gf100_mc_oclass = &(struct nvkm_mc_oclass) {
-	.base.handle = NV_SUBDEV(MC, 0xc0),
-	.base.ofuncs = &(struct nvkm_ofuncs) {
-		.ctor = nv04_mc_ctor,
-		.dtor = _nvkm_mc_dtor,
-		.init = nv50_mc_init,
-		.fini = _nvkm_mc_fini,
-	},
-	.intr = gf100_mc_intr,
-	.msi_rearm = gf100_mc_msi_rearm,
+static const struct nvkm_mc_func
+gf100_mc = {
+	.init = nv50_mc_init,
+	.intr = &gt215_mc_intr,
+	.intrs = gf100_mc_intrs,
+	.intr_nonstall = true,
+	.reset = gf100_mc_reset,
+	.device = &nv04_mc_device,
 	.unk260 = gf100_mc_unk260,
-}.base;
+};
+
+int
+gf100_mc_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst, struct nvkm_mc **pmc)
+{
+	return nvkm_mc_new_(&gf100_mc, device, type, inst, pmc);
+}

@@ -13,7 +13,7 @@
 
 import gdb
 
-from linux import cpus, utils
+from linux import cpus, utils, lists, constants
 
 
 module_type = utils.CachedType("struct module")
@@ -21,14 +21,14 @@ module_type = utils.CachedType("struct module")
 
 def module_list():
     global module_type
-    module_ptr_type = module_type.get_type().pointer()
-    modules = gdb.parse_and_eval("modules")
-    entry = modules['next']
-    end_of_list = modules.address
+    modules = utils.gdb_eval_or_none("modules")
+    if modules is None:
+        return
 
-    while entry != end_of_list:
-        yield utils.container_of(entry, module_ptr_type, "list")
-        entry = entry['next']
+    module_ptr_type = module_type.get_type().pointer()
+
+    for module in lists.list_for_each_entry(modules, module_ptr_type, "list"):
+        yield module
 
 
 def find_module_by_name(name):
@@ -73,24 +73,59 @@ class LxLsmod(gdb.Command):
                 "        " if utils.get_long_type().sizeof == 8 else ""))
 
         for module in module_list():
-            gdb.write("{address} {name:<19} {size:>8}  {ref}".format(
-                address=str(module['module_core']).split()[0],
-                name=module['name'].string(),
-                size=str(module['core_size']),
-                ref=str(module['refcnt']['counter'])))
+            text = module['mem'][constants.LX_MOD_TEXT]
+            text_addr = str(text['base']).split()[0]
+            total_size = 0
 
-            source_list = module['source_list']
+            for i in range(constants.LX_MOD_TEXT, constants.LX_MOD_RO_AFTER_INIT + 1):
+                total_size += module['mem'][i]['size']
+
+            gdb.write("{address} {name:<19} {size:>8}  {ref}".format(
+                address=text_addr,
+                name=module['name'].string(),
+                size=str(total_size),
+                ref=str(module['refcnt']['counter'] - 1)))
+
             t = self._module_use_type.get_type().pointer()
-            entry = source_list['next']
             first = True
-            while entry != source_list.address:
-                use = utils.container_of(entry, t, "source_list")
+            sources = module['source_list']
+            for use in lists.list_for_each_entry(sources, t, "source_list"):
                 gdb.write("{separator}{name}".format(
                     separator=" " if first else ",",
                     name=use['source']['name'].string()))
                 first = False
-                entry = entry['next']
+
             gdb.write("\n")
 
-
 LxLsmod()
+
+def help():
+    t = """Usage: lx-getmod-by-textaddr [Heximal Address]
+    Example: lx-getmod-by-textaddr 0xffff800002d305ac\n"""
+    gdb.write("Unrecognized command\n")
+    raise gdb.GdbError(t)
+
+class LxFindTextAddrinMod(gdb.Command):
+    '''Look up loaded kernel module by text address.'''
+
+    def __init__(self):
+        super(LxFindTextAddrinMod, self).__init__('lx-getmod-by-textaddr', gdb.COMMAND_SUPPORT)
+
+    def invoke(self, arg, from_tty):
+        args = gdb.string_to_argv(arg)
+
+        if len(args) != 1:
+            help()
+
+        addr = gdb.Value(int(args[0], 16)).cast(utils.get_ulong_type())
+        for mod in module_list():
+            mod_text_start = mod['mem'][constants.LX_MOD_TEXT]['base']
+            mod_text_end = mod_text_start + mod['mem'][constants.LX_MOD_TEXT]['size'].cast(utils.get_ulong_type())
+
+            if addr >= mod_text_start and addr < mod_text_end:
+                s = "0x%x" % addr + " is in " + mod['name'].string() + ".ko\n"
+                gdb.write(s)
+                return
+        gdb.write("0x%x is not in any module text section\n" % addr)
+
+LxFindTextAddrinMod()

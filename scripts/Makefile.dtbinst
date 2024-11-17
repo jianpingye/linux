@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 # ==========================================================================
 # Installing dtb files
 #
@@ -5,47 +6,38 @@
 # INSTALL_DTBS_PATH directory or the default location:
 #
 #   $INSTALL_PATH/dtbs/$KERNELRELEASE
-#
-# Traverse through subdirectories listed in $(dts-dirs).
 # ==========================================================================
-
-src := $(obj)
 
 PHONY := __dtbs_install
 __dtbs_install:
 
-export dtbinst-root ?= $(obj)
-
 include include/config/auto.conf
-include scripts/Kbuild.include
-include $(src)/Makefile
+include $(srctree)/scripts/Kbuild.include
 
-PHONY += __dtbs_install_prep
-__dtbs_install_prep:
-ifeq ("$(dtbinst-root)", "$(obj)")
-	$(Q)if [ -d $(INSTALL_DTBS_PATH).old ]; then rm -rf $(INSTALL_DTBS_PATH).old; fi
-	$(Q)if [ -d $(INSTALL_DTBS_PATH) ]; then mv $(INSTALL_DTBS_PATH) $(INSTALL_DTBS_PATH).old; fi
-	$(Q)mkdir -p $(INSTALL_DTBS_PATH)
-endif
+dst := $(INSTALL_DTBS_PATH)
 
-dtbinst-files	:= $(dtb-y)
-dtbinst-dirs	:= $(dts-dirs)
+quiet_cmd_dtb_install = INSTALL $@
+      cmd_dtb_install = install -D -m 0644 $< $@
 
-# Helper targets for Installing DTBs into the boot directory
-quiet_cmd_dtb_install =	INSTALL $<
-      cmd_dtb_install =	mkdir -p $(2); cp $< $(2)
+$(dst)/%: $(obj)/%
+	$(call cmd,dtb_install)
 
-install-dir = $(patsubst $(dtbinst-root)%,$(INSTALL_DTBS_PATH)%,$(obj))
+dtbs := $(patsubst $(obj)/%,%,$(call read-file, $(obj)/dtbs-list))
 
-$(dtbinst-files) $(dtbinst-dirs): | __dtbs_install_prep
+ifdef CONFIG_ARCH_WANT_FLAT_DTB_INSTALL
 
-$(dtbinst-files): %.dtb: $(obj)/%.dtb
-	$(call cmd,dtb_install,$(install-dir))
+define gen_install_rules
+$(dst)/%: $(obj)/$(1)%
+	$$(call cmd,dtb_install)
+endef
 
-$(dtbinst-dirs):
-	$(Q)$(MAKE) $(dtbinst)=$(obj)/$@
+$(foreach d, $(sort $(dir $(dtbs))), $(eval $(call gen_install_rules,$(d))))
 
-PHONY += $(dtbinst-files) $(dtbinst-dirs)
-__dtbs_install: $(dtbinst-files) $(dtbinst-dirs)
+dtbs := $(notdir $(dtbs))
+
+endif # CONFIG_ARCH_WANT_FLAT_DTB_INSTALL
+
+__dtbs_install: $(addprefix $(dst)/, $(dtbs))
+	@:
 
 .PHONY: $(PHONY)

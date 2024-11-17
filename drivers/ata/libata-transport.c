@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright 2008 ioogle, Inc.  All rights reserved.
- *	Released under GPL v2.
  *
  * Libata transport class.
  *
@@ -9,7 +9,7 @@
  * and various sysfs attributes to expose these topologies and management
  * interfaces to user-space.
  *
- * There are 3 objects defined in in this class:
+ * There are 3 objects defined in this class:
  * - ata_port
  * - ata_link
  * - ata_device
@@ -79,12 +79,6 @@ struct ata_internal {
 	container_of((d), struct ata_port, tdev)
 #define transport_class_to_port(dev)				\
 	tdev_to_port((dev)->parent)
-
-
-/* Device objects are always created whit link objects */
-static int ata_tdev_add(struct ata_device *dev);
-static void ata_tdev_delete(struct ata_device *dev);
-
 
 /*
  * Hack to allow attributes of the same name in different objects.
@@ -163,7 +157,7 @@ static struct {
 	{ AC_ERR_INVALID,		"InvalidArg" },
 	{ AC_ERR_OTHER,			"Unknown" },
 	{ AC_ERR_NODEV_HINT,		"NoDeviceHint" },
-	{ AC_ERR_NCQ,		 	"NCQError" }
+	{ AC_ERR_NCQ,			"NCQError" }
 };
 ata_bitfield_name_match(err, ata_err_names)
 
@@ -196,7 +190,7 @@ static struct {
 	{ XFER_PIO_0,			"XFER_PIO_0" },
 	{ XFER_PIO_SLOW,		"XFER_PIO_SLOW" }
 };
-ata_bitfield_name_match(xfer,ata_xfer_names)
+ata_bitfield_name_search(xfer, ata_xfer_names)
 
 /*
  * ATA Port attributes
@@ -208,7 +202,7 @@ show_ata_port_##name(struct device *dev,				\
 {									\
 	struct ata_port *ap = transport_class_to_port(dev);		\
 									\
-	return snprintf(buf, 20, format_string, cast ap->field);	\
+	return scnprintf(buf, 20, format_string, cast ap->field);	\
 }
 
 #define ata_port_simple_attr(field, name, format_string, type)		\
@@ -217,14 +211,16 @@ static DEVICE_ATTR(name, S_IRUGO, show_ata_port_##name, NULL)
 
 ata_port_simple_attr(nr_pmp_links, nr_pmp_links, "%d\n", int);
 ata_port_simple_attr(stats.idle_irq, idle_irq, "%ld\n", unsigned long);
-ata_port_simple_attr(local_port_no, port_no, "%u\n", unsigned int);
+/* We want the port_no sysfs attibute to start at 1 (ap->port_no starts at 0) */
+ata_port_simple_attr(port_no + 1, port_no, "%u\n", unsigned int);
 
 static DECLARE_TRANSPORT_CLASS(ata_port_class,
 			       "ata_port", NULL, NULL, NULL);
 
 static void ata_tport_release(struct device *dev)
 {
-	put_device(dev->parent);
+	struct ata_port *ap = tdev_to_port(dev);
+	ata_host_put(ap->host);
 }
 
 /**
@@ -249,7 +245,7 @@ static int ata_tport_match(struct attribute_container *cont,
 
 /**
  * ata_tport_delete  --  remove ATA PORT
- * @port:	ATA PORT to remove
+ * @ap:	ATA PORT to remove
  *
  * Removes the specified ATA PORT.  Remove the associated link as well.
  */
@@ -264,6 +260,11 @@ void ata_tport_delete(struct ata_port *ap)
 	transport_destroy_device(dev);
 	put_device(dev);
 }
+EXPORT_SYMBOL_GPL(ata_tport_delete);
+
+static const struct device_type ata_port_sas_type = {
+	.name = ATA_PORT_TYPE_NAME,
+};
 
 /** ata_tport_add - initialize a transport ATA port structure
  *
@@ -282,9 +283,13 @@ int ata_tport_add(struct device *parent,
 	struct device *dev = &ap->tdev;
 
 	device_initialize(dev);
-	dev->type = &ata_port_type;
+	if (ap->flags & ATA_FLAG_SAS_HOST)
+		dev->type = &ata_port_sas_type;
+	else
+		dev->type = &ata_port_type;
 
-	dev->parent = get_device(parent);
+	dev->parent = parent;
+	ata_host_get(ap->host);
 	dev->release = ata_tport_release;
 	dev_set_name(dev, "ata%d", ap->print_id);
 	transport_setup_device(dev);
@@ -299,7 +304,9 @@ int ata_tport_add(struct device *parent,
 	pm_runtime_enable(dev);
 	pm_runtime_forbid(dev);
 
-	transport_add_device(dev);
+	error = transport_add_device(dev);
+	if (error)
+		goto tport_transport_add_err;
 	transport_configure_device(dev);
 
 	error = ata_tlink_add(&ap->link);
@@ -310,6 +317,7 @@ int ata_tport_add(struct device *parent,
 
  tport_link_err:
 	transport_remove_device(dev);
+ tport_transport_add_err:
 	device_del(dev);
 
  tport_err:
@@ -317,134 +325,38 @@ int ata_tport_add(struct device *parent,
 	put_device(dev);
 	return error;
 }
-
-
-/*
- * ATA link attributes
- */
-static int noop(int x) { return x; }
-
-#define ata_link_show_linkspeed(field, format)			        \
-static ssize_t								\
-show_ata_link_##field(struct device *dev,				\
-		      struct device_attribute *attr, char *buf)		\
-{									\
-	struct ata_link *link = transport_class_to_link(dev);		\
-									\
-	return sprintf(buf, "%s\n", sata_spd_string(format(link->field))); \
-}
-
-#define ata_link_linkspeed_attr(field, format)				\
-	ata_link_show_linkspeed(field, format)				\
-static DEVICE_ATTR(field, S_IRUGO, show_ata_link_##field, NULL)
-
-ata_link_linkspeed_attr(hw_sata_spd_limit, fls);
-ata_link_linkspeed_attr(sata_spd_limit, fls);
-ata_link_linkspeed_attr(sata_spd, noop);
-
-
-static DECLARE_TRANSPORT_CLASS(ata_link_class,
-		"ata_link", NULL, NULL, NULL);
-
-static void ata_tlink_release(struct device *dev)
-{
-	put_device(dev->parent);
-}
+EXPORT_SYMBOL_GPL(ata_tport_add);
 
 /**
- * ata_is_link --  check if a struct device represents a ATA link
- * @dev:	device to check
+ *     ata_port_classify - determine device type based on ATA-spec signature
+ *     @ap: ATA port device on which the classification should be run
+ *     @tf: ATA taskfile register set for device to be identified
  *
- * Returns:
- *	%1 if the device represents a ATA link, %0 else
+ *     A wrapper around ata_dev_classify() to provide additional logging
+ *
+ *     RETURNS:
+ *     Device type, %ATA_DEV_ATA, %ATA_DEV_ATAPI, %ATA_DEV_PMP,
+ *     %ATA_DEV_ZAC, or %ATA_DEV_UNKNOWN the event of failure.
  */
-static int ata_is_link(const struct device *dev)
+unsigned int ata_port_classify(struct ata_port *ap,
+			       const struct ata_taskfile *tf)
 {
-	return dev->release == ata_tlink_release;
-}
+	int i;
+	unsigned int class = ata_dev_classify(tf);
 
-static int ata_tlink_match(struct attribute_container *cont,
-			   struct device *dev)
-{
-	struct ata_internal* i = to_ata_internal(ata_scsi_transport_template);
-	if (!ata_is_link(dev))
-		return 0;
-	return &i->link_attr_cont.ac == cont;
-}
-
-/**
- * ata_tlink_delete  --  remove ATA LINK
- * @port:	ATA LINK to remove
- *
- * Removes the specified ATA LINK.  remove associated ATA device(s) as well.
- */
-void ata_tlink_delete(struct ata_link *link)
-{
-	struct device *dev = &link->tdev;
-	struct ata_device *ata_dev;
-
-	ata_for_each_dev(ata_dev, link, ALL) {
-		ata_tdev_delete(ata_dev);
-	}
-
-	transport_remove_device(dev);
-	device_del(dev);
-	transport_destroy_device(dev);
-	put_device(dev);
-}
-
-/**
- * ata_tlink_add  --  initialize a transport ATA link structure
- * @link:	allocated ata_link structure.
- *
- * Initialize an ATA LINK structure for sysfs.  It will be added in the
- * device tree below the ATA PORT it belongs to.
- *
- * Returns %0 on success
- */
-int ata_tlink_add(struct ata_link *link)
-{
-	struct device *dev = &link->tdev;
-	struct ata_port *ap = link->ap;
-	struct ata_device *ata_dev;
-	int error;
-
-	device_initialize(dev);
-	dev->parent = get_device(&ap->tdev);
-	dev->release = ata_tlink_release;
-	if (ata_is_host_link(link))
-		dev_set_name(dev, "link%d", ap->print_id);
-        else
-		dev_set_name(dev, "link%d.%d", ap->print_id, link->pmp);
-
-	transport_setup_device(dev);
-
-	error = device_add(dev);
-	if (error) {
-		goto tlink_err;
-	}
-
-	transport_add_device(dev);
-	transport_configure_device(dev);
-
-	ata_for_each_dev(ata_dev, link, ALL) {
-		error = ata_tdev_add(ata_dev);
-		if (error) {
-			goto tlink_dev_err;
+	/* Start with index '1' to skip the 'unknown' entry */
+	for (i = 1; i < ARRAY_SIZE(ata_class_names); i++) {
+		if (ata_class_names[i].value == class) {
+			ata_port_dbg(ap, "found %s device by sig\n",
+				     ata_class_names[i].name);
+			return class;
 		}
 	}
-	return 0;
-  tlink_dev_err:
-	while (--ata_dev >= link->device) {
-		ata_tdev_delete(ata_dev);
-	}
-	transport_remove_device(dev);
-	device_del(dev);
-  tlink_err:
-	transport_destroy_device(dev);
-	put_device(dev);
-	return error;
+
+	ata_port_info(ap, "found unknown device (class %u)\n", class);
+	return class;
 }
+EXPORT_SYMBOL_GPL(ata_port_classify);
 
 /*
  * ATA device attributes
@@ -470,19 +382,19 @@ ata_dev_attr(xfer, dma_mode);
 ata_dev_attr(xfer, xfer_mode);
 
 
-#define ata_dev_show_simple(field, format_string, cast)		\
+#define ata_dev_show_simple(field, format_string, cast)			\
 static ssize_t								\
 show_ata_dev_##field(struct device *dev,				\
 		     struct device_attribute *attr, char *buf)		\
 {									\
 	struct ata_device *ata_dev = transport_class_to_dev(dev);	\
 									\
-	return snprintf(buf, 20, format_string, cast ata_dev->field);	\
+	return scnprintf(buf, 20, format_string, cast ata_dev->field);	\
 }
 
-#define ata_dev_simple_attr(field, format_string, type)	\
+#define ata_dev_simple_attr(field, format_string, type)		\
 	ata_dev_show_simple(field, format_string, (type))	\
-static DEVICE_ATTR(field, S_IRUGO, 			\
+	static DEVICE_ATTR(field, S_IRUGO,			\
 		   show_ata_dev_##field, NULL)
 
 ata_dev_simple_attr(spdn_cnt, "%d\n", int);
@@ -495,12 +407,13 @@ struct ata_show_ering_arg {
 static int ata_show_ering(struct ata_ering_entry *ent, void *void_arg)
 {
 	struct ata_show_ering_arg* arg = void_arg;
-	struct timespec time;
+	u64 seconds;
+	u32 rem;
 
-	jiffies_to_timespec(ent->timestamp,&time);
+	seconds = div_u64_rem(ent->timestamp, HZ, &rem);
 	arg->written += sprintf(arg->buf + arg->written,
-			       "[%5lu.%06lu]",
-			       time.tv_sec, time.tv_nsec);
+				"[%5llu.%09lu]", seconds,
+				rem * NSEC_PER_SEC / HZ);
 	arg->written += get_ata_err_names(ent->err_mask,
 					  arg->buf + arg->written);
 	return 0;
@@ -530,7 +443,7 @@ show_ata_dev_id(struct device *dev,
 	if (ata_dev->class == ATA_DEV_PMP)
 		return 0;
 	for(i=0;i<ATA_ID_WORDS;i++)  {
-		written += snprintf(buf+written, 20, "%04x%c",
+		written += scnprintf(buf+written, 20, "%04x%c",
 				    ata_dev->id[i],
 				    ((i+1) & 7) ? ' ' : '\n');
 	}
@@ -549,7 +462,7 @@ show_ata_dev_gscr(struct device *dev,
 	if (ata_dev->class != ATA_DEV_PMP)
 		return 0;
 	for(i=0;i<SATA_PMP_GSCR_DWORDS;i++)  {
-		written += snprintf(buf+written, 20, "%08x%c",
+		written += scnprintf(buf+written, 20, "%08x%c",
 				    ata_dev->gscr[i],
 				    ((i+1) & 3) ? ' ' : '\n');
 	}
@@ -569,16 +482,16 @@ show_ata_dev_trim(struct device *dev,
 
 	if (!ata_id_has_trim(ata_dev->id))
 		mode = "unsupported";
-	else if (ata_dev->horkage & ATA_HORKAGE_NOTRIM)
+	else if (ata_dev->quirks & ATA_QUIRK_NOTRIM)
 		mode = "forced_unsupported";
-	else if (ata_dev->horkage & ATA_HORKAGE_NO_NCQ_TRIM)
-			mode = "forced_unqueued";
+	else if (ata_dev->quirks & ATA_QUIRK_NO_NCQ_TRIM)
+		mode = "forced_unqueued";
 	else if (ata_fpdma_dsm_supported(ata_dev))
 		mode = "queued";
 	else
 		mode = "unqueued";
 
-	return snprintf(buf, 20, "%s\n", mode);
+	return scnprintf(buf, 20, "%s\n", mode);
 }
 
 static DEVICE_ATTR(trim, S_IRUGO, show_ata_dev_trim, NULL);
@@ -588,7 +501,6 @@ static DECLARE_TRANSPORT_CLASS(ata_dev_class,
 
 static void ata_tdev_release(struct device *dev)
 {
-	put_device(dev->parent);
 }
 
 /**
@@ -596,9 +508,9 @@ static void ata_tdev_release(struct device *dev)
  * @dev:	device to check
  *
  * Returns:
- *	%1 if the device represents a ATA device, %0 else
+ *	true if the device represents a ATA device, false otherwise
  */
-static int ata_is_ata_dev(const struct device *dev)
+static bool ata_is_ata_dev(const struct device *dev)
 {
 	return dev->release == ata_tdev_release;
 }
@@ -606,21 +518,22 @@ static int ata_is_ata_dev(const struct device *dev)
 static int ata_tdev_match(struct attribute_container *cont,
 			  struct device *dev)
 {
-	struct ata_internal* i = to_ata_internal(ata_scsi_transport_template);
+	struct ata_internal *i = to_ata_internal(ata_scsi_transport_template);
+
 	if (!ata_is_ata_dev(dev))
 		return 0;
 	return &i->dev_attr_cont.ac == cont;
 }
 
 /**
- * ata_tdev_free  --  free a ATA LINK
- * @dev:	ATA PHY to free
+ * ata_tdev_free  --  free an ATA transport device
+ * @dev:	struct ata_device owning the transport device to free
  *
- * Frees the specified ATA PHY.
+ * Free the ATA transport device for the specified ATA device.
  *
  * Note:
- *   This function must only be called on a PHY that has not
- *   successfully been added using ata_tdev_add().
+ *   This function must only be called for a ATA transport device that has not
+ *   yet successfully been added using ata_tdev_add().
  */
 static void ata_tdev_free(struct ata_device *dev)
 {
@@ -629,10 +542,10 @@ static void ata_tdev_free(struct ata_device *dev)
 }
 
 /**
- * ata_tdev_delete  --  remove ATA device
- * @port:	ATA PORT to remove
+ * ata_tdev_delete  --  remove an ATA transport device
+ * @ata_dev:	struct ata_device owning the transport device to delete
  *
- * Removes the specified ATA device.
+ * Removes the ATA transport device for the specified ATA device.
  */
 static void ata_tdev_delete(struct ata_device *ata_dev)
 {
@@ -643,15 +556,14 @@ static void ata_tdev_delete(struct ata_device *ata_dev)
 	ata_tdev_free(ata_dev);
 }
 
-
 /**
- * ata_tdev_add  --  initialize a transport ATA device structure.
- * @ata_dev:	ata_dev structure.
+ * ata_tdev_add  --  initialize an ATA transport device
+ * @ata_dev:	struct ata_device owning the transport device to add
  *
- * Initialize an ATA device structure for sysfs.  It will be added in the
- * device tree below the ATA LINK device it belongs to.
+ * Initialize an ATA transport device for sysfs.  It will be added in the
+ * device tree below the ATA link device it belongs to.
  *
- * Returns %0 on success
+ * Returns %0 on success and a negative error code on error.
  */
 static int ata_tdev_add(struct ata_device *ata_dev)
 {
@@ -661,11 +573,11 @@ static int ata_tdev_add(struct ata_device *ata_dev)
 	int error;
 
 	device_initialize(dev);
-	dev->parent = get_device(&link->tdev);
+	dev->parent = &link->tdev;
 	dev->release = ata_tdev_release;
 	if (ata_is_host_link(link))
 		dev_set_name(dev, "dev%d.%d", ap->print_id,ata_dev->devno);
-        else
+	else
 		dev_set_name(dev, "dev%d.%d.0", ap->print_id, link->pmp);
 
 	transport_setup_device(dev);
@@ -676,18 +588,154 @@ static int ata_tdev_add(struct ata_device *ata_dev)
 		return error;
 	}
 
-	transport_add_device(dev);
+	error = transport_add_device(dev);
+	if (error) {
+		device_del(dev);
+		ata_tdev_free(ata_dev);
+		return error;
+	}
+
 	transport_configure_device(dev);
 	return 0;
 }
 
+/*
+ * ATA link attributes
+ */
+static int noop(int x)
+{
+	return x;
+}
+
+#define ata_link_show_linkspeed(field, format)			\
+static ssize_t							\
+show_ata_link_##field(struct device *dev,			\
+		      struct device_attribute *attr, char *buf)	\
+{								\
+	struct ata_link *link = transport_class_to_link(dev);	\
+								\
+	return sprintf(buf, "%s\n",				\
+		       sata_spd_string(format(link->field)));	\
+}
+
+#define ata_link_linkspeed_attr(field, format)			\
+	ata_link_show_linkspeed(field, format)			\
+static DEVICE_ATTR(field, 0444, show_ata_link_##field, NULL)
+
+ata_link_linkspeed_attr(hw_sata_spd_limit, fls);
+ata_link_linkspeed_attr(sata_spd_limit, fls);
+ata_link_linkspeed_attr(sata_spd, noop);
+
+static DECLARE_TRANSPORT_CLASS(ata_link_class,
+		"ata_link", NULL, NULL, NULL);
+
+static void ata_tlink_release(struct device *dev)
+{
+}
+
+/**
+ * ata_is_link --  check if a struct device represents a ATA link
+ * @dev:	device to check
+ *
+ * Returns:
+ *	true if the device represents a ATA link, false otherwise
+ */
+static bool ata_is_link(const struct device *dev)
+{
+	return dev->release == ata_tlink_release;
+}
+
+static int ata_tlink_match(struct attribute_container *cont,
+			    struct device *dev)
+{
+	struct ata_internal *i = to_ata_internal(ata_scsi_transport_template);
+
+	if (!ata_is_link(dev))
+		return 0;
+	return &i->link_attr_cont.ac == cont;
+}
+
+/**
+ * ata_tlink_delete  --  remove an ATA link transport device
+ * @link:	struct ata_link owning the link transport device to remove
+ *
+ * Removes the link transport device of the specified ATA link. This also
+ * removes the ATA device(s) associated with the link as well.
+ */
+void ata_tlink_delete(struct ata_link *link)
+{
+	struct device *dev = &link->tdev;
+	struct ata_device *ata_dev;
+
+	ata_for_each_dev(ata_dev, link, ALL) {
+		ata_tdev_delete(ata_dev);
+	}
+
+	transport_remove_device(dev);
+	device_del(dev);
+	transport_destroy_device(dev);
+	put_device(dev);
+}
+
+/**
+ * ata_tlink_add  --  initialize an ATA link transport device
+ * @link:	struct ata_link owning the link transport device to initialize
+ *
+ * Initialize an ATA link transport device for sysfs. It will be added in the
+ * device tree below the ATA port it belongs to.
+ *
+ * Returns %0 on success and a negative error code on error.
+ */
+int ata_tlink_add(struct ata_link *link)
+{
+	struct device *dev = &link->tdev;
+	struct ata_port *ap = link->ap;
+	struct ata_device *ata_dev;
+	int error;
+
+	device_initialize(dev);
+	dev->parent = &ap->tdev;
+	dev->release = ata_tlink_release;
+	if (ata_is_host_link(link))
+		dev_set_name(dev, "link%d", ap->print_id);
+	else
+		dev_set_name(dev, "link%d.%d", ap->print_id, link->pmp);
+
+	transport_setup_device(dev);
+
+	error = device_add(dev);
+	if (error)
+		goto tlink_err;
+
+	error = transport_add_device(dev);
+	if (error)
+		goto tlink_transport_err;
+	transport_configure_device(dev);
+
+	ata_for_each_dev(ata_dev, link, ALL) {
+		error = ata_tdev_add(ata_dev);
+		if (error)
+			goto tlink_dev_err;
+	}
+	return 0;
+ tlink_dev_err:
+	while (--ata_dev >= link->device)
+		ata_tdev_delete(ata_dev);
+	transport_remove_device(dev);
+ tlink_transport_err:
+	device_del(dev);
+ tlink_err:
+	transport_destroy_device(dev);
+	put_device(dev);
+	return error;
+}
 
 /*
  * Setup / Teardown code
  */
 
 #define SETUP_TEMPLATE(attrb, field, perm, test)			\
-	i->private_##attrb[count] = dev_attr_##field;		       	\
+	i->private_##attrb[count] = dev_attr_##field;			\
 	i->private_##attrb[count].attr.mode = perm;			\
 	i->attrb[count] = &i->private_##attrb[count];			\
 	if (test)							\
@@ -715,7 +763,6 @@ struct scsi_transport_template *ata_attach_transport(void)
 		return NULL;
 
 	i->t.eh_strategy_handler	= ata_scsi_error;
-	i->t.eh_timed_out		= ata_scsi_timed_out;
 	i->t.user_scan			= ata_scsi_user_scan;
 
 	i->t.host_attrs.ac.attrs = &i->port_attrs[0];

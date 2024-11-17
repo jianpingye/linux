@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Alchemy Development Board example suspend userspace interface.
  *
@@ -9,14 +10,14 @@
 #include <linux/suspend.h>
 #include <linux/sysfs.h>
 #include <asm/mach-au1x00/au1000.h>
-#include <asm/mach-au1x00/gpio.h>
+#include <asm/mach-au1x00/gpio-au1000.h>
 #include <asm/mach-db1x00/bcsr.h>
 
 /*
  * Generic suspend userspace interface for Alchemy development boards.
  * This code exports a few sysfs nodes under /sys/power/db1x/ which
  * can be used by userspace to en/disable all au1x-provided wakeup
- * sources and configure the timeout after which the the TOYMATCH2 irq
+ * sources and configure the timeout after which the TOYMATCH2 irq
  * is to trigger a wakeup.
  */
 

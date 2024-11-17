@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TQC PS/2 Multiplexer driver
  *
  * Copyright (C) 2010 Dmitry Eremin-Solenikov
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 
 
@@ -130,11 +127,11 @@ static int ps2mult_create_port(struct ps2mult *psm, int i)
 	struct serio *mx_serio = psm->mx_serio;
 	struct serio *serio;
 
-	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	serio = kzalloc(sizeof(*serio), GFP_KERNEL);
 	if (!serio)
 		return -ENOMEM;
 
-	strlcpy(serio->name, "TQC PS/2 Multiplexer", sizeof(serio->name));
+	strscpy(serio->name, "TQC PS/2 Multiplexer", sizeof(serio->name));
 	snprintf(serio->phys, sizeof(serio->phys),
 		 "%s/port%d", mx_serio->phys, i);
 	serio->id.type = SERIO_8042;

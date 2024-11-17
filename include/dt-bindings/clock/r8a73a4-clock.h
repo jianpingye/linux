@@ -1,10 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright 2014 Ulrich Hecht
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #ifndef __DT_BINDINGS_CLOCK_R8A73A4_H__
@@ -27,6 +23,10 @@
 #define R8A73A4_CLK_ZX		13
 #define R8A73A4_CLK_ZS		14
 #define R8A73A4_CLK_HP		15
+
+/* MSTP1 */
+#define R8A73A4_CLK_TMU0	25
+#define R8A73A4_CLK_TMU3	21
 
 /* MSTP2 */
 #define R8A73A4_CLK_DMAC	18
@@ -54,6 +54,7 @@
 #define R8A73A4_CLK_IIC3	11
 #define R8A73A4_CLK_IIC4	10
 #define R8A73A4_CLK_IIC5	9
+#define R8A73A4_CLK_INTC_SYS	8
 #define R8A73A4_CLK_IRQC	7
 
 /* MSTP5 */

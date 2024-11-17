@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -11,6 +12,18 @@
 
 #include <linux/types.h>
 #include <asm/sgidefs.h>
+
+/* scalar FP context was used */
+#define USED_FP			(1 << 0)
+
+/* the value of Status.FR when context was saved */
+#define USED_FR1		(1 << 1)
+
+/* FR=1, but with odd singles in bits 63:32 of preceding even double */
+#define USED_HYBRID_FPRS	(1 << 2)
+
+/* extended context was used, see struct extcontext for details */
+#define USED_EXTCONTEXT		(1 << 3)
 
 #if _MIPS_SIM == _MIPS_SIM_ABI32
 
@@ -43,7 +56,6 @@ struct sigcontext {
 
 #if _MIPS_SIM == _MIPS_SIM_ABI64 || _MIPS_SIM == _MIPS_SIM_NABI32
 
-#include <linux/posix_types.h>
 /*
  * Keep this struct definition in sync with the sigcontext fragment
  * in arch/mips/kernel/asm-offsets.c

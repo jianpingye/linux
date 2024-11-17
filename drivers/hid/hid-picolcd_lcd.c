@@ -1,20 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /***************************************************************************
  *   Copyright (C) 2010-2012 by Bruno Prémont <bonbons@linux-vserver.org>  *
  *                                                                         *
  *   Based on Logitech G13 driver (v0.4)                                   *
  *     Copyright (C) 2009 by Rick L. Vinyard, Jr. <rvinyard@cs.nmsu.edu>   *
  *                                                                         *
- *   This program is free software: you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation, version 2 of the License.               *
- *                                                                         *
- *   This driver is distributed in the hope that it will be useful, but    *
- *   WITHOUT ANY WARRANTY; without even the implied warranty of            *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU      *
- *   General Public License for more details.                              *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this software. If not see <http://www.gnu.org/licenses/>.  *
  ***************************************************************************/
 
 #include <linux/hid.h>
@@ -56,7 +46,7 @@ static int picolcd_check_lcd_fb(struct lcd_device *ldev, struct fb_info *fb)
 	return fb && fb == picolcd_fbinfo((struct picolcd_data *)lcd_get_data(ldev));
 }
 
-static struct lcd_ops picolcd_lcdops = {
+static const struct lcd_ops picolcd_lcdops = {
 	.get_contrast   = picolcd_get_contrast,
 	.set_contrast   = picolcd_set_contrast,
 	.check_fb       = picolcd_check_lcd_fb,
@@ -92,8 +82,7 @@ void picolcd_exit_lcd(struct picolcd_data *data)
 	struct lcd_device *ldev = data->lcd;
 
 	data->lcd = NULL;
-	if (ldev)
-		lcd_device_unregister(ldev);
+	lcd_device_unregister(ldev);
 }
 
 int picolcd_resume_lcd(struct picolcd_data *data)

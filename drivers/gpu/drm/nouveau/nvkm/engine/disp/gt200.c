@@ -21,15 +21,14 @@
  *
  * Authors: Ben Skeggs
  */
-#include "nv50.h"
+#include "priv.h"
+#include "chan.h"
+#include "head.h"
+#include "ior.h"
 
 #include <nvif/class.h>
 
-/*******************************************************************************
- * EVO overlay channel objects
- ******************************************************************************/
-
-static const struct nv50_disp_mthd_list
+static const struct nvkm_disp_mthd_list
 gt200_disp_ovly_mthd_base = {
 	.mthd = 0x0000,
 	.addr = 0x000000,
@@ -60,89 +59,51 @@ gt200_disp_ovly_mthd_base = {
 	}
 };
 
-static const struct nv50_disp_mthd_chan
-gt200_disp_ovly_mthd_chan = {
+static const struct nvkm_disp_chan_mthd
+gt200_disp_ovly_mthd = {
 	.name = "Overlay",
 	.addr = 0x000540,
+	.prev = 0x000004,
 	.data = {
 		{ "Global", 1, &gt200_disp_ovly_mthd_base },
 		{}
 	}
 };
 
-/*******************************************************************************
- * Base display object
- ******************************************************************************/
-
-static struct nvkm_oclass
-gt200_disp_sclass[] = {
-	{ GT200_DISP_CORE_CHANNEL_DMA, &nv50_disp_core_ofuncs.base },
-	{ GT200_DISP_BASE_CHANNEL_DMA, &nv50_disp_base_ofuncs.base },
-	{ GT200_DISP_OVERLAY_CHANNEL_DMA, &nv50_disp_ovly_ofuncs.base },
-	{ G82_DISP_OVERLAY, &nv50_disp_oimm_ofuncs.base },
-	{ G82_DISP_CURSOR, &nv50_disp_curs_ofuncs.base },
-	{}
+const struct nvkm_disp_chan_user
+gt200_disp_ovly = {
+	.func = &nv50_disp_dmac_func,
+	.ctrl = 3,
+	.user = 3,
+	.mthd = &gt200_disp_ovly_mthd,
 };
 
-static struct nvkm_oclass
-gt200_disp_main_oclass[] = {
-	{ GT200_DISP, &nv50_disp_main_ofuncs },
-	{}
-};
-
-/*******************************************************************************
- * Display engine implementation
- ******************************************************************************/
-
-static int
-gt200_disp_ctor(struct nvkm_object *parent, struct nvkm_object *engine,
-		struct nvkm_oclass *oclass, void *data, u32 size,
-		struct nvkm_object **pobject)
-{
-	struct nv50_disp_priv *priv;
-	int ret;
-
-	ret = nvkm_disp_create(parent, engine, oclass, 2, "PDISP",
-			       "display", &priv);
-	*pobject = nv_object(priv);
-	if (ret)
-		return ret;
-
-	ret = nvkm_event_init(&nv50_disp_chan_uevent, 1, 9, &priv->uevent);
-	if (ret)
-		return ret;
-
-	nv_engine(priv)->sclass = gt200_disp_main_oclass;
-	nv_engine(priv)->cclass = &nv50_disp_cclass;
-	nv_subdev(priv)->intr = nv50_disp_intr;
-	INIT_WORK(&priv->supervisor, nv50_disp_intr_supervisor);
-	priv->sclass = gt200_disp_sclass;
-	priv->head.nr = 2;
-	priv->dac.nr = 3;
-	priv->sor.nr = 2;
-	priv->pior.nr = 3;
-	priv->dac.power = nv50_dac_power;
-	priv->dac.sense = nv50_dac_sense;
-	priv->sor.power = nv50_sor_power;
-	priv->sor.hdmi = g84_hdmi_ctrl;
-	priv->pior.power = nv50_pior_power;
-	return 0;
-}
-
-struct nvkm_oclass *
-gt200_disp_oclass = &(struct nv50_disp_impl) {
-	.base.base.handle = NV_ENGINE(DISP, 0x83),
-	.base.base.ofuncs = &(struct nvkm_ofuncs) {
-		.ctor = gt200_disp_ctor,
-		.dtor = _nvkm_disp_dtor,
-		.init = _nvkm_disp_init,
-		.fini = _nvkm_disp_fini,
+static const struct nvkm_disp_func
+gt200_disp = {
+	.oneinit = nv50_disp_oneinit,
+	.init = nv50_disp_init,
+	.fini = nv50_disp_fini,
+	.intr = nv50_disp_intr,
+	.super = nv50_disp_super,
+	.uevent = &nv50_disp_chan_uevent,
+	.head = { .cnt = nv50_head_cnt, .new = nv50_head_new },
+	.dac = { .cnt = nv50_dac_cnt, .new = nv50_dac_new },
+	.sor = { .cnt = nv50_sor_cnt, .new = g84_sor_new },
+	.pior = { .cnt = nv50_pior_cnt, .new = nv50_pior_new },
+	.root = { 0,0,GT200_DISP },
+	.user = {
+		{{0,0,  G82_DISP_CURSOR             }, nvkm_disp_chan_new, & nv50_disp_curs },
+		{{0,0,  G82_DISP_OVERLAY            }, nvkm_disp_chan_new, & nv50_disp_oimm },
+		{{0,0,GT200_DISP_BASE_CHANNEL_DMA   }, nvkm_disp_chan_new, &  g84_disp_base },
+		{{0,0,GT200_DISP_CORE_CHANNEL_DMA   }, nvkm_disp_core_new, &  g84_disp_core },
+		{{0,0,GT200_DISP_OVERLAY_CHANNEL_DMA}, nvkm_disp_chan_new, &gt200_disp_ovly },
+		{}
 	},
-	.base.vblank = &nv50_disp_vblank_func,
-	.base.outp =  nv50_disp_outp_sclass,
-	.mthd.core = &g84_disp_core_mthd_chan,
-	.mthd.base = &g84_disp_base_mthd_chan,
-	.mthd.ovly = &gt200_disp_ovly_mthd_chan,
-	.mthd.prev = 0x000004,
-	.head.scanoutpos = nv50_disp_main_scanoutpos,
-}.base.base;
+};
+
+int
+gt200_disp_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
+	       struct nvkm_disp **pdisp)
+{
+	return nvkm_disp_new_(&gt200_disp, device, type, inst, pdisp);
+}

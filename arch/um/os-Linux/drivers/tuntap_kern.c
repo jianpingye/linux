@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2001 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
- * Licensed under the GPL
  */
 
 #include <linux/netdevice.h>
@@ -53,7 +53,7 @@ const struct net_kern_info tuntap_kern_info = {
 	.write 			= tuntap_write,
 };
 
-int tuntap_setup(char *str, char **mac_out, void *data)
+static int tuntap_setup(char *str, char **mac_out, void *data)
 {
 	struct tuntap_init *init = data;
 

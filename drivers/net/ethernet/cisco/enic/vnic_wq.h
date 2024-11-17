@@ -1,20 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
  */
 
 #ifndef _VNIC_WQ_H_
@@ -86,6 +73,18 @@ struct vnic_wq {
 	struct vnic_wq_buf *to_use;
 	struct vnic_wq_buf *to_clean;
 	unsigned int pkts_outstanding;
+};
+
+struct devcmd2_controller {
+	struct vnic_wq_ctrl __iomem *wq_ctrl;
+	struct vnic_devcmd2 *cmd_ring;
+	struct devcmd2_result *result;
+	u16 next_result;
+	u16 result_size;
+	int color;
+	struct vnic_dev_ring results_ring;
+	struct vnic_wq wq;
+	u32 posted;
 };
 
 static inline unsigned int vnic_wq_desc_avail(struct vnic_wq *wq)
@@ -174,5 +173,11 @@ void vnic_wq_enable(struct vnic_wq *wq);
 int vnic_wq_disable(struct vnic_wq *wq);
 void vnic_wq_clean(struct vnic_wq *wq,
 	void (*buf_clean)(struct vnic_wq *wq, struct vnic_wq_buf *buf));
+int enic_wq_devcmd2_alloc(struct vnic_dev *vdev, struct vnic_wq *wq,
+			  unsigned int desc_count, unsigned int desc_size);
+void enic_wq_init_start(struct vnic_wq *wq, unsigned int cq_index,
+			unsigned int fetch_index, unsigned int posted_index,
+			unsigned int error_interrupt_enable,
+			unsigned int error_interrupt_offset);
 
 #endif /* _VNIC_WQ_H_ */

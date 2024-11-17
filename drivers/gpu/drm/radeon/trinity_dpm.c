@@ -21,13 +21,15 @@
  *
  */
 
-#include "drmP.h"
+#include <linux/pci.h>
+#include <linux/seq_file.h>
+
+#include "r600_dpm.h"
 #include "radeon.h"
 #include "radeon_asic.h"
-#include "trinityd.h"
-#include "r600_dpm.h"
 #include "trinity_dpm.h"
-#include <linux/seq_file.h>
+#include "trinityd.h"
+#include "vce.h"
 
 #define TRINITY_MAX_DEEPSLEEP_DIVIDER_ID 5
 #define TRINITY_MINIMUM_ENGINE_CLOCK 800
@@ -37,8 +39,7 @@
 #ifndef TRINITY_MGCG_SEQUENCE
 #define TRINITY_MGCG_SEQUENCE  100
 
-static const u32 trinity_mgcg_shls_default[] =
-{
+static const u32 trinity_mgcg_shls_default[] = {
 	/* Register, Value, Mask */
 	0x0000802c, 0xc0000000, 0xffffffff,
 	0x00003fc4, 0xc0000000, 0xffffffff,
@@ -115,57 +116,12 @@ static const u32 trinity_mgcg_shls_default[] =
 	0x00009220, 0x00090008, 0xffffffff,
 	0x00009294, 0x00000000, 0xffffffff
 };
-
-static const u32 trinity_mgcg_shls_enable[] =
-{
-	/* Register, Value, Mask */
-	0x0000802c, 0xc0000000, 0xffffffff,
-	0x000008f8, 0x00000000, 0xffffffff,
-	0x000008fc, 0x00000000, 0x000133FF,
-	0x000008f8, 0x00000001, 0xffffffff,
-	0x000008fc, 0x00000000, 0xE00B03FC,
-	0x00009150, 0x96944200, 0xffffffff
-};
-
-static const u32 trinity_mgcg_shls_disable[] =
-{
-	/* Register, Value, Mask */
-	0x0000802c, 0xc0000000, 0xffffffff,
-	0x00009150, 0x00600000, 0xffffffff,
-	0x000008f8, 0x00000000, 0xffffffff,
-	0x000008fc, 0xffffffff, 0x000133FF,
-	0x000008f8, 0x00000001, 0xffffffff,
-	0x000008fc, 0xffffffff, 0xE00B03FC
-};
 #endif
 
 #ifndef TRINITY_SYSLS_SEQUENCE
 #define TRINITY_SYSLS_SEQUENCE  100
 
-static const u32 trinity_sysls_default[] =
-{
-	/* Register, Value, Mask */
-	0x000055e8, 0x00000000, 0xffffffff,
-	0x0000d0bc, 0x00000000, 0xffffffff,
-	0x0000d8bc, 0x00000000, 0xffffffff,
-	0x000015c0, 0x000c1401, 0xffffffff,
-	0x0000264c, 0x000c0400, 0xffffffff,
-	0x00002648, 0x000c0400, 0xffffffff,
-	0x00002650, 0x000c0400, 0xffffffff,
-	0x000020b8, 0x000c0400, 0xffffffff,
-	0x000020bc, 0x000c0400, 0xffffffff,
-	0x000020c0, 0x000c0c80, 0xffffffff,
-	0x0000f4a0, 0x000000c0, 0xffffffff,
-	0x0000f4a4, 0x00680fff, 0xffffffff,
-	0x00002f50, 0x00000404, 0xffffffff,
-	0x000004c8, 0x00000001, 0xffffffff,
-	0x0000641c, 0x00000000, 0xffffffff,
-	0x00000c7c, 0x00000000, 0xffffffff,
-	0x00006dfc, 0x00000000, 0xffffffff
-};
-
-static const u32 trinity_sysls_disable[] =
-{
+static const u32 trinity_sysls_disable[] = {
 	/* Register, Value, Mask */
 	0x0000d0c0, 0x00000000, 0xffffffff,
 	0x0000d8c0, 0x00000000, 0xffffffff,
@@ -188,8 +144,7 @@ static const u32 trinity_sysls_disable[] =
 	0x00006dfc, 0x0000007f, 0xffffffff
 };
 
-static const u32 trinity_sysls_enable[] =
-{
+static const u32 trinity_sysls_enable[] = {
 	/* Register, Value, Mask */
 	0x000055e8, 0x00000001, 0xffffffff,
 	0x0000d0bc, 0x00000100, 0xffffffff,
@@ -211,8 +166,7 @@ static const u32 trinity_sysls_enable[] =
 };
 #endif
 
-static const u32 trinity_override_mgpg_sequences[] =
-{
+static const u32 trinity_override_mgpg_sequences[] = {
 	/* Register, Value */
 	0x00000200, 0xE030032C,
 	0x00000204, 0x00000FFF,
@@ -336,7 +290,6 @@ static const u32 trinity_override_mgpg_sequences[] =
 	0x00000204, 0x00000000,
 };
 
-extern void vce_v1_0_enable_mgcg(struct radeon_device *rdev, bool enable);
 static void trinity_program_clk_gating_hw_sequence(struct radeon_device *rdev,
 						   const u32 *seq, u32 count);
 static void trinity_override_dynamic_mg_powergating(struct radeon_device *rdev);
@@ -369,8 +322,8 @@ static void trinity_gfx_powergating_initialize(struct radeon_device *rdev)
 	int ret;
 	u32 hw_rev = (RREG32(HW_REV) & ATI_REV_ID_MASK) >> ATI_REV_ID_SHIFT;
 
-        ret = radeon_atom_get_clock_dividers(rdev, COMPUTE_ENGINE_PLL_PARAM,
-                                             25000, false, &dividers);
+	ret = radeon_atom_get_clock_dividers(rdev, COMPUTE_ENGINE_PLL_PARAM,
+					     25000, false, &dividers);
 	if (ret)
 		return;
 
@@ -409,9 +362,9 @@ static void trinity_mg_clockgating_enable(struct radeon_device *rdev,
 		local1 = RREG32_CG(CG_CGTT_LOCAL_1);
 
 		WREG32_CG(CG_CGTT_LOCAL_0,
-			  (0x00380000 & CGCG_CGTT_LOCAL0_MASK) | (local0 & ~CGCG_CGTT_LOCAL0_MASK) );
+			  (0x00380000 & CGCG_CGTT_LOCAL0_MASK) | (local0 & ~CGCG_CGTT_LOCAL0_MASK));
 		WREG32_CG(CG_CGTT_LOCAL_1,
-			  (0x0E000000 & CGCG_CGTT_LOCAL1_MASK) | (local1 & ~CGCG_CGTT_LOCAL1_MASK) );
+			  (0x0E000000 & CGCG_CGTT_LOCAL1_MASK) | (local1 & ~CGCG_CGTT_LOCAL1_MASK));
 
 		WREG32(CGTS_SM_CTRL_REG, CGTS_SM_CTRL_REG_ENABLE);
 	} else {
@@ -421,9 +374,9 @@ static void trinity_mg_clockgating_enable(struct radeon_device *rdev,
 		local1 = RREG32_CG(CG_CGTT_LOCAL_1);
 
 		WREG32_CG(CG_CGTT_LOCAL_0,
-			  CGCG_CGTT_LOCAL0_MASK | (local0 & ~CGCG_CGTT_LOCAL0_MASK) );
+			  CGCG_CGTT_LOCAL0_MASK | (local0 & ~CGCG_CGTT_LOCAL0_MASK));
 		WREG32_CG(CG_CGTT_LOCAL_1,
-			  CGCG_CGTT_LOCAL1_MASK | (local1 & ~CGCG_CGTT_LOCAL1_MASK) );
+			  CGCG_CGTT_LOCAL1_MASK | (local1 & ~CGCG_CGTT_LOCAL1_MASK));
 	}
 }
 
@@ -587,8 +540,8 @@ static void trinity_set_divider_value(struct radeon_device *rdev,
 	u32 value;
 	u32 ix = index * TRINITY_SIZEOF_DPM_STATE_TABLE;
 
-        ret = radeon_atom_get_clock_dividers(rdev, COMPUTE_ENGINE_PLL_PARAM,
-                                             sclk, false, &dividers);
+	ret = radeon_atom_get_clock_dividers(rdev, COMPUTE_ENGINE_PLL_PARAM,
+					     sclk, false, &dividers);
 	if (ret)
 		return;
 
@@ -597,8 +550,8 @@ static void trinity_set_divider_value(struct radeon_device *rdev,
 	value |= CLK_DIVIDER(dividers.post_div);
 	WREG32_SMC(SMU_SCLK_DPM_STATE_0_CNTL_0 + ix, value);
 
-        ret = radeon_atom_get_clock_dividers(rdev, COMPUTE_ENGINE_PLL_PARAM,
-                                             sclk/2, false, &dividers);
+	ret = radeon_atom_get_clock_dividers(rdev, COMPUTE_ENGINE_PLL_PARAM,
+					     sclk/2, false, &dividers);
 	if (ret)
 		return;
 
@@ -1045,14 +998,14 @@ static int trinity_set_thermal_temperature_range(struct radeon_device *rdev,
 	int low_temp = 0 * 1000;
 	int high_temp = 255 * 1000;
 
-        if (low_temp < min_temp)
+	if (low_temp < min_temp)
 		low_temp = min_temp;
-        if (high_temp > max_temp)
+	if (high_temp > max_temp)
 		high_temp = max_temp;
-        if (high_temp < low_temp) {
+	if (high_temp < low_temp) {
 		DRM_ERROR("invalid thermal range: %d - %d\n", low_temp, high_temp);
-                return -EINVAL;
-        }
+		return -EINVAL;
+	}
 
 	WREG32_P(CG_THERMAL_INT_CTRL, DIG_THERM_INTH(49 + (high_temp / 1000)), ~DIG_THERM_INTH_MASK);
 	WREG32_P(CG_THERMAL_INT_CTRL, DIG_THERM_INTL(49 + (low_temp / 1000)), ~DIG_THERM_INTL_MASK);
@@ -1477,7 +1430,7 @@ static void trinity_adjust_uvd_state(struct radeon_device *rdev,
 	if (pi->uvd_dpm && r600_is_uvd_state(rps->class, rps->class2)) {
 		high_index = trinity_get_uvd_clock_index(rdev, rps);
 
-		switch(high_index) {
+		switch (high_index) {
 		case 3:
 		case 2:
 			low_index = 1;
@@ -1737,7 +1690,7 @@ static int trinity_parse_power_table(struct radeon_device *rdev)
 	struct _NonClockInfoArray *non_clock_info_array;
 	union power_info *power_info;
 	int index = GetIndexIntoMasterTable(DATA, PowerPlayInfo);
-        u16 data_offset;
+	u16 data_offset;
 	u8 frev, crev;
 	u8 *power_state_offset;
 	struct sumo_ps *ps;
@@ -1757,8 +1710,9 @@ static int trinity_parse_power_table(struct radeon_device *rdev)
 		(mode_info->atom_context->bios + data_offset +
 		 le16_to_cpu(power_info->pplib.usNonClockInfoArrayOffset));
 
-	rdev->pm.dpm.ps = kzalloc(sizeof(struct radeon_ps) *
-				  state_array->ucNumEntries, GFP_KERNEL);
+	rdev->pm.dpm.ps = kcalloc(state_array->ucNumEntries,
+				  sizeof(struct radeon_ps),
+				  GFP_KERNEL);
 	if (!rdev->pm.dpm.ps)
 		return -ENOMEM;
 	power_state_offset = (u8 *)state_array->states;
@@ -1768,8 +1722,10 @@ static int trinity_parse_power_table(struct radeon_device *rdev)
 		non_clock_array_index = power_state->v2.nonClockInfoIndex;
 		non_clock_info = (struct _ATOM_PPLIB_NONCLOCK_INFO *)
 			&non_clock_info_array->nonClockInfo[non_clock_array_index];
-		if (!rdev->pm.power_state[i].clock_info)
+		if (!rdev->pm.power_state[i].clock_info) {
+			kfree(rdev->pm.dpm.ps);
 			return -EINVAL;
+		}
 		ps = kzalloc(sizeof(struct sumo_ps), GFP_KERNEL);
 		if (ps == NULL) {
 			kfree(rdev->pm.dpm.ps);

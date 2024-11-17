@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Dallas Semiconductor DS1682 Elapsed Time Recorder device driver
  *
  * Written by: Grant Likely <grant.likely@secretlab.ca>
  *
  * Copyright (C) 2007 Secret Lab Technologies Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /*
@@ -35,6 +32,7 @@
 #include <linux/i2c.h>
 #include <linux/string.h>
 #include <linux/list.h>
+#include <linux/nvmem-provider.h>
 #include <linux/sysfs.h>
 #include <linux/ctype.h>
 #include <linux/hwmon-sysfs.h>
@@ -59,25 +57,42 @@ static ssize_t ds1682_show(struct device *dev, struct device_attribute *attr,
 {
 	struct sensor_device_attribute_2 *sattr = to_sensor_dev_attr_2(attr);
 	struct i2c_client *client = to_i2c_client(dev);
-	__le32 val = 0;
+	unsigned long long val, check;
+	__le32 val_le = 0;
 	int rc;
 
 	dev_dbg(dev, "ds1682_show() called on %s\n", attr->attr.name);
 
 	/* Read the register */
 	rc = i2c_smbus_read_i2c_block_data(client, sattr->index, sattr->nr,
-					   (u8 *) & val);
+					   (u8 *)&val_le);
 	if (rc < 0)
 		return -EIO;
 
-	/* Special case: the 32 bit regs are time values with 1/4s
-	 * resolution, scale them up to milliseconds */
-	if (sattr->nr == 4)
-		return sprintf(buf, "%llu\n",
-			((unsigned long long)le32_to_cpu(val)) * 250);
+	val = le32_to_cpu(val_le);
 
-	/* Format the output string and return # of bytes */
-	return sprintf(buf, "%li\n", (long)le32_to_cpu(val));
+	if (sattr->index == DS1682_REG_ELAPSED) {
+		int retries = 5;
+
+		/* Detect and retry when a tick occurs mid-read */
+		do {
+			rc = i2c_smbus_read_i2c_block_data(client, sattr->index,
+							   sattr->nr,
+							   (u8 *)&val_le);
+			if (rc < 0 || retries <= 0)
+				return -EIO;
+
+			check = val;
+			val = le32_to_cpu(val_le);
+			retries--;
+		} while (val != check && val != (check + 1));
+	}
+
+	/* Format the output string and return # of bytes
+	 * Special case: the 32 bit regs are time values with 1/4s
+	 * resolution, scale them up to milliseconds
+	 */
+	return sprintf(buf, "%llu\n", (sattr->nr == 4) ? (val * 250) : val);
 }
 
 static ssize_t ds1682_store(struct device *dev, struct device_attribute *attr,
@@ -148,12 +163,6 @@ static ssize_t ds1682_eeprom_read(struct file *filp, struct kobject *kobj,
 	dev_dbg(&client->dev, "ds1682_eeprom_read(p=%p, off=%lli, c=%zi)\n",
 		buf, off, count);
 
-	if (off >= DS1682_EEPROM_SIZE)
-		return 0;
-
-	if (off + count > DS1682_EEPROM_SIZE)
-		count = DS1682_EEPROM_SIZE - off;
-
 	rc = i2c_smbus_read_i2c_block_data(client, DS1682_REG_EEPROM + off,
 					   count, buf);
 	if (rc < 0)
@@ -171,12 +180,6 @@ static ssize_t ds1682_eeprom_write(struct file *filp, struct kobject *kobj,
 	dev_dbg(&client->dev, "ds1682_eeprom_write(p=%p, off=%lli, c=%zi)\n",
 		buf, off, count);
 
-	if (off >= DS1682_EEPROM_SIZE)
-		return -ENOSPC;
-
-	if (off + count > DS1682_EEPROM_SIZE)
-		count = DS1682_EEPROM_SIZE - off;
-
 	/* Write out to the device */
 	if (i2c_smbus_write_i2c_block_data(client, DS1682_REG_EEPROM + off,
 					   count, buf) < 0)
@@ -185,7 +188,7 @@ static ssize_t ds1682_eeprom_write(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static struct bin_attribute ds1682_eeprom_attr = {
+static const struct bin_attribute ds1682_eeprom_attr = {
 	.attr = {
 		.name = "eeprom",
 		.mode = S_IRUGO | S_IWUSR,
@@ -195,12 +198,43 @@ static struct bin_attribute ds1682_eeprom_attr = {
 	.write = ds1682_eeprom_write,
 };
 
+static int ds1682_nvmem_read(void *priv, unsigned int offset, void *val,
+			     size_t bytes)
+{
+	struct i2c_client *client = priv;
+	int ret;
+
+	ret = i2c_smbus_read_i2c_block_data(client, DS1682_REG_EEPROM + offset,
+					    bytes, val);
+	return ret < 0 ? ret : 0;
+}
+
+static int ds1682_nvmem_write(void *priv, unsigned int offset, void *val,
+			      size_t bytes)
+{
+	struct i2c_client *client = priv;
+	int ret;
+
+	ret = i2c_smbus_write_i2c_block_data(client, DS1682_REG_EEPROM + offset,
+					     bytes, val);
+	return ret < 0 ? ret : 0;
+}
+
 /*
  * Called when a ds1682 device is matched with this driver
  */
-static int ds1682_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ds1682_probe(struct i2c_client *client)
 {
+	struct nvmem_config config = {
+		.dev = &client->dev,
+		.owner = THIS_MODULE,
+		.type = NVMEM_TYPE_EEPROM,
+		.reg_read = ds1682_nvmem_read,
+		.reg_write = ds1682_nvmem_write,
+		.size = DS1682_EEPROM_SIZE,
+		.priv = client,
+	};
+	struct nvmem_device *nvmem;
 	int rc;
 
 	if (!i2c_check_functionality(client->adapter,
@@ -209,6 +243,10 @@ static int ds1682_probe(struct i2c_client *client,
 		rc = -ENODEV;
 		goto exit;
 	}
+
+	nvmem = devm_nvmem_register(&client->dev, &config);
+	if (IS_ENABLED(CONFIG_NVMEM) && IS_ERR(nvmem))
+		return PTR_ERR(nvmem);
 
 	rc = sysfs_create_group(&client->dev.kobj, &ds1682_group);
 	if (rc)
@@ -226,22 +264,28 @@ static int ds1682_probe(struct i2c_client *client,
 	return rc;
 }
 
-static int ds1682_remove(struct i2c_client *client)
+static void ds1682_remove(struct i2c_client *client)
 {
 	sysfs_remove_bin_file(&client->dev.kobj, &ds1682_eeprom_attr);
 	sysfs_remove_group(&client->dev.kobj, &ds1682_group);
-	return 0;
 }
 
 static const struct i2c_device_id ds1682_id[] = {
-	{ "ds1682", 0 },
+	{ "ds1682" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ds1682_id);
 
+static const struct of_device_id ds1682_of_match[] = {
+	{ .compatible = "dallas,ds1682", },
+	{}
+};
+MODULE_DEVICE_TABLE(of, ds1682_of_match);
+
 static struct i2c_driver ds1682_driver = {
 	.driver = {
 		.name = "ds1682",
+		.of_match_table = ds1682_of_match,
 	},
 	.probe = ds1682_probe,
 	.remove = ds1682_remove,

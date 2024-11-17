@@ -1,7 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_FPU_H
 #define __ASM_SH_FPU_H
 
 #ifndef __ASSEMBLY__
+
+#include <asm/ptrace.h>
 
 struct task_struct;
 
@@ -34,11 +37,6 @@ struct user_regset;
 extern int do_fpu_inst(unsigned short, struct pt_regs *);
 extern int init_fpu(struct task_struct *);
 
-extern int fpregs_get(struct task_struct *target,
-		      const struct user_regset *regset,
-		      unsigned int pos, unsigned int count,
-		      void *kbuf, void __user *ubuf);
-
 static inline void __unlazy_fpu(struct task_struct *tsk, struct pt_regs *regs)
 {
 	if (task_thread_info(tsk)->status & TS_USEDFPU) {
@@ -65,6 +63,9 @@ static inline void clear_fpu(struct task_struct *tsk, struct pt_regs *regs)
 	}
 	preempt_enable();
 }
+
+void float_raise(unsigned int flags);
+int float_rounding_mode(void);
 
 #endif /* __ASSEMBLY__ */
 

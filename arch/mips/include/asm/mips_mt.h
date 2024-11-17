@@ -1,5 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Definitions and decalrations for MIPS MT support that are common between
+ * Definitions and declarations for MIPS MT support that are common between
  * the VSMP, and AP/SP kernel models.
  */
 #ifndef __ASM_MIPS_MT_H
@@ -16,8 +17,6 @@ extern int vpelimit;
 extern cpumask_t mt_fpu_cpumask;
 extern unsigned long mt_fpemul_threshold;
 
-extern void mips_mt_regdump(unsigned long previous_mvpcontrol_value);
-
 #ifdef CONFIG_MIPS_MT
 extern void mips_mt_set_cpuoptions(void);
 #else
@@ -25,6 +24,6 @@ static inline void mips_mt_set_cpuoptions(void) { }
 #endif
 
 struct class;
-extern struct class *mt_class;
+extern const struct class mt_class;
 
 #endif /* __ASM_MIPS_MT_H */

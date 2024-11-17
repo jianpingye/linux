@@ -1,10 +1,15 @@
+#include <errno.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <termios.h>
+#include <unistd.h>
+#include <linux/kernel.h>
 #ifdef HAVE_BACKTRACE_SUPPORT
 #include <execinfo.h>
 #endif
 
-#include "../../util/cache.h"
+#include "../../util/color.h"
 #include "../../util/debug.h"
 #include "../browser.h"
 #include "../helpline.h"
@@ -25,10 +30,10 @@ void ui__refresh_dimensions(bool force)
 {
 	if (force || ui__need_resize) {
 		ui__need_resize = 0;
-		pthread_mutex_lock(&ui__lock);
+		mutex_lock(&ui__lock);
 		SLtt_get_screen_size();
 		SLsmg_reinit_smg();
-		pthread_mutex_unlock(&ui__lock);
+		mutex_unlock(&ui__lock);
 	}
 }
 
@@ -118,6 +123,23 @@ static void ui__signal(int sig)
 	exit(0);
 }
 
+static void ui__sigcont(int sig)
+{
+	static struct termios tty;
+
+	if (sig == SIGTSTP) {
+		while (tcgetattr(SLang_TT_Read_FD, &tty) == -1 && errno == EINTR)
+			;
+		while (write(SLang_TT_Read_FD, PERF_COLOR_RESET, sizeof(PERF_COLOR_RESET) - 1) == -1 && errno == EINTR)
+			;
+		raise(SIGSTOP);
+	} else {
+		while (tcsetattr(SLang_TT_Read_FD, TCSADRAIN, &tty) == -1 && errno == EINTR)
+			;
+		raise(SIGWINCH);
+	}
+}
+
 int ui__init(void)
 {
 	int err;
@@ -132,6 +154,7 @@ int ui__init(void)
 	err = SLang_init_tty(-1, 0, 0);
 	if (err < 0)
 		goto out;
+	SLtty_set_suspend_state(true);
 
 	err = SLkp_init();
 	if (err < 0) {
@@ -139,19 +162,21 @@ int ui__init(void)
 		goto out;
 	}
 
-	SLkp_define_keysym((char *)"^(kB)", SL_KEY_UNTAB);
-
-	ui_helpline__init();
-	ui_browser__init();
-	tui_progress__init();
+	SLkp_define_keysym("^(kB)", SL_KEY_UNTAB);
 
 	signal(SIGSEGV, ui__signal_backtrace);
 	signal(SIGFPE, ui__signal_backtrace);
 	signal(SIGINT, ui__signal);
 	signal(SIGQUIT, ui__signal);
 	signal(SIGTERM, ui__signal);
+	signal(SIGTSTP, ui__sigcont);
+	signal(SIGCONT, ui__sigcont);
 
 	perf_error__register(&perf_tui_eops);
+
+	ui_helpline__init();
+	ui_browser__init();
+	tui_progress__init();
 
 	hist_browser__init_hpp();
 out:
@@ -166,9 +191,11 @@ void ui__exit(bool wait_for_ok)
 				    "Press any key...", 0);
 
 	SLtt_set_cursor_visibility(1);
-	SLsmg_refresh();
-	SLsmg_reset_smg();
+	if (mutex_trylock(&ui__lock)) {
+		SLsmg_refresh();
+		SLsmg_reset_smg();
+		mutex_unlock(&ui__lock);
+	}
 	SLang_reset_tty();
-
 	perf_error__unregister(&perf_tui_eops);
 }

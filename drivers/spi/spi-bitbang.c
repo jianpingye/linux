@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * polling/bitbanging SPI master controller driver utilities
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Polling/bitbanging SPI host controller controller driver utilities
  */
 
 #include <linux/spinlock.h>
@@ -20,9 +11,12 @@
 #include <linux/errno.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/time64.h>
 
 #include <linux/spi/spi.h>
 #include <linux/spi/spi_bitbang.h>
+
+#define SPI_BITBANG_CS_DELAY	100
 
 
 /*----------------------------------------------------------------------*/
@@ -44,93 +38,106 @@
  * working quickly, or testing for differences that aren't speed related.
  */
 
+typedef unsigned int (*spi_bb_txrx_bufs_fn)(struct spi_device *, spi_bb_txrx_word_fn,
+					    unsigned int, struct spi_transfer *,
+					    unsigned int);
+
 struct spi_bitbang_cs {
-	unsigned	nsecs;	/* (clock cycle time)/2 */
-	u32		(*txrx_word)(struct spi_device *spi, unsigned nsecs,
-					u32 word, u8 bits);
-	unsigned	(*txrx_bufs)(struct spi_device *,
-					u32 (*txrx_word)(
-						struct spi_device *spi,
-						unsigned nsecs,
-						u32 word, u8 bits),
-					unsigned, struct spi_transfer *);
+	unsigned int nsecs;	/* (clock cycle time) / 2 */
+	spi_bb_txrx_word_fn txrx_word;
+	spi_bb_txrx_bufs_fn txrx_bufs;
 };
 
-static unsigned bitbang_txrx_8(
-	struct spi_device	*spi,
-	u32			(*txrx_word)(struct spi_device *spi,
-					unsigned nsecs,
-					u32 word, u8 bits),
-	unsigned		ns,
-	struct spi_transfer	*t
-) {
-	unsigned		bits = t->bits_per_word;
-	unsigned		count = t->len;
+static unsigned int bitbang_txrx_8(struct spi_device *spi,
+	spi_bb_txrx_word_fn txrx_word,
+	unsigned int ns,
+	struct spi_transfer	*t,
+	unsigned int flags)
+{
+	struct spi_bitbang	*bitbang;
+	unsigned int		bits = t->bits_per_word;
+	unsigned int		count = t->len;
 	const u8		*tx = t->tx_buf;
 	u8			*rx = t->rx_buf;
 
+	bitbang = spi_controller_get_devdata(spi->controller);
 	while (likely(count > 0)) {
 		u8		word = 0;
 
 		if (tx)
 			word = *tx++;
-		word = txrx_word(spi, ns, word, bits);
+		else
+			word = spi->mode & SPI_MOSI_IDLE_HIGH ? 0xFF : 0;
+		word = txrx_word(spi, ns, word, bits, flags);
 		if (rx)
 			*rx++ = word;
 		count -= 1;
 	}
+	if (bitbang->set_mosi_idle)
+		bitbang->set_mosi_idle(spi);
+
 	return t->len - count;
 }
 
-static unsigned bitbang_txrx_16(
-	struct spi_device	*spi,
-	u32			(*txrx_word)(struct spi_device *spi,
-					unsigned nsecs,
-					u32 word, u8 bits),
-	unsigned		ns,
-	struct spi_transfer	*t
-) {
-	unsigned		bits = t->bits_per_word;
-	unsigned		count = t->len;
+static unsigned int bitbang_txrx_16(struct spi_device *spi,
+	spi_bb_txrx_word_fn txrx_word,
+	unsigned int ns,
+	struct spi_transfer	*t,
+	unsigned int flags)
+{
+	struct spi_bitbang	*bitbang;
+	unsigned int		bits = t->bits_per_word;
+	unsigned int		count = t->len;
 	const u16		*tx = t->tx_buf;
 	u16			*rx = t->rx_buf;
 
+	bitbang = spi_controller_get_devdata(spi->controller);
 	while (likely(count > 1)) {
 		u16		word = 0;
 
 		if (tx)
 			word = *tx++;
-		word = txrx_word(spi, ns, word, bits);
+		else
+			word = spi->mode & SPI_MOSI_IDLE_HIGH ? 0xFFFF : 0;
+		word = txrx_word(spi, ns, word, bits, flags);
 		if (rx)
 			*rx++ = word;
 		count -= 2;
 	}
+	if (bitbang->set_mosi_idle)
+		bitbang->set_mosi_idle(spi);
+
 	return t->len - count;
 }
 
-static unsigned bitbang_txrx_32(
-	struct spi_device	*spi,
-	u32			(*txrx_word)(struct spi_device *spi,
-					unsigned nsecs,
-					u32 word, u8 bits),
-	unsigned		ns,
-	struct spi_transfer	*t
-) {
-	unsigned		bits = t->bits_per_word;
-	unsigned		count = t->len;
+static unsigned int bitbang_txrx_32(struct spi_device *spi,
+	spi_bb_txrx_word_fn txrx_word,
+	unsigned int ns,
+	struct spi_transfer	*t,
+	unsigned int flags)
+{
+	struct spi_bitbang	*bitbang;
+	unsigned int		bits = t->bits_per_word;
+	unsigned int		count = t->len;
 	const u32		*tx = t->tx_buf;
 	u32			*rx = t->rx_buf;
 
+	bitbang = spi_controller_get_devdata(spi->controller);
 	while (likely(count > 3)) {
 		u32		word = 0;
 
 		if (tx)
 			word = *tx++;
-		word = txrx_word(spi, ns, word, bits);
+		else
+			word = spi->mode & SPI_MOSI_IDLE_HIGH ? 0xFFFFFFFF : 0;
+		word = txrx_word(spi, ns, word, bits, flags);
 		if (rx)
 			*rx++ = word;
 		count -= 4;
 	}
+	if (bitbang->set_mosi_idle)
+		bitbang->set_mosi_idle(spi);
+
 	return t->len - count;
 }
 
@@ -164,8 +171,8 @@ int spi_bitbang_setup_transfer(struct spi_device *spi, struct spi_transfer *t)
 	if (!hz)
 		hz = spi->max_speed_hz;
 	if (hz) {
-		cs->nsecs = (1000000000/2) / hz;
-		if (cs->nsecs > (MAX_UDELAY_MS * 1000 * 1000))
+		cs->nsecs = (NSEC_PER_SEC / 2) / hz;
+		if (cs->nsecs > (MAX_UDELAY_MS * NSEC_PER_MSEC))
 			return -EINVAL;
 	}
 
@@ -173,55 +180,54 @@ int spi_bitbang_setup_transfer(struct spi_device *spi, struct spi_transfer *t)
 }
 EXPORT_SYMBOL_GPL(spi_bitbang_setup_transfer);
 
-/**
+/*
  * spi_bitbang_setup - default setup for per-word I/O loops
  */
 int spi_bitbang_setup(struct spi_device *spi)
 {
 	struct spi_bitbang_cs	*cs = spi->controller_state;
 	struct spi_bitbang	*bitbang;
-	unsigned long		flags;
+	bool			initial_setup = false;
+	int			retval;
 
-	bitbang = spi_master_get_devdata(spi->master);
+	bitbang = spi_controller_get_devdata(spi->controller);
 
 	if (!cs) {
 		cs = kzalloc(sizeof(*cs), GFP_KERNEL);
 		if (!cs)
 			return -ENOMEM;
 		spi->controller_state = cs;
+		initial_setup = true;
 	}
 
 	/* per-word shift register access, in hardware or bitbanging */
 	cs->txrx_word = bitbang->txrx_word[spi->mode & (SPI_CPOL|SPI_CPHA)];
-	if (!cs->txrx_word)
-		return -EINVAL;
+	if (!cs->txrx_word) {
+		retval = -EINVAL;
+		goto err_free;
+	}
 
 	if (bitbang->setup_transfer) {
-		int retval = bitbang->setup_transfer(spi, NULL);
+		retval = bitbang->setup_transfer(spi, NULL);
 		if (retval < 0)
-			return retval;
+			goto err_free;
 	}
+
+	if (bitbang->set_mosi_idle)
+		bitbang->set_mosi_idle(spi);
 
 	dev_dbg(&spi->dev, "%s, %u nsec/bit\n", __func__, 2 * cs->nsecs);
 
-	/* NOTE we _need_ to call chipselect() early, ideally with adapter
-	 * setup, unless the hardware defaults cooperate to avoid confusion
-	 * between normal (active low) and inverted chipselects.
-	 */
-
-	/* deselect chip (low or high) */
-	spin_lock_irqsave(&bitbang->lock, flags);
-	if (!bitbang->busy) {
-		bitbang->chipselect(spi, BITBANG_CS_INACTIVE);
-		ndelay(cs->nsecs);
-	}
-	spin_unlock_irqrestore(&bitbang->lock, flags);
-
 	return 0;
+
+err_free:
+	if (initial_setup)
+		kfree(cs);
+	return retval;
 }
 EXPORT_SYMBOL_GPL(spi_bitbang_setup);
 
-/**
+/*
  * spi_bitbang_cleanup - default cleanup for per-word I/O loops
  */
 void spi_bitbang_cleanup(struct spi_device *spi)
@@ -233,9 +239,25 @@ EXPORT_SYMBOL_GPL(spi_bitbang_cleanup);
 static int spi_bitbang_bufs(struct spi_device *spi, struct spi_transfer *t)
 {
 	struct spi_bitbang_cs	*cs = spi->controller_state;
-	unsigned		nsecs = cs->nsecs;
+	unsigned int		nsecs = cs->nsecs;
+	struct spi_bitbang	*bitbang;
 
-	return cs->txrx_bufs(spi, cs->txrx_word, nsecs, t);
+	bitbang = spi_controller_get_devdata(spi->controller);
+	if (bitbang->set_line_direction) {
+		int err;
+
+		err = bitbang->set_line_direction(spi, !!(t->tx_buf));
+		if (err < 0)
+			return err;
+	}
+
+	if (spi->mode & SPI_3WIRE) {
+		unsigned int flags;
+
+		flags = t->tx_buf ? SPI_CONTROLLER_NO_RX : SPI_CONTROLLER_NO_TX;
+		return cs->txrx_bufs(spi, cs->txrx_word, nsecs, t, flags);
+	}
+	return cs->txrx_bufs(spi, cs->txrx_word, nsecs, t, 0);
 }
 
 /*----------------------------------------------------------------------*/
@@ -252,152 +274,137 @@ static int spi_bitbang_bufs(struct spi_device *spi, struct spi_transfer *t)
  * transfer-at-a-time ones to leverage dma or fifo hardware.
  */
 
-static int spi_bitbang_prepare_hardware(struct spi_master *spi)
+static int spi_bitbang_prepare_hardware(struct spi_controller *spi)
 {
 	struct spi_bitbang	*bitbang;
-	unsigned long		flags;
 
-	bitbang = spi_master_get_devdata(spi);
+	bitbang = spi_controller_get_devdata(spi);
 
-	spin_lock_irqsave(&bitbang->lock, flags);
+	mutex_lock(&bitbang->lock);
 	bitbang->busy = 1;
-	spin_unlock_irqrestore(&bitbang->lock, flags);
+	mutex_unlock(&bitbang->lock);
 
 	return 0;
 }
 
-static int spi_bitbang_transfer_one(struct spi_master *master,
-				    struct spi_message *m)
+static int spi_bitbang_transfer_one(struct spi_controller *ctlr,
+				    struct spi_device *spi,
+				    struct spi_transfer *transfer)
 {
-	struct spi_bitbang	*bitbang;
-	unsigned		nsecs;
-	struct spi_transfer	*t = NULL;
-	unsigned		cs_change;
-	int			status;
-	int			do_setup = -1;
-	struct spi_device	*spi = m->spi;
+	struct spi_bitbang *bitbang = spi_controller_get_devdata(ctlr);
+	int status = 0;
 
-	bitbang = spi_master_get_devdata(master);
+	if (bitbang->setup_transfer) {
+		status = bitbang->setup_transfer(spi, transfer);
+		if (status < 0)
+			goto out;
+	}
 
-	/* FIXME this is made-up ... the correct value is known to
-	 * word-at-a-time bitbang code, and presumably chipselect()
-	 * should enforce these requirements too?
-	 */
-	nsecs = 100;
+	if (transfer->len)
+		status = bitbang->txrx_bufs(spi, transfer);
 
-	cs_change = 1;
-	status = 0;
-
-	list_for_each_entry(t, &m->transfers, transfer_list) {
-
-		/* override speed or wordsize? */
-		if (t->speed_hz || t->bits_per_word)
-			do_setup = 1;
-
-		/* init (-1) or override (1) transfer params */
-		if (do_setup != 0) {
-			if (bitbang->setup_transfer) {
-				status = bitbang->setup_transfer(spi, t);
-				if (status < 0)
-					break;
-			}
-			if (do_setup == -1)
-				do_setup = 0;
-		}
-
-		/* set up default clock polarity, and activate chip;
-		 * this implicitly updates clock and spi modes as
-		 * previously recorded for this device via setup().
-		 * (and also deselects any other chip that might be
-		 * selected ...)
-		 */
-		if (cs_change) {
-			bitbang->chipselect(spi, BITBANG_CS_ACTIVE);
-			ndelay(nsecs);
-		}
-		cs_change = t->cs_change;
-		if (!t->tx_buf && !t->rx_buf && t->len) {
-			status = -EINVAL;
-			break;
-		}
-
-		/* transfer data.  the lower level code handles any
-		 * new dma mappings it needs. our caller always gave
-		 * us dma-safe buffers.
-		 */
-		if (t->len) {
-			/* REVISIT dma API still needs a designated
-			 * DMA_ADDR_INVALID; ~0 might be better.
-			 */
-			if (!m->is_dma_mapped)
-				t->rx_dma = t->tx_dma = 0;
-			status = bitbang->txrx_bufs(spi, t);
-		}
-		if (status > 0)
-			m->actual_length += status;
-		if (status != t->len) {
-			/* always report some kind of error */
-			if (status >= 0)
-				status = -EREMOTEIO;
-			break;
-		}
+	if (status == transfer->len)
 		status = 0;
+	else if (status >= 0)
+		status = -EREMOTEIO;
 
-		/* protocol tweaks before next transfer */
-		if (t->delay_usecs)
-			udelay(t->delay_usecs);
-
-		if (cs_change &&
-		    !list_is_last(&t->transfer_list, &m->transfers)) {
-			/* sometimes a short mid-message deselect of the chip
-			 * may be needed to terminate a mode or command
-			 */
-			ndelay(nsecs);
-			bitbang->chipselect(spi, BITBANG_CS_INACTIVE);
-			ndelay(nsecs);
-		}
-	}
-
-	m->status = status;
-
-	/* normally deactivate chipselect ... unless no error and
-	 * cs_change has hinted that the next message will probably
-	 * be for this chip too.
-	 */
-	if (!(status == 0 && cs_change)) {
-		ndelay(nsecs);
-		bitbang->chipselect(spi, BITBANG_CS_INACTIVE);
-		ndelay(nsecs);
-	}
-
-	spi_finalize_current_message(master);
+out:
+	spi_finalize_current_transfer(ctlr);
 
 	return status;
 }
 
-static int spi_bitbang_unprepare_hardware(struct spi_master *spi)
+static int spi_bitbang_unprepare_hardware(struct spi_controller *spi)
 {
 	struct spi_bitbang	*bitbang;
-	unsigned long		flags;
 
-	bitbang = spi_master_get_devdata(spi);
+	bitbang = spi_controller_get_devdata(spi);
 
-	spin_lock_irqsave(&bitbang->lock, flags);
+	mutex_lock(&bitbang->lock);
 	bitbang->busy = 0;
-	spin_unlock_irqrestore(&bitbang->lock, flags);
+	mutex_unlock(&bitbang->lock);
 
 	return 0;
 }
 
+static void spi_bitbang_set_cs(struct spi_device *spi, bool enable)
+{
+	struct spi_bitbang *bitbang = spi_controller_get_devdata(spi->controller);
+
+	/* SPI core provides CS high / low, but bitbang driver
+	 * expects CS active
+	 * spi device driver takes care of handling SPI_CS_HIGH
+	 */
+	enable = (!!(spi->mode & SPI_CS_HIGH) == enable);
+
+	ndelay(SPI_BITBANG_CS_DELAY);
+	bitbang->chipselect(spi, enable ? BITBANG_CS_ACTIVE :
+			    BITBANG_CS_INACTIVE);
+	ndelay(SPI_BITBANG_CS_DELAY);
+}
+
 /*----------------------------------------------------------------------*/
 
+int spi_bitbang_init(struct spi_bitbang *bitbang)
+{
+	struct spi_controller *ctlr = bitbang->ctlr;
+	bool custom_cs;
+
+	if (!ctlr)
+		return -EINVAL;
+	/*
+	 * We only need the chipselect callback if we are actually using it.
+	 * If we just use GPIO descriptors, it is surplus. If the
+	 * SPI_CONTROLLER_GPIO_SS flag is set, we always need to call the
+	 * driver-specific chipselect routine.
+	 */
+	custom_cs = (!ctlr->use_gpio_descriptors ||
+		     (ctlr->flags & SPI_CONTROLLER_GPIO_SS));
+
+	if (custom_cs && !bitbang->chipselect)
+		return -EINVAL;
+
+	mutex_init(&bitbang->lock);
+
+	if (!ctlr->mode_bits)
+		ctlr->mode_bits = SPI_CPOL | SPI_CPHA | bitbang->flags;
+
+	if (ctlr->transfer || ctlr->transfer_one_message)
+		return -EINVAL;
+
+	ctlr->prepare_transfer_hardware = spi_bitbang_prepare_hardware;
+	ctlr->unprepare_transfer_hardware = spi_bitbang_unprepare_hardware;
+	ctlr->transfer_one = spi_bitbang_transfer_one;
+	/*
+	 * When using GPIO descriptors, the ->set_cs() callback doesn't even
+	 * get called unless SPI_CONTROLLER_GPIO_SS is set.
+	 */
+	if (custom_cs)
+		ctlr->set_cs = spi_bitbang_set_cs;
+
+	if (!bitbang->txrx_bufs) {
+		bitbang->use_dma = 0;
+		bitbang->txrx_bufs = spi_bitbang_bufs;
+		if (!ctlr->setup) {
+			if (!bitbang->setup_transfer)
+				bitbang->setup_transfer =
+					 spi_bitbang_setup_transfer;
+			ctlr->setup = spi_bitbang_setup;
+			ctlr->cleanup = spi_bitbang_cleanup;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(spi_bitbang_init);
+
 /**
- * spi_bitbang_start - start up a polled/bitbanging SPI master driver
+ * spi_bitbang_start - start up a polled/bitbanging SPI host controller driver
  * @bitbang: driver handle
  *
  * Caller should have zero-initialized all parts of the structure, and then
- * provided callbacks for chip selection and I/O loops.  If the master has
- * a transfer method, its final step should call spi_bitbang_transfer; or,
+ * provided callbacks for chip selection and I/O loops.  If the host controller has
+ * a transfer method, its final step should call spi_bitbang_transfer(); or,
  * that's the default if the transfer routine is not initialized.  It should
  * also set up the bus number and number of chipselects.
  *
@@ -405,71 +412,48 @@ static int spi_bitbang_unprepare_hardware(struct spi_master *spi)
  * hardware that basically exposes a shift register) or per-spi_transfer
  * (which takes better advantage of hardware like fifos or DMA engines).
  *
- * Drivers using per-word I/O loops should use (or call) spi_bitbang_setup,
- * spi_bitbang_cleanup and spi_bitbang_setup_transfer to handle those spi
- * master methods.  Those methods are the defaults if the bitbang->txrx_bufs
+ * Drivers using per-word I/O loops should use (or call) spi_bitbang_setup(),
+ * spi_bitbang_cleanup() and spi_bitbang_setup_transfer() to handle those SPI
+ * host controller methods.  Those methods are the defaults if the bitbang->txrx_bufs
  * routine isn't initialized.
  *
- * This routine registers the spi_master, which will process requests in a
+ * This routine registers the spi_controller, which will process requests in a
  * dedicated task, keeping IRQs unblocked most of the time.  To stop
  * processing those requests, call spi_bitbang_stop().
  *
- * On success, this routine will take a reference to master. The caller is
- * responsible for calling spi_bitbang_stop() to decrement the reference and
- * spi_master_put() as counterpart of spi_alloc_master() to prevent a memory
+ * On success, this routine will take a reference to the controller. The caller
+ * is responsible for calling spi_bitbang_stop() to decrement the reference and
+ * spi_controller_put() as counterpart of spi_alloc_host() to prevent a memory
  * leak.
  */
 int spi_bitbang_start(struct spi_bitbang *bitbang)
 {
-	struct spi_master *master = bitbang->master;
+	struct spi_controller *ctlr = bitbang->ctlr;
 	int ret;
 
-	if (!master || !bitbang->chipselect)
-		return -EINVAL;
-
-	spin_lock_init(&bitbang->lock);
-
-	if (!master->mode_bits)
-		master->mode_bits = SPI_CPOL | SPI_CPHA | bitbang->flags;
-
-	if (master->transfer || master->transfer_one_message)
-		return -EINVAL;
-
-	master->prepare_transfer_hardware = spi_bitbang_prepare_hardware;
-	master->unprepare_transfer_hardware = spi_bitbang_unprepare_hardware;
-	master->transfer_one_message = spi_bitbang_transfer_one;
-
-	if (!bitbang->txrx_bufs) {
-		bitbang->use_dma = 0;
-		bitbang->txrx_bufs = spi_bitbang_bufs;
-		if (!master->setup) {
-			if (!bitbang->setup_transfer)
-				bitbang->setup_transfer =
-					 spi_bitbang_setup_transfer;
-			master->setup = spi_bitbang_setup;
-			master->cleanup = spi_bitbang_cleanup;
-		}
-	}
+	ret = spi_bitbang_init(bitbang);
+	if (ret)
+		return ret;
 
 	/* driver may get busy before register() returns, especially
 	 * if someone registered boardinfo for devices
 	 */
-	ret = spi_register_master(spi_master_get(master));
+	ret = spi_register_controller(spi_controller_get(ctlr));
 	if (ret)
-		spi_master_put(master);
+		spi_controller_put(ctlr);
 
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL_GPL(spi_bitbang_start);
 
-/**
+/*
  * spi_bitbang_stop - stops the task providing spi communication
  */
 void spi_bitbang_stop(struct spi_bitbang *bitbang)
 {
-	spi_unregister_master(bitbang->master);
+	spi_unregister_controller(bitbang->ctlr);
 }
 EXPORT_SYMBOL_GPL(spi_bitbang_stop);
 
 MODULE_LICENSE("GPL");
-
+MODULE_DESCRIPTION("Utilities for Bitbanging SPI host controllers");

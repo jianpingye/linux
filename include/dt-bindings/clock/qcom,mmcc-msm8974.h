@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2013, The Linux Foundation. All rights reserved.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef _DT_BINDINGS_CLK_MSM_MMCC_8974_H
@@ -129,7 +121,6 @@
 #define MMSS_MMSSNOC_BTO_AHB_CLK			112
 #define MMSS_MMSSNOC_AXI_CLK				113
 #define MMSS_S0_AXI_CLK					114
-#define OCMEMCX_AHB_CLK					115
 #define OCMEMCX_OCMEMNOC_CLK				116
 #define OXILI_OCMEMGX_CLK				117
 #define OCMEMNOC_CLK					118
@@ -157,5 +148,13 @@
 #define SPDM_CSI0					140
 #define SPDM_RM_AXI					141
 #define SPDM_RM_OCMEMNOC				142
+
+/* gdscs */
+#define VENUS0_GDSC					0
+#define MDSS_GDSC					1
+#define CAMSS_JPEG_GDSC					2
+#define CAMSS_VFE_GDSC					3
+#define OXILI_GDSC					4
+#define OXILICX_GDSC					5
 
 #endif

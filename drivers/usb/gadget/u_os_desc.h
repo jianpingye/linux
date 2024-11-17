@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * u_os_desc.h
  *
@@ -6,17 +7,13 @@
  * Copyright (c) 2014 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
- * Author: Andrzej Pietrasiewicz <andrzej.p@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Author: Andrzej Pietrasiewicz <andrzejtp2010@gmail.com>
  */
 
 #ifndef __U_OS_DESC_H__
 #define __U_OS_DESC_H__
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/nls.h>
 
 #define USB_EXT_PROP_DW_SIZE			0

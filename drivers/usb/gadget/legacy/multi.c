@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * multi.c -- Multifunction Composite driver
  *
@@ -5,11 +6,6 @@
  * Copyright (C) 2008 Nokia Corporation
  * Copyright (C) 2009 Samsung Electronics
  * Author: Michal Nazarewicz (mina86@mina86.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 
@@ -67,7 +63,7 @@ static struct usb_device_descriptor device_desc = {
 	.bLength =		sizeof device_desc,
 	.bDescriptorType =	USB_DT_DEVICE,
 
-	.bcdUSB =		cpu_to_le16(0x0200),
+	/* .bcdUSB = DYNAMIC */
 
 	.bDeviceClass =		USB_CLASS_MISC /* 0xEF */,
 	.bDeviceSubClass =	2,
@@ -78,21 +74,7 @@ static struct usb_device_descriptor device_desc = {
 	.idProduct =		cpu_to_le16(MULTI_PRODUCT_NUM),
 };
 
-
-static const struct usb_descriptor_header *otg_desc[] = {
-	(struct usb_descriptor_header *) &(struct usb_otg_descriptor){
-		.bLength =		sizeof(struct usb_otg_descriptor),
-		.bDescriptorType =	USB_DT_OTG,
-
-		/*
-		 * REVISIT SRP-only hardware is possible, although
-		 * it would not be called "OTG" ...
-		 */
-		.bmAttributes =		USB_OTG_SRP | USB_OTG_HNP,
-	},
-	NULL,
-};
-
+static const struct usb_descriptor_header *otg_desc[2];
 
 enum {
 	MULTI_STRING_RNDIS_CONFIG_IDX = USB_GADGET_FIRST_AVAIL_IDX,
@@ -151,7 +133,6 @@ static struct usb_function *f_msg_rndis;
 
 static int rndis_do_config(struct usb_configuration *c)
 {
-	struct fsg_opts *fsg_opts;
 	int ret;
 
 	if (gadget_is_otg(c->cdev->gadget)) {
@@ -183,11 +164,6 @@ static int rndis_do_config(struct usb_configuration *c)
 		goto err_fsg;
 	}
 
-	fsg_opts = fsg_opts_from_func_inst(fi_msg);
-	ret = fsg_common_run_thread(fsg_opts->common);
-	if (ret)
-		goto err_run;
-
 	ret = usb_add_function(c, f_msg_rndis);
 	if (ret)
 		goto err_run;
@@ -206,7 +182,7 @@ err_func_rndis:
 	return ret;
 }
 
-static __ref int rndis_config_register(struct usb_composite_dev *cdev)
+static int rndis_config_register(struct usb_composite_dev *cdev)
 {
 	static struct usb_configuration config = {
 		.bConfigurationValue	= MULTI_RNDIS_CONFIG_NUM,
@@ -221,7 +197,7 @@ static __ref int rndis_config_register(struct usb_composite_dev *cdev)
 
 #else
 
-static __ref int rndis_config_register(struct usb_composite_dev *cdev)
+static int rndis_config_register(struct usb_composite_dev *cdev)
 {
 	return 0;
 }
@@ -239,7 +215,6 @@ static struct usb_function *f_msg_multi;
 
 static int cdc_do_config(struct usb_configuration *c)
 {
-	struct fsg_opts *fsg_opts;
 	int ret;
 
 	if (gadget_is_otg(c->cdev->gadget)) {
@@ -272,11 +247,6 @@ static int cdc_do_config(struct usb_configuration *c)
 		goto err_fsg;
 	}
 
-	fsg_opts = fsg_opts_from_func_inst(fi_msg);
-	ret = fsg_common_run_thread(fsg_opts->common);
-	if (ret)
-		goto err_run;
-
 	ret = usb_add_function(c, f_msg_multi);
 	if (ret)
 		goto err_run;
@@ -295,7 +265,7 @@ err_func_ecm:
 	return ret;
 }
 
-static __ref int cdc_config_register(struct usb_composite_dev *cdev)
+static int cdc_config_register(struct usb_composite_dev *cdev)
 {
 	static struct usb_configuration config = {
 		.bConfigurationValue	= MULTI_CDC_CONFIG_NUM,
@@ -310,7 +280,7 @@ static __ref int cdc_config_register(struct usb_composite_dev *cdev)
 
 #else
 
-static __ref int cdc_config_register(struct usb_composite_dev *cdev)
+static int cdc_config_register(struct usb_composite_dev *cdev)
 {
 	return 0;
 }
@@ -321,7 +291,7 @@ static __ref int cdc_config_register(struct usb_composite_dev *cdev)
 
 /****************************** Gadget Bind ******************************/
 
-static int __ref multi_bind(struct usb_composite_dev *cdev)
+static int multi_bind(struct usb_composite_dev *cdev)
 {
 	struct usb_gadget *gadget = cdev->gadget;
 #ifdef CONFIG_USB_G_MULTI_CDC
@@ -407,10 +377,6 @@ static int __ref multi_bind(struct usb_composite_dev *cdev)
 	if (status)
 		goto fail2;
 
-	status = fsg_common_set_nluns(fsg_opts->common, config.nluns);
-	if (status)
-		goto fail_set_nluns;
-
 	status = fsg_common_set_cdev(fsg_opts->common, cdev, config.can_stall);
 	if (status)
 		goto fail_set_cdev;
@@ -429,14 +395,27 @@ static int __ref multi_bind(struct usb_composite_dev *cdev)
 		goto fail_string_ids;
 	device_desc.iProduct = strings_dev[USB_GADGET_PRODUCT_IDX].id;
 
+	if (gadget_is_otg(gadget) && !otg_desc[0]) {
+		struct usb_descriptor_header *usb_desc;
+
+		usb_desc = usb_otg_descriptor_alloc(gadget);
+		if (!usb_desc) {
+			status = -ENOMEM;
+			goto fail_string_ids;
+		}
+		usb_otg_descriptor_init(gadget, usb_desc);
+		otg_desc[0] = usb_desc;
+		otg_desc[1] = NULL;
+	}
+
 	/* register configurations */
 	status = rndis_config_register(cdev);
 	if (unlikely(status < 0))
-		goto fail_string_ids;
+		goto fail_otg_desc;
 
 	status = cdc_config_register(cdev);
 	if (unlikely(status < 0))
-		goto fail_string_ids;
+		goto fail_otg_desc;
 	usb_composite_overwrite_options(cdev, &coverwrite);
 
 	/* we're done */
@@ -445,11 +424,12 @@ static int __ref multi_bind(struct usb_composite_dev *cdev)
 
 
 	/* error recovery */
+fail_otg_desc:
+	kfree(otg_desc[0]);
+	otg_desc[0] = NULL;
 fail_string_ids:
 	fsg_common_remove_luns(fsg_opts->common);
 fail_set_cdev:
-	fsg_common_free_luns(fsg_opts->common);
-fail_set_nluns:
 	fsg_common_free_buffers(fsg_opts->common);
 fail2:
 	usb_put_function_instance(fi_msg);
@@ -490,6 +470,9 @@ static int multi_unbind(struct usb_composite_dev *cdev)
 	usb_put_function(f_ecm);
 	usb_put_function_instance(fi_ecm);
 #endif
+	kfree(otg_desc[0]);
+	otg_desc[0] = NULL;
+
 	return 0;
 }
 
@@ -501,7 +484,7 @@ static struct usb_composite_driver multi_driver = {
 	.name		= "g_multi",
 	.dev		= &device_desc,
 	.strings	= dev_strings,
-	.max_speed	= USB_SPEED_HIGH,
+	.max_speed	= USB_SPEED_SUPER,
 	.bind		= multi_bind,
 	.unbind		= multi_unbind,
 	.needs_serial	= 1,

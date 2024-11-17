@@ -1,12 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
-#include <linux/errno.h>
-#include <linux/string.h>
 #include <linux/types.h>
-#include <linux/mm.h>
-#include <linux/smp.h>
 #include <linux/init.h>
-#include <linux/pfn.h>
 #include <linux/memblock.h>
+#include <linux/seq_file.h>
+
+static bool early_memtest_done;
+static phys_addr_t early_memtest_bad_size;
 
 static u64 patterns[] __initdata = {
 	/* The first entry has to be 0 to leave memtest with zeroed memory */
@@ -31,11 +31,10 @@ static u64 patterns[] __initdata = {
 
 static void __init reserve_bad_mem(u64 pattern, phys_addr_t start_bad, phys_addr_t end_bad)
 {
-	printk(KERN_INFO "  %016llx bad mem addr %010llx - %010llx reserved\n",
-	       (unsigned long long) pattern,
-	       (unsigned long long) start_bad,
-	       (unsigned long long) end_bad);
+	pr_info("  %016llx bad mem addr %pa - %pa reserved\n",
+		cpu_to_be64(pattern), &start_bad, &end_bad);
 	memblock_reserve(start_bad, end_bad - start_bad);
+	early_memtest_bad_size += (end_bad - start_bad);
 }
 
 static void __init memtest(u64 pattern, phys_addr_t start_phys, phys_addr_t size)
@@ -52,10 +51,10 @@ static void __init memtest(u64 pattern, phys_addr_t start_phys, phys_addr_t size
 	last_bad = 0;
 
 	for (p = start; p < end; p++)
-		*p = pattern;
+		WRITE_ONCE(*p, pattern);
 
 	for (p = start; p < end; p++, start_phys_aligned += incr) {
-		if (*p == pattern)
+		if (READ_ONCE(*p) == pattern)
 			continue;
 		if (start_phys_aligned == last_bad + incr) {
 			last_bad += incr;
@@ -67,6 +66,8 @@ static void __init memtest(u64 pattern, phys_addr_t start_phys, phys_addr_t size
 	}
 	if (start_bad)
 		reserve_bad_mem(pattern, start_bad, last_bad + incr);
+
+	early_memtest_done = true;
 }
 
 static void __init do_one_pass(u64 pattern, phys_addr_t start, phys_addr_t end)
@@ -79,26 +80,26 @@ static void __init do_one_pass(u64 pattern, phys_addr_t start, phys_addr_t end)
 		this_start = clamp(this_start, start, end);
 		this_end = clamp(this_end, start, end);
 		if (this_start < this_end) {
-			printk(KERN_INFO "  %010llx - %010llx pattern %016llx\n",
-			       (unsigned long long)this_start,
-			       (unsigned long long)this_end,
-			       (unsigned long long)cpu_to_be64(pattern));
+			pr_info("  %pa - %pa pattern %016llx\n",
+				&this_start, &this_end, cpu_to_be64(pattern));
 			memtest(pattern, this_start, this_end - this_start);
 		}
 	}
 }
 
 /* default is disabled */
-static int memtest_pattern __initdata;
+static unsigned int memtest_pattern __initdata;
 
 static int __init parse_memtest(char *arg)
 {
+	int ret = 0;
+
 	if (arg)
-		memtest_pattern = simple_strtoul(arg, NULL, 0);
+		ret = kstrtouint(arg, 0, &memtest_pattern);
 	else
 		memtest_pattern = ARRAY_SIZE(patterns);
 
-	return 0;
+	return ret;
 }
 
 early_param("memtest", parse_memtest);
@@ -111,9 +112,26 @@ void __init early_memtest(phys_addr_t start, phys_addr_t end)
 	if (!memtest_pattern)
 		return;
 
-	printk(KERN_INFO "early_memtest: # of tests: %d\n", memtest_pattern);
+	pr_info("early_memtest: # of tests: %u\n", memtest_pattern);
 	for (i = memtest_pattern-1; i < UINT_MAX; --i) {
 		idx = i % ARRAY_SIZE(patterns);
 		do_one_pass(patterns[idx], start, end);
 	}
+}
+
+void memtest_report_meminfo(struct seq_file *m)
+{
+	unsigned long early_memtest_bad_size_kb;
+
+	if (!IS_ENABLED(CONFIG_PROC_FS))
+		return;
+
+	if (!early_memtest_done)
+		return;
+
+	early_memtest_bad_size_kb = early_memtest_bad_size >> 10;
+	if (early_memtest_bad_size && !early_memtest_bad_size_kb)
+		early_memtest_bad_size_kb = 1;
+	/* When 0 is reported, it means there actually was a successful test */
+	seq_printf(m, "EarlyMemtestBad:   %5lu kB\n", early_memtest_bad_size_kb);
 }

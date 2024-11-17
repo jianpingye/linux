@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * mmp gate clock operation source file
  *
  * Copyright (C) 2014 Marvell
  * Chao Xie <chao.xie@marvell.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/clk-provider.h>
@@ -27,7 +24,6 @@
 static int mmp_clk_gate_enable(struct clk_hw *hw)
 {
 	struct mmp_clk_gate *gate = to_clk_mmp_gate(hw);
-	struct clk *clk = hw->clk;
 	unsigned long flags = 0;
 	unsigned long rate;
 	u32 tmp;
@@ -44,7 +40,7 @@ static int mmp_clk_gate_enable(struct clk_hw *hw)
 		spin_unlock_irqrestore(gate->lock, flags);
 
 	if (gate->flags & MMP_CLK_GATE_NEED_DELAY) {
-		rate = __clk_get_rate(clk);
+		rate = clk_hw_get_rate(hw);
 		/* Need delay 2 cycles. */
 		udelay(2000000/rate);
 	}
@@ -104,14 +100,12 @@ struct clk *mmp_clk_register_gate(struct device *dev, const char *name,
 
 	/* allocate the gate */
 	gate = kzalloc(sizeof(*gate), GFP_KERNEL);
-	if (!gate) {
-		pr_err("%s:%s could not allocate gate clk\n", __func__, name);
+	if (!gate)
 		return ERR_PTR(-ENOMEM);
-	}
 
 	init.name = name;
 	init.ops = &mmp_clk_gate_ops;
-	init.flags = flags | CLK_IS_BASIC;
+	init.flags = flags;
 	init.parent_names = (parent_name ? &parent_name : NULL);
 	init.num_parents = (parent_name ? 1 : 0);
 

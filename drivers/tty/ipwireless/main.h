@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * IPWireless 3G PCMCIA Network Driver
  *
@@ -47,9 +48,6 @@ struct ipw_dev {
 	void __iomem *attr_memory;
 
 	void __iomem *common_memory;
-
-	/* Reference to attribute memory, containing CIS data */
-	void *attribute_memory;
 
 	/* Hardware context */
 	struct ipw_hardware *hardware;

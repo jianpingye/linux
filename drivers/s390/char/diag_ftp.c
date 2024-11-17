@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    DIAGNOSE X'2C4' instruction based HMC FTP services, useable on z/VM
  *
@@ -14,7 +15,9 @@
 #include <linux/irq.h>
 #include <linux/wait.h>
 #include <linux/string.h>
-#include <asm/ctl_reg.h>
+#include <asm/asm-extable.h>
+#include <asm/ctlreg.h>
+#include <asm/diag.h>
 
 #include "hmcdrv_ftp.h"
 #include "diag_ftp.h"
@@ -102,6 +105,7 @@ static int diag_ftp_2c4(struct diag_ftp_ldfpl *fpl,
 {
 	int rc;
 
+	diag_stat_inc(DIAG_STAT_X2C4);
 	asm volatile(
 		"	diag	%[addr],%[cmd],0x2c4\n"
 		"0:	j	2f\n"
@@ -155,8 +159,8 @@ ssize_t diag_ftp_cmd(const struct hmcdrv_ftp_cmdspec *ftp, size_t *fsize)
 		goto out;
 	}
 
-	len = strlcpy(ldfpl->fident, ftp->fname, sizeof(ldfpl->fident));
-	if (len >= HMCDRV_FTP_FIDENT_MAX) {
+	len = strscpy(ldfpl->fident, ftp->fname, sizeof(ldfpl->fident));
+	if (len < 0) {
 		len = -EINVAL;
 		goto out_free;
 	}
@@ -223,7 +227,7 @@ int diag_ftp_startup(void)
 	if (rc)
 		return rc;
 
-	ctl_set_bit(0, 63 - 22);
+	irq_subclass_register(IRQ_SUBCLASS_SERVICE_SIGNAL);
 	return 0;
 }
 
@@ -232,6 +236,6 @@ int diag_ftp_startup(void)
  */
 void diag_ftp_shutdown(void)
 {
-	ctl_clear_bit(0, 63 - 22);
+	irq_subclass_unregister(IRQ_SUBCLASS_SERVICE_SIGNAL);
 	unregister_external_irq(EXT_IRQ_CP_SERVICE, diag_ftp_handler);
 }

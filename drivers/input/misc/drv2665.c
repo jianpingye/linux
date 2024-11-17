@@ -1,18 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * DRV2665 haptics driver family
  *
  * Author: Dan Murphy <dmurphy@ti.com>
  *
  * Copyright: (C) 2015 Texas Instruments, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 
 #include <linux/i2c.h>
@@ -52,11 +44,11 @@
 
 /**
  * struct drv2665_data -
- * @input_dev - Pointer to the input device
- * @client - Pointer to the I2C client
- * @regmap - Register map of the device
- * @work - Work item used to off load the enable/disable of the vibration
- * @regulator - Pointer to the regulator for the IC
+ * @input_dev: Pointer to the input device
+ * @client: Pointer to the I2C client
+ * @regmap: Register map of the device
+ * @work: Work item used to off load the enable/disable of the vibration
+ * @regulator: Pointer to the regulator for the IC
  */
 struct drv2665_data {
 	struct input_dev *input_dev;
@@ -74,7 +66,7 @@ static const u8 drv2665_sine_wave_form[] = {
 	0x9b, 0x9f, 0xa5, 0xad, 0xb8, 0xc4, 0xd2, 0xe0, 0xf0, 0x00,
 };
 
-static struct reg_default drv2665_reg_defs[] = {
+static const struct reg_default drv2665_reg_defs[] = {
 	{ DRV2665_STATUS, 0x02 },
 	{ DRV2665_CTRL_1, 0x28 },
 	{ DRV2665_CTRL_2, 0x40 },
@@ -125,14 +117,14 @@ static void drv2665_close(struct input_dev *input)
 
 	cancel_work_sync(&haptics->work);
 
-	error = regmap_update_bits(haptics->regmap,
-				   DRV2665_CTRL_2, DRV2665_STANDBY, 1);
+	error = regmap_update_bits(haptics->regmap, DRV2665_CTRL_2,
+				   DRV2665_STANDBY, DRV2665_STANDBY);
 	if (error)
 		dev_err(&haptics->client->dev,
 			"Failed to enter standby mode: %d\n", error);
 }
 
-static const struct reg_default drv2665_init_regs[] = {
+static const struct reg_sequence drv2665_init_regs[] = {
 	{ DRV2665_CTRL_2, 0 | DRV2665_10_MS_IDLE_TOUT },
 	{ DRV2665_CTRL_1, DRV2665_25_VPP_GAIN },
 };
@@ -164,8 +156,7 @@ static const struct regmap_config drv2665_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static int drv2665_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int drv2665_probe(struct i2c_client *client)
 {
 	struct drv2665_data *haptics;
 	int error;
@@ -231,16 +222,16 @@ static int drv2665_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int __maybe_unused drv2665_suspend(struct device *dev)
+static int drv2665_suspend(struct device *dev)
 {
 	struct drv2665_data *haptics = dev_get_drvdata(dev);
 	int ret = 0;
 
 	mutex_lock(&haptics->input_dev->mutex);
 
-	if (haptics->input_dev->users) {
+	if (input_device_enabled(haptics->input_dev)) {
 		ret = regmap_update_bits(haptics->regmap, DRV2665_CTRL_2,
-				DRV2665_STANDBY, 1);
+					 DRV2665_STANDBY, DRV2665_STANDBY);
 		if (ret) {
 			dev_err(dev, "Failed to set standby mode\n");
 			regulator_disable(haptics->regulator);
@@ -260,14 +251,14 @@ out:
 	return ret;
 }
 
-static int __maybe_unused drv2665_resume(struct device *dev)
+static int drv2665_resume(struct device *dev)
 {
 	struct drv2665_data *haptics = dev_get_drvdata(dev);
 	int ret = 0;
 
 	mutex_lock(&haptics->input_dev->mutex);
 
-	if (haptics->input_dev->users) {
+	if (input_device_enabled(haptics->input_dev)) {
 		ret = regulator_enable(haptics->regulator);
 		if (ret) {
 			dev_err(dev, "Failed to enable regulator\n");
@@ -289,10 +280,10 @@ out:
 	return ret;
 }
 
-static SIMPLE_DEV_PM_OPS(drv2665_pm_ops, drv2665_suspend, drv2665_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(drv2665_pm_ops, drv2665_suspend, drv2665_resume);
 
 static const struct i2c_device_id drv2665_id[] = {
-	{ "drv2665", 0 },
+	{ "drv2665" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, drv2665_id);
@@ -309,9 +300,8 @@ static struct i2c_driver drv2665_driver = {
 	.probe		= drv2665_probe,
 	.driver		= {
 		.name	= "drv2665-haptics",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(drv2665_of_match),
-		.pm	= &drv2665_pm_ops,
+		.pm	= pm_sleep_ptr(&drv2665_pm_ops),
 	},
 	.id_table = drv2665_id,
 };

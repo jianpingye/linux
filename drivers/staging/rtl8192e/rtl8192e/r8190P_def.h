@@ -1,33 +1,16 @@
-/******************************************************************************
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
  * Copyright(c) 2008 - 2010 Realtek Corporation. All rights reserved.
  *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
- *
- * The full GNU General Public License is included in this distribution in the
- * file called LICENSE.
- *
- * Contact Information:
- * wlanfae <wlanfae@realtek.com>
-******************************************************************************/
-
-
+ * Contact Information: wlanfae <wlanfae@realtek.com>
+ */
 #ifndef R8190P_DEF_H
 #define R8190P_DEF_H
 
 #include <linux/types.h>
+#include "r8192E_phy.h"
 
 #define		MAX_SILENT_RESET_RX_SLOT_NUM	10
-
-#define RX_MPDU_QUEUE				0
-#define RX_CMD_QUEUE				1
-
 
 enum rtl819x_loopback {
 	RTL819X_NO_LOOPBACK = 0,
@@ -35,11 +18,6 @@ enum rtl819x_loopback {
 	RTL819X_DMA_LOOPBACK = 2,
 	RTL819X_CCK_LOOPBACK = 3,
 };
-
-
-#define RESET_DELAY_8185			20
-
-#define RT_IBSS_INT_MASKS (IMR_BcnInt | IMR_BcnInt | IMR_TBDOK | IMR_TBDER)
 
 #define DESC90_RATE1M				0x00
 #define DESC90_RATE2M				0x01
@@ -74,17 +52,6 @@ enum rtl819x_loopback {
 #define SHORT_SLOT_TIME				9
 #define NON_SHORT_SLOT_TIME		20
 
-
-#define	MAX_LINES_HWCONFIG_TXT			1000
-#define MAX_BYTES_LINE_HWCONFIG_TXT		128
-
-#define SW_THREE_WIRE			0
-#define HW_THREE_WIRE			2
-
-#define BT_DEMO_BOARD			0
-#define BT_QA_BOARD				1
-#define BT_FPGA					2
-
 #define	RX_SMOOTH				20
 
 #define QSLT_BK					0x1
@@ -96,24 +63,13 @@ enum rtl819x_loopback {
 #define	QSLT_MGNT				0x12
 #define	QSLT_CMD				0x13
 
-#define NUM_OF_FIRMWARE_QUEUE				10
-#define NUM_OF_PAGES_IN_FW					0x100
 #define NUM_OF_PAGE_IN_FW_QUEUE_BK		0x007
 #define NUM_OF_PAGE_IN_FW_QUEUE_BE		0x0aa
 #define NUM_OF_PAGE_IN_FW_QUEUE_VI		0x024
 #define NUM_OF_PAGE_IN_FW_QUEUE_VO		0x007
-#define NUM_OF_PAGE_IN_FW_QUEUE_HCCA		0
-#define NUM_OF_PAGE_IN_FW_QUEUE_CMD		0x2
 #define NUM_OF_PAGE_IN_FW_QUEUE_MGNT		0x10
-#define NUM_OF_PAGE_IN_FW_QUEUE_HIGH		0
 #define NUM_OF_PAGE_IN_FW_QUEUE_BCN		0x4
 #define NUM_OF_PAGE_IN_FW_QUEUE_PUB		0xd
-
-#define NUM_OF_PAGE_IN_FW_QUEUE_BK_DTM	0x026
-#define NUM_OF_PAGE_IN_FW_QUEUE_BE_DTM	0x048
-#define NUM_OF_PAGE_IN_FW_QUEUE_VI_DTM	0x048
-#define NUM_OF_PAGE_IN_FW_QUEUE_VO_DTM	0x026
-#define NUM_OF_PAGE_IN_FW_QUEUE_PUB_DTM	0x00
 
 #define APPLIED_RESERVED_QUEUE_IN_FW		0x80000000
 #define RSVD_FW_QUEUE_PAGE_BK_SHIFT		0x00
@@ -128,15 +84,12 @@ enum rtl819x_loopback {
 #define HAL_PRIME_CHNL_OFFSET_LOWER		1
 #define HAL_PRIME_CHNL_OFFSET_UPPER		2
 
-
 enum version_8190_loopback {
 	VERSION_8190_BD = 0x3,
 	VERSION_8190_BE
 };
 
-#define IC_VersionCut_C	0x2
 #define IC_VersionCut_D	0x3
-#define IC_VersionCut_E	0x4
 
 enum rf_optype {
 	RF_OP_By_SW_3wire = 0,
@@ -146,21 +99,10 @@ enum rf_optype {
 
 struct bb_reg_definition {
 	u32 rfintfs;
-	u32 rfintfi;
 	u32 rfintfo;
 	u32 rfintfe;
 	u32 rf3wireOffset;
-	u32 rfLSSI_Select;
-	u32 rfTxGainStage;
-	u32 rfHSSIPara1;
 	u32 rfHSSIPara2;
-	u32 rfSwitchControl;
-	u32 rfAGCControl1;
-	u32 rfAGCControl2;
-	u32 rfRxIQImbalance;
-	u32 rfRxAFE;
-	u32 rfTxIQImbalance;
-	u32 rfTxAFE;
 	u32 rfLSSIReadBack;
 	u32 rfLSSIReadBackPi;
 };
@@ -193,51 +135,10 @@ struct tx_fwinfo_8190pci {
 	u32			Retry_Limit:4;
 	u32			Reserved2:1;
 	u32			PacketID:13;
-
-
-};
-
-
-#define TX_DESC_SIZE			32
-
-#define TX_DESC_CMD_SIZE	32
-
-
-#define TX_STATUS_DESC_SIZE	32
-
-#define TX_FWINFO_SIZE	8
-
-
-#define RX_DESC_SIZE	16
-
-#define RX_STATUS_DESC_SIZE	16
-
-#define RX_DRIVER_INFO_SIZE	8
-
-struct log_int_8190 {
-	u32	nIMR_COMDOK;
-	u32	nIMR_MGNTDOK;
-	u32	nIMR_HIGH;
-	u32	nIMR_VODOK;
-	u32	nIMR_VIDOK;
-	u32	nIMR_BEDOK;
-	u32	nIMR_BKDOK;
-	u32	nIMR_ROK;
-	u32	nIMR_RCOK;
-	u32	nIMR_TBDOK;
-	u32	nIMR_BDOK;
-	u32	nIMR_RXFOVW;
-};
-
-struct phy_ofdm_rx_status_rxsc_sgien_exintfflag {
-	u8			reserved:4;
-	u8			rxsc:2;
-	u8			sgi_en:1;
-	u8			ex_intf_flag:1;
 };
 
 struct phy_sts_ofdm_819xpci {
-	u8	trsw_gain_X[4];
+	u8	trsw_gain_X[RF90_PATH_MAX];
 	u8	pwdb_all;
 	u8	cfosho_X[4];
 	u8	cfotail_X[4];
@@ -257,7 +158,6 @@ struct phy_sts_cck_819xpci {
 	u8	sq_rpt;
 	u8	cck_agc_rpt;
 };
-
 
 #define		PHY_RSSI_SLID_WIN_MAX				100
 #define		PHY_Beacon_RSSI_SLID_WIN_MAX		10
@@ -300,7 +200,6 @@ struct tx_desc {
 	u32	Reserved7;
 };
 
-
 struct tx_desc_cmd {
 	u16	PktSize;
 	u8	Reserved1;
@@ -328,7 +227,7 @@ struct rx_desc {
 	u16			Length:14;
 	u16			CRC32:1;
 	u16			ICV:1;
-	u8			RxDrvInfoSize;
+	u8			rx_drv_info_size;
 	u8			Shift:2;
 	u8			PHYStatus:1;
 	u8			SWDec:1;
@@ -342,9 +241,7 @@ struct rx_desc {
 	u32			Reserved3;
 
 	u32	BufferAddress;
-
 };
-
 
 struct rx_fwinfo {
 	u16			Reserved1:12;
@@ -364,7 +261,6 @@ struct rx_fwinfo {
 	u8			Reserved4:1;
 
 	u32			TSFL;
-
 };
 
 #endif

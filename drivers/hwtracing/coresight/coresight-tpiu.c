@@ -1,26 +1,23 @@
-/* Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Description: CoreSight Trace Port Interface Unit driver
  */
 
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/init.h>
-#include <linux/device.h>
-#include <linux/io.h>
-#include <linux/err.h>
-#include <linux/slab.h>
-#include <linux/pm_runtime.h>
-#include <linux/coresight.h>
+#include <linux/acpi.h>
 #include <linux/amba/bus.h>
+#include <linux/atomic.h>
 #include <linux/clk.h>
+#include <linux/coresight.h>
+#include <linux/device.h>
+#include <linux/err.h>
+#include <linux/init.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
+#include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/slab.h>
 
 #include "coresight-priv.h"
 
@@ -45,62 +42,79 @@
 #define TPIU_ITATBCTR0		0xef8
 
 /** register definition **/
+/* FFSR - 0x300 */
+#define FFSR_FT_STOPPED_BIT	1
 /* FFCR - 0x304 */
+#define FFCR_FON_MAN_BIT	6
 #define FFCR_FON_MAN		BIT(6)
+#define FFCR_STOP_FI		BIT(12)
 
-/**
+DEFINE_CORESIGHT_DEVLIST(tpiu_devs, "tpiu");
+
+/*
  * @base:	memory mapped base address for this component.
- * @dev:	the device entity associated to this component.
  * @atclk:	optional clock for the core parts of the TPIU.
+ * @pclk:	APB clock if present, otherwise NULL
  * @csdev:	component vitals needed by the framework.
  */
 struct tpiu_drvdata {
 	void __iomem		*base;
-	struct device		*dev;
 	struct clk		*atclk;
+	struct clk		*pclk;
 	struct coresight_device	*csdev;
+	spinlock_t		spinlock;
 };
 
-static void tpiu_enable_hw(struct tpiu_drvdata *drvdata)
+static void tpiu_enable_hw(struct csdev_access *csa)
 {
-	CS_UNLOCK(drvdata->base);
+	CS_UNLOCK(csa->base);
 
 	/* TODO: fill this up */
 
-	CS_LOCK(drvdata->base);
+	CS_LOCK(csa->base);
 }
 
-static int tpiu_enable(struct coresight_device *csdev)
+static int tpiu_enable(struct coresight_device *csdev, enum cs_mode mode,
+		       void *__unused)
 {
 	struct tpiu_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 
-	pm_runtime_get_sync(csdev->dev.parent);
-	tpiu_enable_hw(drvdata);
-
-	dev_info(drvdata->dev, "TPIU enabled\n");
+	guard(spinlock)(&drvdata->spinlock);
+	tpiu_enable_hw(&csdev->access);
+	csdev->refcnt++;
+	dev_dbg(&csdev->dev, "TPIU enabled\n");
 	return 0;
 }
 
-static void tpiu_disable_hw(struct tpiu_drvdata *drvdata)
+static void tpiu_disable_hw(struct csdev_access *csa)
 {
-	CS_UNLOCK(drvdata->base);
+	CS_UNLOCK(csa->base);
 
-	/* Clear formatter controle reg. */
-	writel_relaxed(0x0, drvdata->base + TPIU_FFCR);
+	/* Clear formatter and stop on flush */
+	csdev_access_relaxed_write32(csa, FFCR_STOP_FI, TPIU_FFCR);
 	/* Generate manual flush */
-	writel_relaxed(FFCR_FON_MAN, drvdata->base + TPIU_FFCR);
+	csdev_access_relaxed_write32(csa, FFCR_STOP_FI | FFCR_FON_MAN, TPIU_FFCR);
+	/* Wait for flush to complete */
+	coresight_timeout(csa, TPIU_FFCR, FFCR_FON_MAN_BIT, 0);
+	/* Wait for formatter to stop */
+	coresight_timeout(csa, TPIU_FFSR, FFSR_FT_STOPPED_BIT, 1);
 
-	CS_LOCK(drvdata->base);
+	CS_LOCK(csa->base);
 }
 
-static void tpiu_disable(struct coresight_device *csdev)
+static int tpiu_disable(struct coresight_device *csdev)
 {
 	struct tpiu_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 
-	tpiu_disable_hw(drvdata);
-	pm_runtime_put(csdev->dev.parent);
+	guard(spinlock)(&drvdata->spinlock);
+	csdev->refcnt--;
+	if (csdev->refcnt)
+		return -EBUSY;
 
-	dev_info(drvdata->dev, "TPIU disabled\n");
+	tpiu_disable_hw(&csdev->access);
+
+	dev_dbg(&csdev->dev, "TPIU disabled\n");
+	return 0;
 }
 
 static const struct coresight_ops_sink tpiu_sink_ops = {
@@ -112,35 +126,34 @@ static const struct coresight_ops tpiu_cs_ops = {
 	.sink_ops	= &tpiu_sink_ops,
 };
 
-static int tpiu_probe(struct amba_device *adev, const struct amba_id *id)
+static int __tpiu_probe(struct device *dev, struct resource *res)
 {
 	int ret;
 	void __iomem *base;
-	struct device *dev = &adev->dev;
 	struct coresight_platform_data *pdata = NULL;
 	struct tpiu_drvdata *drvdata;
-	struct resource *res = &adev->res;
-	struct coresight_desc *desc;
-	struct device_node *np = adev->dev.of_node;
+	struct coresight_desc desc = { 0 };
 
-	if (np) {
-		pdata = of_get_coresight_platform_data(dev, np);
-		if (IS_ERR(pdata))
-			return PTR_ERR(pdata);
-		adev->dev.platform_data = pdata;
-	}
+	desc.name = coresight_alloc_device_name(&tpiu_devs, dev);
+	if (!desc.name)
+		return -ENOMEM;
 
 	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
 		return -ENOMEM;
 
-	drvdata->dev = &adev->dev;
-	drvdata->atclk = devm_clk_get(&adev->dev, "atclk"); /* optional */
+	spin_lock_init(&drvdata->spinlock);
+
+	drvdata->atclk = devm_clk_get(dev, "atclk"); /* optional */
 	if (!IS_ERR(drvdata->atclk)) {
 		ret = clk_prepare_enable(drvdata->atclk);
 		if (ret)
 			return ret;
 	}
+
+	drvdata->pclk = coresight_get_enable_apb_pclk(dev);
+	if (IS_ERR(drvdata->pclk))
+		return -ENODEV;
 	dev_set_drvdata(dev, drvdata);
 
 	/* Validity for the resource is already checked by the AMBA core */
@@ -149,35 +162,49 @@ static int tpiu_probe(struct amba_device *adev, const struct amba_id *id)
 		return PTR_ERR(base);
 
 	drvdata->base = base;
+	desc.access = CSDEV_ACCESS_IOMEM(base);
 
 	/* Disable tpiu to support older devices */
-	tpiu_disable_hw(drvdata);
+	tpiu_disable_hw(&desc.access);
 
-	pm_runtime_put(&adev->dev);
+	pdata = coresight_get_platform_data(dev);
+	if (IS_ERR(pdata))
+		return PTR_ERR(pdata);
+	dev->platform_data = pdata;
 
-	desc = devm_kzalloc(dev, sizeof(*desc), GFP_KERNEL);
-	if (!desc)
-		return -ENOMEM;
+	desc.type = CORESIGHT_DEV_TYPE_SINK;
+	desc.subtype.sink_subtype = CORESIGHT_DEV_SUBTYPE_SINK_PORT;
+	desc.ops = &tpiu_cs_ops;
+	desc.pdata = pdata;
+	desc.dev = dev;
+	drvdata->csdev = coresight_register(&desc);
 
-	desc->type = CORESIGHT_DEV_TYPE_SINK;
-	desc->subtype.sink_subtype = CORESIGHT_DEV_SUBTYPE_SINK_PORT;
-	desc->ops = &tpiu_cs_ops;
-	desc->pdata = pdata;
-	desc->dev = dev;
-	drvdata->csdev = coresight_register(desc);
-	if (IS_ERR(drvdata->csdev))
-		return PTR_ERR(drvdata->csdev);
+	if (!IS_ERR(drvdata->csdev))
+		return 0;
 
-	dev_info(dev, "TPIU initialized\n");
-	return 0;
+	return PTR_ERR(drvdata->csdev);
 }
 
-static int tpiu_remove(struct amba_device *adev)
+static int tpiu_probe(struct amba_device *adev, const struct amba_id *id)
 {
-	struct tpiu_drvdata *drvdata = amba_get_drvdata(adev);
+	int ret;
+
+	ret = __tpiu_probe(&adev->dev, &adev->res);
+	if (!ret)
+		pm_runtime_put(&adev->dev);
+	return ret;
+}
+
+static void __tpiu_remove(struct device *dev)
+{
+	struct tpiu_drvdata *drvdata = dev_get_drvdata(dev);
 
 	coresight_unregister(drvdata->csdev);
-	return 0;
+}
+
+static void tpiu_remove(struct amba_device *adev)
+{
+	__tpiu_remove(&adev->dev);
 }
 
 #ifdef CONFIG_PM
@@ -188,6 +215,8 @@ static int tpiu_runtime_suspend(struct device *dev)
 	if (drvdata && !IS_ERR(drvdata->atclk))
 		clk_disable_unprepare(drvdata->atclk);
 
+	if (drvdata && !IS_ERR_OR_NULL(drvdata->pclk))
+		clk_disable_unprepare(drvdata->pclk);
 	return 0;
 }
 
@@ -198,6 +227,8 @@ static int tpiu_runtime_resume(struct device *dev)
 	if (drvdata && !IS_ERR(drvdata->atclk))
 		clk_prepare_enable(drvdata->atclk);
 
+	if (drvdata && !IS_ERR_OR_NULL(drvdata->pclk))
+		clk_prepare_enable(drvdata->pclk);
 	return 0;
 }
 #endif
@@ -206,30 +237,98 @@ static const struct dev_pm_ops tpiu_dev_pm_ops = {
 	SET_RUNTIME_PM_OPS(tpiu_runtime_suspend, tpiu_runtime_resume, NULL)
 };
 
-static struct amba_id tpiu_ids[] = {
+static const struct amba_id tpiu_ids[] = {
 	{
-		.id	= 0x0003b912,
-		.mask	= 0x0003ffff,
+		.id	= 0x000bb912,
+		.mask	= 0x000fffff,
 	},
 	{
 		.id	= 0x0004b912,
 		.mask	= 0x0007ffff,
 	},
-	{ 0, 0},
+	{
+		/* Coresight SoC-600 */
+		.id	= 0x000bb9e7,
+		.mask	= 0x000fffff,
+	},
+	{ 0, 0, NULL },
 };
+
+MODULE_DEVICE_TABLE(amba, tpiu_ids);
 
 static struct amba_driver tpiu_driver = {
 	.drv = {
 		.name	= "coresight-tpiu",
-		.owner	= THIS_MODULE,
 		.pm	= &tpiu_dev_pm_ops,
+		.suppress_bind_attrs = true,
 	},
 	.probe		= tpiu_probe,
-	.remove		= tpiu_remove,
+	.remove         = tpiu_remove,
 	.id_table	= tpiu_ids,
 };
 
-module_amba_driver(tpiu_driver);
+static int tpiu_platform_probe(struct platform_device *pdev)
+{
+	struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	int ret;
 
+	pm_runtime_get_noresume(&pdev->dev);
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+
+	ret = __tpiu_probe(&pdev->dev, res);
+	pm_runtime_put(&pdev->dev);
+	if (ret)
+		pm_runtime_disable(&pdev->dev);
+
+	return ret;
+}
+
+static void tpiu_platform_remove(struct platform_device *pdev)
+{
+	struct tpiu_drvdata *drvdata = dev_get_drvdata(&pdev->dev);
+
+	if (WARN_ON(!drvdata))
+		return;
+
+	__tpiu_remove(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
+	if (!IS_ERR_OR_NULL(drvdata->pclk))
+		clk_put(drvdata->pclk);
+}
+
+#ifdef CONFIG_ACPI
+static const struct acpi_device_id tpiu_acpi_ids[] = {
+	{"ARMHC979", 0, 0, 0}, /* ARM CoreSight TPIU */
+	{}
+};
+MODULE_DEVICE_TABLE(acpi, tpiu_acpi_ids);
+#endif
+
+static struct platform_driver tpiu_platform_driver = {
+	.probe	= tpiu_platform_probe,
+	.remove_new = tpiu_platform_remove,
+	.driver = {
+		.name			= "coresight-tpiu-platform",
+		.acpi_match_table	= ACPI_PTR(tpiu_acpi_ids),
+		.suppress_bind_attrs	= true,
+		.pm			= &tpiu_dev_pm_ops,
+	},
+};
+
+static int __init tpiu_init(void)
+{
+	return coresight_init_driver("tpiu", &tpiu_driver, &tpiu_platform_driver);
+}
+
+static void __exit tpiu_exit(void)
+{
+	coresight_remove_driver(&tpiu_driver, &tpiu_platform_driver);
+}
+module_init(tpiu_init);
+module_exit(tpiu_exit);
+
+MODULE_AUTHOR("Pratik Patel <pratikp@codeaurora.org>");
+MODULE_AUTHOR("Mathieu Poirier <mathieu.poirier@linaro.org>");
+MODULE_DESCRIPTION("Arm CoreSight TPIU (Trace Port Interface Unit) driver");
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("CoreSight Trace Port Interface Unit driver");

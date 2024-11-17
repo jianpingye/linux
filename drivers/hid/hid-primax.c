@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HID driver for primax and similar keyboards with in-band modifiers
  *
@@ -5,15 +6,6 @@
  *
  * Author:
  *	Terry Lambert <tlambert@google.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/device.h>
@@ -78,4 +70,5 @@ static struct hid_driver px_driver = {
 module_hid_driver(px_driver);
 
 MODULE_AUTHOR("Terry Lambert <tlambert@google.com>");
+MODULE_DESCRIPTION("HID driver for primax and similar keyboards with in-band modifiers");
 MODULE_LICENSE("GPL");

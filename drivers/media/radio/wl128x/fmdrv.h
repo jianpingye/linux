@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  FM Driver for Connectivity chip of Texas Instruments.
  *
  *  Common header for all FM driver sub-modules.
  *
  *  Copyright (C) 2011 Texas Instruments
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #ifndef _FM_DRV_H
@@ -28,6 +15,7 @@
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <linux/timer.h>
+#include <linux/workqueue.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-device.h>
@@ -137,7 +125,7 @@ struct fm_rds {
 /*
  * Current RX channel Alternate Frequency cache.
  * This info is used to switch to other freq (AF)
- * when current channel signal strengh is below RSSI threshold.
+ * when current channel signal strength is below RSSI threshold.
  */
 struct tuned_station_info {
 	u16 picode;
@@ -213,10 +201,10 @@ struct fmdev {
 	int streg_cbdata; /* status of ST registration */
 
 	struct sk_buff_head rx_q;	/* RX queue */
-	struct tasklet_struct rx_task;	/* RX Tasklet */
+	struct work_struct rx_bh_work;	/* RX BH Work */
 
 	struct sk_buff_head tx_q;	/* TX queue */
-	struct tasklet_struct tx_task;	/* TX Tasklet */
+	struct work_struct tx_bh_work;	/* TX BH Work */
 	unsigned long last_tx_jiffies;	/* Timestamp of last pkt sent */
 	atomic_t tx_cnt;	/* Number of packets can send at a time */
 
@@ -232,7 +220,7 @@ struct fmdev {
 	struct fm_rx rx;	/* FM receiver info */
 	struct fmtx_data tx_data;
 
-	/* V4L2 ctrl framwork handler*/
+	/* V4L2 ctrl framework handler*/
 	struct v4l2_ctrl_handler ctrl_handler;
 
 	/* For core assisted locking */

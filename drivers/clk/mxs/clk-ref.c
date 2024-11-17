@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2012 Freescale Semiconductor, Inc.
- *
- * The code contained herein is licensed under the GNU General Public
- * License. You may obtain a copy of the GNU General Public License
- * Version 2 or later at the following locations:
- *
- * http://www.opensource.org/licenses/gpl-license.html
- * http://www.gnu.org/copyleft/gpl.html
  */
 
-#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/io.h>
@@ -73,12 +66,7 @@ static long clk_ref_round_rate(struct clk_hw *hw, unsigned long rate,
 
 	tmp = tmp * 18 + rate / 2;
 	do_div(tmp, rate);
-	frac = tmp;
-
-	if (frac < 18)
-		frac = 18;
-	else if (frac > 35)
-		frac = 35;
+	frac = clamp(tmp, 18, 35);
 
 	tmp = parent_rate;
 	tmp *= 18;
@@ -98,12 +86,7 @@ static int clk_ref_set_rate(struct clk_hw *hw, unsigned long rate,
 
 	tmp = tmp * 18 + rate / 2;
 	do_div(tmp, rate);
-	frac = tmp;
-
-	if (frac < 18)
-		frac = 18;
-	else if (frac > 35)
-		frac = 35;
+	frac = clamp(tmp, 18, 35);
 
 	spin_lock_irqsave(&mxs_lock, flags);
 

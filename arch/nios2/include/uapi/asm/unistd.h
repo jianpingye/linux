@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (C) 2013 Altera Corporation
  *
@@ -15,11 +16,4 @@
  *
  */
 
- #define sys_mmap2 sys_mmap_pgoff
-
-/* Use the standard ABI for syscalls */
-#include <asm-generic/unistd.h>
-
-/* Additional Nios II specific syscalls. */
-#define __NR_cacheflush (__NR_arch_specific_syscall)
-__SYSCALL(__NR_cacheflush, sys_cacheflush)
+#include <asm/unistd_32.h>

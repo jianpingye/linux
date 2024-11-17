@@ -18,7 +18,7 @@ COMMON OPTIONS
 --------------
 -r::
 --repeat=::
-Specify amount of times to repeat the run (default 10).
+Specify number of times to repeat the run (default 10).
 
 -f::
 --format=::
@@ -49,6 +49,9 @@ SUBSYSTEM
 'sched'::
 	Scheduler and IPC mechanisms.
 
+'syscall'::
+	System call performance (throughput).
+
 'mem'::
 	Memory access performance.
 
@@ -57,6 +60,15 @@ SUBSYSTEM
 
 'futex'::
 	Futex stressing benchmarks.
+
+'epoll'::
+	Eventpoll (epoll) stressing benchmarks.
+
+'internals'::
+	Benchmark internal perf functionality.
+
+'uprobe'::
+	Benchmark overhead of uprobe + BPF.
 
 'all'::
 	All benchmark subsystems.
@@ -82,7 +94,7 @@ Be multi thread instead of multi process
 Specify number of groups
 
 -l::
---loop=::
+--nr_loops=::
 Specify number of loops
 
 Example of *messaging*
@@ -112,6 +124,14 @@ Options of *pipe*
 --loop=::
 Specify number of loops.
 
+-G::
+--cgroups=::
+Names of cgroups for sender and receiver, separated by a comma.
+This is useful to check cgroup context switching overhead.
+Note that perf doesn't create nor delete the cgroups, so users should
+make sure that the cgroups exist and are accessible before use.
+
+
 Example of *pipe*
 ^^^^^^^^^^^^^^^^^
 
@@ -129,7 +149,26 @@ Example of *pipe*
         Total time:0.016 sec
                 16.948000 usecs/op
                 59004 ops/sec
+
+% perf bench sched pipe -G AAA,BBB
+(executing 1000000 pipe operations between cgroups)
+# Running 'sched/pipe' benchmark:
+# Executed 1000000 pipe operations between two processes
+
+     Total time: 6.886 [sec]
+
+       6.886208 usecs/op
+         145217 ops/sec
+
 ---------------------
+
+SUITES FOR 'syscall'
+~~~~~~~~~~~~~~~~~~
+*basic*::
+Suite for evaluating performance of core system call throughput (both usecs/op and ops/sec metrics).
+This uses a single thread simply doing getppid(2), which is a simple syscall where the result is not
+cached by glibc.
+
 
 SUITES FOR 'mem'
 ~~~~~~~~~~~~~~~~
@@ -139,31 +178,23 @@ Suite for evaluating performance of simple memory copy in various ways.
 Options of *memcpy*
 ^^^^^^^^^^^^^^^^^^^
 -l::
---length::
-Specify length of memory to copy (default: 1MB).
+--size::
+Specify size of memory to copy (default: 1MB).
 Available units are B, KB, MB, GB and TB (case insensitive).
 
--r::
---routine::
-Specify routine to copy (default: default).
-Available routines are depend on the architecture.
+-f::
+--function::
+Specify function to copy (default: default).
+Available functions are depend on the architecture.
 On x86-64, x86-64-unrolled, x86-64-movsq and x86-64-movsb are supported.
 
--i::
---iterations::
+-l::
+--nr_loops::
 Repeat memcpy invocation this number of times.
 
 -c::
---cycle::
+--cycles::
 Use perf's cpu-cycles event instead of gettimeofday syscall.
-
--o::
---only-prefault::
-Show only the result with page faults before memcpy.
-
--n::
---no-prefault::
-Show only the result without page faults before memcpy.
 
 *memset*::
 Suite for evaluating performance of simple memory set in various ways.
@@ -171,31 +202,23 @@ Suite for evaluating performance of simple memory set in various ways.
 Options of *memset*
 ^^^^^^^^^^^^^^^^^^^
 -l::
---length::
-Specify length of memory to set (default: 1MB).
+--size::
+Specify size of memory to set (default: 1MB).
 Available units are B, KB, MB, GB and TB (case insensitive).
 
--r::
---routine::
-Specify routine to set (default: default).
-Available routines are depend on the architecture.
+-f::
+--function::
+Specify function to set (default: default).
+Available functions are depend on the architecture.
 On x86-64, x86-64-unrolled, x86-64-stosq and x86-64-stosb are supported.
 
--i::
---iterations::
+-l::
+--nr_loops::
 Repeat memset invocation this number of times.
 
 -c::
---cycle::
+--cycles::
 Use perf's cpu-cycles event instead of gettimeofday syscall.
-
--o::
---only-prefault::
-Show only the result with page faults before memset.
-
--n::
---no-prefault::
-Show only the result without page faults before memset.
 
 SUITES FOR 'numa'
 ~~~~~~~~~~~~~~~~~
@@ -215,6 +238,22 @@ Suite for evaluating parallel wake calls.
 
 *requeue*::
 Suite for evaluating requeue calls.
+
+*lock-pi*::
+Suite for evaluating futex lock_pi calls.
+
+SUITES FOR 'epoll'
+~~~~~~~~~~~~~~~~~~
+*wait*::
+Suite for evaluating concurrent epoll_wait calls.
+
+*ctl*::
+Suite for evaluating multiple epoll_ctl calls.
+
+SUITES FOR 'internals'
+~~~~~~~~~~~~~~~~~~~~~~
+*synthesize*::
+Suite for evaluating perf's event synthesis performance.
 
 SEE ALSO
 --------

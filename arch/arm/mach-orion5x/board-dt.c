@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2012 (C), Thomas Petazzoni <thomas.petazzoni@free-electrons.com>
  *
  * arch/arm/mach-orion5x/board-dt.c
  *
  * Flattened Device Tree board initialization
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -16,15 +13,14 @@
 #include <linux/of_platform.h>
 #include <linux/cpu.h>
 #include <linux/mbus.h>
-#include <linux/clk-provider.h>
 #include <linux/clocksource.h>
 #include <asm/system_misc.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
-#include <mach/orion5x.h>
-#include <mach/bridge-regs.h>
 #include <plat/irq.h>
 #include <plat/time.h>
+#include "orion5x.h"
+#include "bridge-regs.h"
 #include "common.h"
 
 static struct of_dev_auxdata orion5x_auxdata_lookup[] __initdata = {
@@ -64,8 +60,10 @@ static void __init orion5x_dt_init(void)
 	if (of_machine_is_compatible("maxtor,shared-storage-2"))
 		mss2_init();
 
-	of_platform_populate(NULL, of_default_bus_match_table,
-			     orion5x_auxdata_lookup, NULL);
+	if (of_machine_is_compatible("lacie,d2-network"))
+		d2net_init();
+
+	of_platform_default_populate(NULL, orion5x_auxdata_lookup, NULL);
 }
 
 static const char *orion5x_dt_compat[] = {

@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) ST-Ericsson AB 2010
  * Author:	Sjur Brendeland
- * License terms: GNU General Public License (GPL) version 2
  */
 
 #ifndef CAIF_LAYER_H_
@@ -11,9 +11,7 @@
 
 struct cflayer;
 struct cfpkt;
-struct cfpktq;
 struct caif_payload_info;
-struct caif_packet_funcs;
 
 #define CAIF_LAYER_NAME_SZ 16
 
@@ -22,7 +20,7 @@ struct caif_packet_funcs;
  * @assert: expression to evaluate.
  *
  * This function will print a error message and a do WARN_ON if the
- * assertion failes. Normally this will do a stack up at the current location.
+ * assertion fails. Normally this will do a stack up at the current location.
  */
 #define caif_assert(assert)					\
 do {								\
@@ -118,7 +116,7 @@ enum caif_direction {
  * @dn:		Pointer down to the layer below.
  * @node:	List node used when layer participate in a list.
  * @receive:	Packet receive function.
- * @transmit:	Packet transmit funciton.
+ * @transmit:	Packet transmit function.
  * @ctrlcmd:	Used for control signalling upwards in the stack.
  * @modemcmd:	Used for control signaling downwards in the stack.
  * @id:		The identity of this layer
@@ -156,7 +154,7 @@ struct cflayer {
 	 *  CAIF packets upwards in the stack.
 	 *	Packet handling rules:
 	 *	      - The CAIF packet (cfpkt) ownership is passed to the
-	 *		called receive function. This means that the the
+	 *		called receive function. This means that the
 	 *		packet cannot be accessed after passing it to the
 	 *		above layer using up->receive().
 	 *
@@ -184,7 +182,7 @@ struct cflayer {
 	 *	CAIF packet downwards in the stack.
 	 *	Packet handling rules:
 	 *	      - The CAIF packet (cfpkt) ownership is passed to the
-	 *		transmit function. This means that the the packet
+	 *		transmit function. This means that the packet
 	 *		cannot be accessed after passing it to the below
 	 *		layer using dn->transmit().
 	 *

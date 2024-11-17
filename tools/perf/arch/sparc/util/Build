@@ -1,1 +1,1 @@
-libperf-$(CONFIG_DWARF) += dwarf-regs.o
+perf-util-$(CONFIG_DWARF) += dwarf-regs.o

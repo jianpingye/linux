@@ -1,25 +1,8 @@
+/* SPDX-License-Identifier: MIT */
 /******************************************************************************
  * xen.h
  *
  * Guest OS interface to Xen.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to
- * deal in the Software without restriction, including without limitation the
- * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- * sell copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
  *
  * Copyright (c) 2004, K A Fraser
  */
@@ -48,7 +31,7 @@
 #define __HYPERVISOR_set_callbacks         4
 #define __HYPERVISOR_fpu_taskswitch        5
 #define __HYPERVISOR_sched_op_compat       6
-#define __HYPERVISOR_dom0_op               7
+#define __HYPERVISOR_platform_op           7
 #define __HYPERVISOR_set_debugreg          8
 #define __HYPERVISOR_get_debugreg          9
 #define __HYPERVISOR_update_descriptor    10
@@ -80,6 +63,8 @@
 #define __HYPERVISOR_kexec_op             37
 #define __HYPERVISOR_tmem_op              38
 #define __HYPERVISOR_xc_reserved_op       39 /* reserved for XenClient */
+#define __HYPERVISOR_xenpmu_op            40
+#define __HYPERVISOR_dm_op                41
 
 /* Architecture-specific hypercall definitions. */
 #define __HYPERVISOR_arch_0               48
@@ -112,6 +97,7 @@
 #define VIRQ_MEM_EVENT  10 /* G. (DOM0) A memory event has occured           */
 #define VIRQ_XC_RESERVED 11 /* G. Reserved for XenClient                     */
 #define VIRQ_ENOMEM     12 /* G. (DOM0) Low on heap memory       */
+#define VIRQ_XENPMU     13  /* PMC interrupt                                 */
 
 /* Architecture-specific VIRQ definitions. */
 #define VIRQ_ARCH_0    16
@@ -262,9 +248,10 @@
  *
  * PAT (bit 7 on) --> PWT (bit 3 on) and clear bit 7.
  */
-#define MMU_NORMAL_PT_UPDATE      0 /* checked '*ptr = val'. ptr is MA.       */
-#define MMU_MACHPHYS_UPDATE       1 /* ptr = MA of frame to modify entry for  */
-#define MMU_PT_UPDATE_PRESERVE_AD 2 /* atomically: *ptr = val | (*ptr&(A|D)) */
+#define MMU_NORMAL_PT_UPDATE       0 /* checked '*ptr = val'. ptr is MA.      */
+#define MMU_MACHPHYS_UPDATE        1 /* ptr = MA of frame to modify entry for */
+#define MMU_PT_UPDATE_PRESERVE_AD  2 /* atomically: *ptr = val | (*ptr&(A|D)) */
+#define MMU_PT_UPDATE_NO_TRANSLATE 3 /* checked '*ptr = val'. ptr is MA.      */
 
 /*
  * MMU EXTENDED OPERATIONS
@@ -411,7 +398,22 @@ DEFINE_GUEST_HANDLE_STRUCT(mmuext_op);
 /* x86/PAE guests: support PDPTs above 4GB. */
 #define VMASST_TYPE_pae_extended_cr3     3
 
-#define MAX_VMASST_TYPE 3
+/*
+ * x86 guests: Sane behaviour for virtual iopl
+ *  - virtual iopl updated from do_iret() hypercalls.
+ *  - virtual iopl reported in bounce frames.
+ *  - guest kernels assumed to be level 0 for the purpose of iopl checks.
+ */
+#define VMASST_TYPE_architectural_iopl   4
+
+/*
+ * All guests: activate update indicator in vcpu_runstate_info
+ * Enable setting the XEN_RUNSTATE_UPDATE flag in guest memory mapped
+ * vcpu_runstate_info during updates of the runstate information.
+ */
+#define VMASST_TYPE_runstate_update_flag 5
+
+#define MAX_VMASST_TYPE 5
 
 #ifndef __ASSEMBLY__
 
@@ -579,32 +581,37 @@ struct shared_info {
 	 * their gettimeofday() syscall on this wallclock-base value.
 	 */
 	struct pvclock_wall_clock wc;
-
+#ifndef CONFIG_X86_32
+	uint32_t wc_sec_hi;
+#endif
 	struct arch_shared_info arch;
 
 };
 
 /*
- * Start-of-day memory layout for the initial domain (DOM0):
+ * Start-of-day memory layout
+ *
  *  1. The domain is started within contiguous virtual-memory region.
  *  2. The contiguous region begins and ends on an aligned 4MB boundary.
- *  3. The region start corresponds to the load address of the OS image.
- *     If the load address is not 4MB aligned then the address is rounded down.
- *  4. This the order of bootstrap elements in the initial virtual region:
+ *  3. This the order of bootstrap elements in the initial virtual region:
  *      a. relocated kernel image
  *      b. initial ram disk              [mod_start, mod_len]
+ *         (may be omitted)
  *      c. list of allocated page frames [mfn_list, nr_pages]
+ *         (unless relocated due to XEN_ELFNOTE_INIT_P2M)
  *      d. start_info_t structure        [register ESI (x86)]
- *      e. bootstrap page tables         [pt_base, CR3 (x86)]
- *      f. bootstrap stack               [register ESP (x86)]
- *  5. Bootstrap elements are packed together, but each is 4kB-aligned.
- *  6. The initial ram disk may be omitted.
- *  7. The list of page frames forms a contiguous 'pseudo-physical' memory
+ *         in case of dom0 this page contains the console info, too
+ *      e. unless dom0: xenstore ring page
+ *      f. unless dom0: console ring page
+ *      g. bootstrap page tables         [pt_base, CR3 (x86)]
+ *      h. bootstrap stack               [register ESP (x86)]
+ *  4. Bootstrap elements are packed together, but each is 4kB-aligned.
+ *  5. The list of page frames forms a contiguous 'pseudo-physical' memory
  *     layout for the domain. In particular, the bootstrap virtual-memory
  *     region is a 1:1 mapping to the first section of the pseudo-physical map.
- *  8. All bootstrap elements are mapped read-writable for the guest OS. The
+ *  6. All bootstrap elements are mapped read-writable for the guest OS. The
  *     only exception is the bootstrap page table, which is mapped read-only.
- *  9. There is guaranteed to be at least 512kB padding after the final
+ *  7. There is guaranteed to be at least 512kB padding after the final
  *     bootstrap element. If necessary, the bootstrap virtual region is
  *     extended by an extra 4MB to ensure this.
  */
@@ -641,10 +648,12 @@ struct start_info {
 };
 
 /* These flags are passed in the 'flags' field of start_info_t. */
-#define SIF_PRIVILEGED    (1<<0)  /* Is the domain privileged? */
-#define SIF_INITDOMAIN    (1<<1)  /* Is this the initial control domain? */
-#define SIF_MULTIBOOT_MOD (1<<2)  /* Is mod_start a multiboot module? */
-#define SIF_MOD_START_PFN (1<<3)  /* Is mod_start a PFN? */
+#define SIF_PRIVILEGED      (1<<0)  /* Is the domain privileged? */
+#define SIF_INITDOMAIN      (1<<1)  /* Is this the initial control domain? */
+#define SIF_MULTIBOOT_MOD   (1<<2)  /* Is mod_start a multiboot module? */
+#define SIF_MOD_START_PFN   (1<<3)  /* Is mod_start a PFN? */
+#define SIF_VIRT_P2M_4TOOLS (1<<4)  /* Do Xen tools understand a virt. mapped */
+				    /* P->M making the 3 level tree obsolete? */
 #define SIF_PM_MASK       (0xFF<<8) /* reserve 1 byte for xen-pm options */
 
 /*
@@ -713,6 +722,9 @@ struct dom0_vga_console_info {
 			uint32_t gbl_caps;
 			/* Mode attributes (offset 0x0, VESA command 0x4f01). */
 			uint16_t mode_attrs;
+			uint16_t pad;
+			/* high 32 bits of lfb_base */
+			uint32_t ext_lfb_base;
 		} vesa_lfb;
 	} u;
 };

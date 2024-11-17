@@ -1,20 +1,20 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
 #
 # link vmlinux
 #
-# vmlinux is linked from the objects selected by $(KBUILD_VMLINUX_INIT) and
-# $(KBUILD_VMLINUX_MAIN). Most are built-in.o files from top-level directories
-# in the kernel tree, others are specified in arch/$(ARCH)/Makefile.
-# Ordering when linking is important, and $(KBUILD_VMLINUX_INIT) must be first.
+# vmlinux is linked from the objects in vmlinux.a and $(KBUILD_VMLINUX_LIBS).
+# vmlinux.a contains objects that are linked unconditionally.
+# $(KBUILD_VMLINUX_LIBS) are archives which are linked conditionally
+# (not within --whole-archive), and do not require symbol indexes added.
 #
 # vmlinux
 #   ^
 #   |
-#   +-< $(KBUILD_VMLINUX_INIT)
-#   |   +--< init/version.o + more
+#   +--< vmlinux.a
 #   |
-#   +--< $(KBUILD_VMLINUX_MAIN)
-#   |    +--< drivers/built-in.o mm/built-in.o + more
+#   +--< $(KBUILD_VMLINUX_LIBS)
+#   |    +--< lib/lib.a + more
 #   |
 #   +-< ${kallsymso} (see description in KALLSYMS section)
 #
@@ -28,117 +28,162 @@
 # Error out on error
 set -e
 
+LD="$1"
+KBUILD_LDFLAGS="$2"
+LDFLAGS_vmlinux="$3"
+
+is_enabled() {
+	grep -q "^$1=y" include/config/auto.conf
+}
+
 # Nice output in kbuild format
 # Will be supressed by "make -s"
 info()
 {
-	if [ "${quiet}" != "silent_" ]; then
-		printf "  %-7s %s\n" ${1} ${2}
-	fi
-}
-
-# Link of vmlinux.o used for section mismatch analysis
-# ${1} output file
-modpost_link()
-{
-	${LD} ${LDFLAGS} -r -o ${1} ${KBUILD_VMLINUX_INIT}                   \
-		--start-group ${KBUILD_VMLINUX_MAIN} --end-group
+	printf "  %-7s %s\n" "${1}" "${2}"
 }
 
 # Link of vmlinux
-# ${1} - optional extra .o files
-# ${2} - output file
+# ${1} - output file
 vmlinux_link()
 {
-	local lds="${objtree}/${KBUILD_LDS}"
+	local output=${1}
+	local objs
+	local libs
+	local ld
+	local ldflags
+	local ldlibs
 
-	if [ "${SRCARCH}" != "um" ]; then
-		${LD} ${LDFLAGS} ${LDFLAGS_vmlinux} -o ${2}                  \
-			-T ${lds} ${KBUILD_VMLINUX_INIT}                     \
-			--start-group ${KBUILD_VMLINUX_MAIN} --end-group ${1}
+	info LD ${output}
+
+	# skip output file argument
+	shift
+
+	if is_enabled CONFIG_LTO_CLANG || is_enabled CONFIG_X86_KERNEL_IBT; then
+		# Use vmlinux.o instead of performing the slow LTO link again.
+		objs=vmlinux.o
+		libs=
 	else
-		${CC} ${CFLAGS_vmlinux} -o ${2}                              \
-			-Wl,-T,${lds} ${KBUILD_VMLINUX_INIT}                 \
-			-Wl,--start-group                                    \
-				 ${KBUILD_VMLINUX_MAIN}                      \
-			-Wl,--end-group                                      \
-			-lutil ${1}
-		rm -f linux
+		objs=vmlinux.a
+		libs="${KBUILD_VMLINUX_LIBS}"
 	fi
+
+	if is_enabled CONFIG_MODULES; then
+		objs="${objs} .vmlinux.export.o"
+	fi
+
+	objs="${objs} init/version-timestamp.o"
+
+	if [ "${SRCARCH}" = "um" ]; then
+		wl=-Wl,
+		ld="${CC}"
+		ldflags="${CFLAGS_vmlinux}"
+		ldlibs="-lutil -lrt -lpthread"
+	else
+		wl=
+		ld="${LD}"
+		ldflags="${KBUILD_LDFLAGS} ${LDFLAGS_vmlinux}"
+		ldlibs=
+	fi
+
+	ldflags="${ldflags} ${wl}--script=${objtree}/${KBUILD_LDS}"
+
+	# The kallsyms linking does not need debug symbols included.
+	if [ -n "${strip_debug}" ] ; then
+		ldflags="${ldflags} ${wl}--strip-debug"
+	fi
+
+	if is_enabled CONFIG_VMLINUX_MAP; then
+		ldflags="${ldflags} ${wl}-Map=${output}.map"
+	fi
+
+	${ld} ${ldflags} -o ${output}					\
+		${wl}--whole-archive ${objs} ${wl}--no-whole-archive	\
+		${wl}--start-group ${libs} ${wl}--end-group		\
+		${kallsymso} ${btf_vmlinux_bin_o} ${ldlibs}
 }
 
+# generate .BTF typeinfo from DWARF debuginfo
+# ${1} - vmlinux image
+gen_btf()
+{
+	local btf_data=${1}.btf.o
 
-# Create ${2} .o file with all symbols from the ${1} object file
+	info BTF "${btf_data}"
+	LLVM_OBJCOPY="${OBJCOPY}" ${PAHOLE} -J ${PAHOLE_FLAGS} ${1}
+
+	# Create ${btf_data} which contains just .BTF section but no symbols. Add
+	# SHF_ALLOC because .BTF will be part of the vmlinux image. --strip-all
+	# deletes all symbols including __start_BTF and __stop_BTF, which will
+	# be redefined in the linker script. Add 2>/dev/null to suppress GNU
+	# objcopy warnings: "empty loadable segment detected at ..."
+	${OBJCOPY} --only-section=.BTF --set-section-flags .BTF=alloc,readonly \
+		--strip-all ${1} "${btf_data}" 2>/dev/null
+	# Change e_type to ET_REL so that it can be used to link final vmlinux.
+	# GNU ld 2.35+ and lld do not allow an ET_EXEC input.
+	if is_enabled CONFIG_CPU_BIG_ENDIAN; then
+		et_rel='\0\1'
+	else
+		et_rel='\1\0'
+	fi
+	printf "${et_rel}" | dd of="${btf_data}" conv=notrunc bs=1 seek=16 status=none
+
+	btf_vmlinux_bin_o=${btf_data}
+}
+
+# Create ${2}.o file with all symbols from the ${1} object file
 kallsyms()
 {
-	info KSYM ${2}
 	local kallsymopt;
 
-	if [ -n "${CONFIG_HAVE_UNDERSCORE_SYMBOL_PREFIX}" ]; then
-		kallsymopt="${kallsymopt} --symbol-prefix=_"
-	fi
-
-	if [ -n "${CONFIG_KALLSYMS_ALL}" ]; then
+	if is_enabled CONFIG_KALLSYMS_ALL; then
 		kallsymopt="${kallsymopt} --all-symbols"
 	fi
 
-	if [ -n "${CONFIG_ARM}" ] && [ -z "${CONFIG_XIP_KERNEL}" ] && [ -n "${CONFIG_PAGE_OFFSET}" ]; then
-		kallsymopt="${kallsymopt} --page-offset=$CONFIG_PAGE_OFFSET"
-	fi
-
-	if [ -n "${CONFIG_X86_64}" ]; then
+	if is_enabled CONFIG_KALLSYMS_ABSOLUTE_PERCPU; then
 		kallsymopt="${kallsymopt} --absolute-percpu"
 	fi
 
-	local aflags="${KBUILD_AFLAGS} ${KBUILD_AFLAGS_KERNEL}               \
-		      ${NOSTDINC_FLAGS} ${LINUXINCLUDE} ${KBUILD_CPPFLAGS}"
+	info KSYMS "${2}.S"
+	scripts/kallsyms ${kallsymopt} "${1}" > "${2}.S"
 
-	${NM} -n ${1} | \
-		scripts/kallsyms ${kallsymopt} | \
-		${CC} ${aflags} -c -o ${2} -x assembler-with-cpp -
+	info AS "${2}.o"
+	${CC} ${NOSTDINC_FLAGS} ${LINUXINCLUDE} ${KBUILD_CPPFLAGS} \
+	      ${KBUILD_AFLAGS} ${KBUILD_AFLAGS_KERNEL} -c -o "${2}.o" "${2}.S"
+
+	kallsymso=${2}.o
+}
+
+# Perform kallsyms for the given temporary vmlinux.
+sysmap_and_kallsyms()
+{
+	mksysmap "${1}" "${1}.syms"
+	kallsyms "${1}.syms" "${1}.kallsyms"
+
+	kallsyms_sysmap=${1}.syms
 }
 
 # Create map file with all symbols from ${1}
 # See mksymap for additional details
 mksysmap()
 {
-	${CONFIG_SHELL} "${srctree}/scripts/mksysmap" ${1} ${2}
+	info NM ${2}
+	${NM} -n "${1}" | sed -f "${srctree}/scripts/mksysmap" > "${2}"
 }
 
-sortextable()
+sorttable()
 {
-	${objtree}/scripts/sortextable ${1}
+	${objtree}/scripts/sorttable ${1}
 }
 
-# Delete output files in case of error
 cleanup()
 {
-	rm -f .old_version
-	rm -f .tmp_System.map
-	rm -f .tmp_kallsyms*
-	rm -f .tmp_version
-	rm -f .tmp_vmlinux*
+	rm -f .btf.*
 	rm -f System.map
 	rm -f vmlinux
-	rm -f vmlinux.o
+	rm -f vmlinux.map
 }
 
-on_exit()
-{
-	if [ $? -ne 0 ]; then
-		cleanup
-	fi
-}
-trap on_exit EXIT
-
-on_signals()
-{
-	exit 1
-}
-trap on_signals HUP INT QUIT TERM
-
-#
-#
 # Use "make V=1" to debug this script
 case "${KBUILD_VERBOSE}" in
 *1*)
@@ -151,102 +196,105 @@ if [ "$1" = "clean" ]; then
 	exit 0
 fi
 
-# We need access to CONFIG_ symbols
-case "${KCONFIG_CONFIG}" in
-*/*)
-	. "${KCONFIG_CONFIG}"
-	;;
-*)
-	# Force using a file from the current directory
-	. "./${KCONFIG_CONFIG}"
-esac
+${MAKE} -f "${srctree}/scripts/Makefile.build" obj=init init/version-timestamp.o
 
-#link vmlinux.o
-info LD vmlinux.o
-modpost_link vmlinux.o
+btf_vmlinux_bin_o=
+kallsymso=
+strip_debug=
 
-# modpost vmlinux.o to check for section mismatches
-${MAKE} -f "${srctree}/scripts/Makefile.modpost" vmlinux.o
+if is_enabled CONFIG_KALLSYMS; then
+	true > .tmp_vmlinux.kallsyms0.syms
+	kallsyms .tmp_vmlinux.kallsyms0.syms .tmp_vmlinux0.kallsyms
+fi
 
-# Update version
-info GEN .version
-if [ ! -r .version ]; then
-	rm -f .version;
-	echo 1 >.version;
-else
-	mv .version .old_version;
-	expr 0$(cat .old_version) + 1 >.version;
-fi;
+if is_enabled CONFIG_KALLSYMS || is_enabled CONFIG_DEBUG_INFO_BTF; then
 
-# final build of init/
-${MAKE} -f "${srctree}/scripts/Makefile.build" obj=init
-
-kallsymso=""
-kallsyms_vmlinux=""
-if [ -n "${CONFIG_KALLSYMS}" ]; then
-
-	# kallsyms support
-	# Generate section listing all symbols and add it into vmlinux
-	# It's a three step process:
-	# 1)  Link .tmp_vmlinux1 so it has all symbols and sections,
-	#     but __kallsyms is empty.
-	#     Running kallsyms on that gives us .tmp_kallsyms1.o with
-	#     the right size
-	# 2)  Link .tmp_vmlinux2 so it now has a __kallsyms section of
-	#     the right size, but due to the added section, some
-	#     addresses have shifted.
-	#     From here, we generate a correct .tmp_kallsyms2.o
-	# 2a) We may use an extra pass as this has been necessary to
-	#     woraround some alignment related bugs.
-	#     KALLSYMS_EXTRA_PASS=1 is used to trigger this.
-	# 3)  The correct ${kallsymso} is linked into the final vmlinux.
-	#
-	# a)  Verify that the System.map from vmlinux matches the map from
-	#     ${kallsymso}.
-
-	kallsymso=.tmp_kallsyms2.o
-	kallsyms_vmlinux=.tmp_vmlinux2
-
-	# step 1
-	vmlinux_link "" .tmp_vmlinux1
-	kallsyms .tmp_vmlinux1 .tmp_kallsyms1.o
-
-	# step 2
-	vmlinux_link .tmp_kallsyms1.o .tmp_vmlinux2
-	kallsyms .tmp_vmlinux2 .tmp_kallsyms2.o
-
-	# step 2a
-	if [ -n "${KALLSYMS_EXTRA_PASS}" ]; then
-		kallsymso=.tmp_kallsyms3.o
-		kallsyms_vmlinux=.tmp_vmlinux3
-
-		vmlinux_link .tmp_kallsyms2.o .tmp_vmlinux3
-
-		kallsyms .tmp_vmlinux3 .tmp_kallsyms3.o
+	# The kallsyms linking does not need debug symbols, but the BTF does.
+	if ! is_enabled CONFIG_DEBUG_INFO_BTF; then
+		strip_debug=1
 	fi
+
+	vmlinux_link .tmp_vmlinux1
 fi
 
-info LD vmlinux
-vmlinux_link "${kallsymso}" vmlinux
-
-if [ -n "${CONFIG_BUILDTIME_EXTABLE_SORT}" ]; then
-	info SORTEX vmlinux
-	sortextable vmlinux
-fi
-
-info SYSMAP System.map
-mksysmap vmlinux System.map
-
-# step a (see comment above)
-if [ -n "${CONFIG_KALLSYMS}" ]; then
-	mksysmap ${kallsyms_vmlinux} .tmp_System.map
-
-	if ! cmp -s System.map .tmp_System.map; then
-		echo >&2 Inconsistent kallsyms data
-		echo >&2 Try "make KALLSYMS_EXTRA_PASS=1" as a workaround
+if is_enabled CONFIG_DEBUG_INFO_BTF; then
+	if ! gen_btf .tmp_vmlinux1; then
+		echo >&2 "Failed to generate BTF for vmlinux"
+		echo >&2 "Try to disable CONFIG_DEBUG_INFO_BTF"
 		exit 1
 	fi
 fi
 
-# We made a new kernel - delete old version file
-rm -f .old_version
+if is_enabled CONFIG_KALLSYMS; then
+
+	# kallsyms support
+	# Generate section listing all symbols and add it into vmlinux
+	# It's a four step process:
+	# 0)  Generate a dummy __kallsyms with empty symbol list.
+	# 1)  Link .tmp_vmlinux.kallsyms1 so it has all symbols and sections,
+	#     with a dummy __kallsyms.
+	#     Running kallsyms on that gives us .tmp_kallsyms1.o with
+	#     the right size
+	# 2)  Link .tmp_vmlinux.kallsyms2 so it now has a __kallsyms section of
+	#     the right size, but due to the added section, some
+	#     addresses have shifted.
+	#     From here, we generate a correct .tmp_vmlinux.kallsyms2.o
+	# 3)  That link may have expanded the kernel image enough that
+	#     more linker branch stubs / trampolines had to be added, which
+	#     introduces new names, which further expands kallsyms. Do another
+	#     pass if that is the case. In theory it's possible this results
+	#     in even more stubs, but unlikely.
+	#     KALLSYMS_EXTRA_PASS=1 may also used to debug or work around
+	#     other bugs.
+	# 4)  The correct ${kallsymso} is linked into the final vmlinux.
+	#
+	# a)  Verify that the System.map from vmlinux matches the map from
+	#     ${kallsymso}.
+
+	# The kallsyms linking does not need debug symbols included.
+	strip_debug=1
+
+	sysmap_and_kallsyms .tmp_vmlinux1
+	size1=$(${CONFIG_SHELL} "${srctree}/scripts/file-size.sh" ${kallsymso})
+
+	vmlinux_link .tmp_vmlinux2
+	sysmap_and_kallsyms .tmp_vmlinux2
+	size2=$(${CONFIG_SHELL} "${srctree}/scripts/file-size.sh" ${kallsymso})
+
+	if [ $size1 -ne $size2 ] || [ -n "${KALLSYMS_EXTRA_PASS}" ]; then
+		vmlinux_link .tmp_vmlinux3
+		sysmap_and_kallsyms .tmp_vmlinux3
+	fi
+fi
+
+strip_debug=
+
+vmlinux_link vmlinux
+
+# fill in BTF IDs
+if is_enabled CONFIG_DEBUG_INFO_BTF; then
+	info BTFIDS vmlinux
+	${RESOLVE_BTFIDS} vmlinux
+fi
+
+mksysmap vmlinux System.map
+
+if is_enabled CONFIG_BUILDTIME_TABLE_SORT; then
+	info SORTTAB vmlinux
+	if ! sorttable vmlinux; then
+		echo >&2 Failed to sort kernel tables
+		exit 1
+	fi
+fi
+
+# step a (see comment above)
+if is_enabled CONFIG_KALLSYMS; then
+	if ! cmp -s System.map "${kallsyms_sysmap}"; then
+		echo >&2 Inconsistent kallsyms data
+		echo >&2 'Try "make KALLSYMS_EXTRA_PASS=1" as a workaround'
+		exit 1
+	fi
+fi
+
+# For fixdep
+echo "vmlinux: $0" > .vmlinux.d

@@ -1,23 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP2 Clock init
  *
  * Copyright (C) 2013 Texas Instruments, Inc
  *     Tero Kristo (t-kristo@ti.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/clk-provider.h>
+#include <linux/clk.h>
 #include <linux/clk/ti.h>
+
+#include "clock.h"
 
 static struct ti_dt_clk omap2xxx_clks[] = {
 	DT_CLK(NULL, "func_32k_ck", "func_32k_ck"),

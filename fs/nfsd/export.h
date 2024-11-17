@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 1995-1997 Olaf Kirch <okir@monad.swb.de>
  */
@@ -5,7 +6,9 @@
 #define NFSD_EXPORT_H
 
 #include <linux/sunrpc/cache.h>
+#include <linux/percpu_counter.h>
 #include <uapi/linux/nfsd/export.h>
+#include <linux/nfs4.h>
 
 struct knfsd_fh;
 struct svc_fh;
@@ -44,21 +47,37 @@ struct exp_flavor_info {
 	u32	flags;
 };
 
+/* Per-export stats */
+enum {
+	EXP_STATS_FH_STALE,
+	EXP_STATS_IO_READ,
+	EXP_STATS_IO_WRITE,
+	EXP_STATS_COUNTERS_NUM
+};
+
+struct export_stats {
+	time64_t		start_time;
+	struct percpu_counter	counter[EXP_STATS_COUNTERS_NUM];
+};
+
 struct svc_export {
 	struct cache_head	h;
 	struct auth_domain *	ex_client;
 	int			ex_flags;
+	int			ex_fsid;
 	struct path		ex_path;
 	kuid_t			ex_anon_uid;
 	kgid_t			ex_anon_gid;
-	int			ex_fsid;
 	unsigned char *		ex_uuid; /* 16 byte fsid */
 	struct nfsd4_fs_locations ex_fslocs;
 	uint32_t		ex_nflavors;
 	struct exp_flavor_info	ex_flavors[MAX_SECINFO_LIST];
-	enum pnfs_layouttype	ex_layout_type;
+	u32			ex_layout_types;
 	struct nfsd4_deviceid_map *ex_devid_map;
 	struct cache_detail	*cd;
+	struct rcu_head		ex_rcu;
+	unsigned long		ex_xprtsec_modes;
+	struct export_stats	*ex_stats;
 };
 
 /* an "export key" (expkey) maps a filehandlefragement to an
@@ -73,13 +92,15 @@ struct svc_expkey {
 	u32			ek_fsid[6];
 
 	struct path		ek_path;
+	struct rcu_head		ek_rcu;
 };
 
 #define EX_ISSYNC(exp)		(!((exp)->ex_flags & NFSEXP_ASYNC))
 #define EX_NOHIDE(exp)		((exp)->ex_flags & NFSEXP_NOHIDE)
 #define EX_WGATHER(exp)		((exp)->ex_flags & NFSEXP_GATHERED_WRITES)
 
-int nfsexp_flags(struct svc_rqst *rqstp, struct svc_export *exp);
+struct svc_cred;
+int nfsexp_flags(struct svc_cred *cred, struct svc_export *exp);
 __be32 check_nfsd_access(struct svc_export *exp, struct svc_rqst *rqstp);
 
 /*
@@ -96,7 +117,6 @@ struct svc_export *	rqst_find_fsidzero_export(struct svc_rqst *);
 int			exp_rootfh(struct net *, struct auth_domain *,
 					char *path, struct knfsd_fh *, int maxsize);
 __be32			exp_pseudoroot(struct svc_rqst *, struct svc_fh *);
-__be32			nfserrno(int errno);
 
 static inline void exp_put(struct svc_export *exp)
 {
@@ -108,6 +128,8 @@ static inline struct svc_export *exp_get(struct svc_export *exp)
 	cache_get(&exp->h);
 	return exp;
 }
-struct svc_export * rqst_exp_find(struct svc_rqst *, int, u32 *);
+struct svc_export *rqst_exp_find(struct cache_req *reqp, struct net *net,
+				 struct auth_domain *cl, struct auth_domain *gsscl,
+				 int fsid_type, u32 *fsidv);
 
 #endif /* NFSD_EXPORT_H */

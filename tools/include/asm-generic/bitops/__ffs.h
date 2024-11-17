@@ -1,7 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _TOOLS_LINUX_ASM_GENERIC_BITOPS___FFS_H_
 #define _TOOLS_LINUX_ASM_GENERIC_BITOPS___FFS_H_
 
 #include <asm/types.h>
+#include <asm/bitsperlong.h>
 
 /**
  * __ffs - find first bit in word.
@@ -9,9 +11,9 @@
  *
  * Undefined if no bit exists, so code should check against 0 first.
  */
-static __always_inline unsigned long __ffs(unsigned long word)
+static __always_inline unsigned int __ffs(unsigned long word)
 {
-	int num = 0;
+	unsigned int num = 0;
 
 #if __BITS_PER_LONG == 64
 	if ((word & 0xffffffff) == 0) {

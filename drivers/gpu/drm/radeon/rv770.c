@@ -25,16 +25,23 @@
  *          Alex Deucher
  *          Jerome Glisse
  */
+
 #include <linux/firmware.h>
+#include <linux/pci.h>
 #include <linux/slab.h>
-#include <drm/drmP.h>
+
+#include <drm/drm_device.h>
+#include <drm/radeon_drm.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
+
+#include "atom.h"
+#include "avivod.h"
 #include "radeon.h"
 #include "radeon_asic.h"
 #include "radeon_audio.h"
-#include <drm/radeon_drm.h>
 #include "rv770d.h"
-#include "atom.h"
-#include "avivod.h"
+#include "rv770.h"
 
 #define R700_PFP_UCODE_SIZE 848
 #define R700_PM4_UCODE_SIZE 1360
@@ -129,8 +136,7 @@ int rv770_set_uvd_clocks(struct radeon_device *rdev, u32 vclk, u32 dclk)
 	return 0;
 }
 
-static const u32 r7xx_golden_registers[] =
-{
+static const u32 r7xx_golden_registers[] = {
 	0x8d00, 0xffffffff, 0x0e0e0074,
 	0x8d04, 0xffffffff, 0x013a2b34,
 	0x9508, 0xffffffff, 0x00000002,
@@ -145,8 +151,7 @@ static const u32 r7xx_golden_registers[] =
 	0x7300, 0xffffffff, 0x001000f0
 };
 
-static const u32 r7xx_golden_dyn_gpr_registers[] =
-{
+static const u32 r7xx_golden_dyn_gpr_registers[] = {
 	0x8db0, 0xffffffff, 0x98989898,
 	0x8db4, 0xffffffff, 0x98989898,
 	0x8db8, 0xffffffff, 0x98989898,
@@ -158,8 +163,7 @@ static const u32 r7xx_golden_dyn_gpr_registers[] =
 	0x88c4, 0xffffffff, 0x00000082
 };
 
-static const u32 rv770_golden_registers[] =
-{
+static const u32 rv770_golden_registers[] = {
 	0x562c, 0xffffffff, 0,
 	0x3f90, 0xffffffff, 0,
 	0x9148, 0xffffffff, 0,
@@ -168,8 +172,7 @@ static const u32 rv770_golden_registers[] =
 	0x9698, 0x18000000, 0x18000000
 };
 
-static const u32 rv770ce_golden_registers[] =
-{
+static const u32 rv770ce_golden_registers[] = {
 	0x562c, 0xffffffff, 0,
 	0x3f90, 0xffffffff, 0x00cc0000,
 	0x9148, 0xffffffff, 0x00cc0000,
@@ -180,8 +183,7 @@ static const u32 rv770ce_golden_registers[] =
 	0x9698, 0x18000000, 0x18000000
 };
 
-static const u32 rv770_mgcg_init[] =
-{
+static const u32 rv770_mgcg_init[] = {
 	0x8bcc, 0xffffffff, 0x130300f9,
 	0x5448, 0xffffffff, 0x100,
 	0x55e4, 0xffffffff, 0x100,
@@ -338,8 +340,7 @@ static const u32 rv770_mgcg_init[] =
 	0x92a4, 0xffffffff, 0x00080007
 };
 
-static const u32 rv710_golden_registers[] =
-{
+static const u32 rv710_golden_registers[] = {
 	0x3f90, 0x00ff0000, 0x00fc0000,
 	0x9148, 0x00ff0000, 0x00fc0000,
 	0x3f94, 0x00ff0000, 0x00fc0000,
@@ -348,8 +349,7 @@ static const u32 rv710_golden_registers[] =
 	0xa180, 0xffffffff, 0x00003f3f
 };
 
-static const u32 rv710_mgcg_init[] =
-{
+static const u32 rv710_mgcg_init[] = {
 	0x8bcc, 0xffffffff, 0x13030040,
 	0x5448, 0xffffffff, 0x100,
 	0x55e4, 0xffffffff, 0x100,
@@ -407,8 +407,7 @@ static const u32 rv710_mgcg_init[] =
 	0x9150, 0xffffffff, 0x4d940000
 };
 
-static const u32 rv730_golden_registers[] =
-{
+static const u32 rv730_golden_registers[] = {
 	0x3f90, 0x00ff0000, 0x00f00000,
 	0x9148, 0x00ff0000, 0x00f00000,
 	0x3f94, 0x00ff0000, 0x00f00000,
@@ -418,8 +417,7 @@ static const u32 rv730_golden_registers[] =
 	0xa180, 0xffffffff, 0x00003f3f
 };
 
-static const u32 rv730_mgcg_init[] =
-{
+static const u32 rv730_mgcg_init[] = {
 	0x8bcc, 0xffffffff, 0x130300f9,
 	0x5448, 0xffffffff, 0x100,
 	0x55e4, 0xffffffff, 0x100,
@@ -540,8 +538,7 @@ static const u32 rv730_mgcg_init[] =
 	0x92a4, 0xffffffff, 0x00000005
 };
 
-static const u32 rv740_golden_registers[] =
-{
+static const u32 rv740_golden_registers[] = {
 	0x88c4, 0xffffffff, 0x00000082,
 	0x28a50, 0xfffffffc, 0x00000004,
 	0x2650, 0x00040000, 0,
@@ -577,8 +574,7 @@ static const u32 rv740_golden_registers[] =
 	0x9698, 0x18000000, 0x18000000
 };
 
-static const u32 rv740_mgcg_init[] =
-{
+static const u32 rv740_mgcg_init[] = {
 	0x8bcc, 0xffffffff, 0x13030100,
 	0x5448, 0xffffffff, 0x100,
 	0x55e4, 0xffffffff, 0x100,
@@ -801,9 +797,10 @@ u32 rv770_get_xclk(struct radeon_device *rdev)
 	return reference_clock;
 }
 
-void rv770_page_flip(struct radeon_device *rdev, int crtc_id, u64 crtc_base)
+void rv770_page_flip(struct radeon_device *rdev, int crtc_id, u64 crtc_base, bool async)
 {
 	struct radeon_crtc *radeon_crtc = rdev->mode_info.crtcs[crtc_id];
+	struct drm_framebuffer *fb = radeon_crtc->base.primary->fb;
 	u32 tmp = RREG32(AVIVO_D1GRPH_UPDATE + radeon_crtc->crtc_offset);
 	int i;
 
@@ -811,6 +808,12 @@ void rv770_page_flip(struct radeon_device *rdev, int crtc_id, u64 crtc_base)
 	tmp |= AVIVO_D1GRPH_UPDATE_LOCK;
 	WREG32(AVIVO_D1GRPH_UPDATE + radeon_crtc->crtc_offset, tmp);
 
+	/* flip at hsync for async, default is vsync */
+	WREG32(AVIVO_D1GRPH_FLIP_CONTROL + radeon_crtc->crtc_offset,
+	       async ? AVIVO_D1GRPH_SURFACE_UPDATE_H_RETRACE_EN : 0);
+	/* update pitch */
+	WREG32(AVIVO_D1GRPH_PITCH + radeon_crtc->crtc_offset,
+	       fb->pitches[0] / fb->format->cpp[0]);
 	/* update the scanout addresses */
 	if (radeon_crtc->crtc_id) {
 		WREG32(D2GRPH_SECONDARY_SURFACE_ADDRESS_HIGH, upper_32_bits(crtc_base));
@@ -1681,6 +1684,73 @@ static int rv770_mc_init(struct radeon_device *rdev)
 	return 0;
 }
 
+static void rv770_uvd_init(struct radeon_device *rdev)
+{
+	int r;
+
+	if (!rdev->has_uvd)
+		return;
+
+	r = radeon_uvd_init(rdev);
+	if (r) {
+		dev_err(rdev->dev, "failed UVD (%d) init.\n", r);
+		/*
+		 * At this point rdev->uvd.vcpu_bo is NULL which trickles down
+		 * to early fails uvd_v2_2_resume() and thus nothing happens
+		 * there. So it is pointless to try to go through that code
+		 * hence why we disable uvd here.
+		 */
+		rdev->has_uvd = false;
+		return;
+	}
+	rdev->ring[R600_RING_TYPE_UVD_INDEX].ring_obj = NULL;
+	r600_ring_init(rdev, &rdev->ring[R600_RING_TYPE_UVD_INDEX], 4096);
+}
+
+static void rv770_uvd_start(struct radeon_device *rdev)
+{
+	int r;
+
+	if (!rdev->has_uvd)
+		return;
+
+	r = uvd_v2_2_resume(rdev);
+	if (r) {
+		dev_err(rdev->dev, "failed UVD resume (%d).\n", r);
+		goto error;
+	}
+	r = radeon_fence_driver_start_ring(rdev, R600_RING_TYPE_UVD_INDEX);
+	if (r) {
+		dev_err(rdev->dev, "failed initializing UVD fences (%d).\n", r);
+		goto error;
+	}
+	return;
+
+error:
+	rdev->ring[R600_RING_TYPE_UVD_INDEX].ring_size = 0;
+}
+
+static void rv770_uvd_resume(struct radeon_device *rdev)
+{
+	struct radeon_ring *ring;
+	int r;
+
+	if (!rdev->has_uvd || !rdev->ring[R600_RING_TYPE_UVD_INDEX].ring_size)
+		return;
+
+	ring = &rdev->ring[R600_RING_TYPE_UVD_INDEX];
+	r = radeon_ring_init(rdev, ring, ring->ring_size, 0, PACKET0(UVD_NO_OP, 0));
+	if (r) {
+		dev_err(rdev->dev, "failed initializing UVD ring (%d).\n", r);
+		return;
+	}
+	r = uvd_v1_0_init(rdev);
+	if (r) {
+		dev_err(rdev->dev, "failed initializing UVD (%d).\n", r);
+		return;
+	}
+}
+
 static int rv770_startup(struct radeon_device *rdev)
 {
 	struct radeon_ring *ring;
@@ -1723,16 +1793,7 @@ static int rv770_startup(struct radeon_device *rdev)
 		return r;
 	}
 
-	r = uvd_v2_2_resume(rdev);
-	if (!r) {
-		r = radeon_fence_driver_start_ring(rdev,
-						   R600_RING_TYPE_UVD_INDEX);
-		if (r)
-			dev_err(rdev->dev, "UVD fences init error (%d).\n", r);
-	}
-
-	if (r)
-		rdev->ring[R600_RING_TYPE_UVD_INDEX].ring_size = 0;
+	rv770_uvd_start(rdev);
 
 	/* Enable IRQ */
 	if (!rdev->irq.installed) {
@@ -1772,16 +1833,7 @@ static int rv770_startup(struct radeon_device *rdev)
 	if (r)
 		return r;
 
-	ring = &rdev->ring[R600_RING_TYPE_UVD_INDEX];
-	if (ring->ring_size) {
-		r = radeon_ring_init(rdev, ring, ring->ring_size, 0,
-				     RADEON_CP_PACKET2);
-		if (!r)
-			r = uvd_v1_0_init(rdev);
-
-		if (r)
-			DRM_ERROR("radeon: failed initializing UVD (%d).\n", r);
-	}
+	rv770_uvd_resume(rdev);
 
 	r = radeon_ib_pool_init(rdev);
 	if (r) {
@@ -1831,8 +1883,10 @@ int rv770_suspend(struct radeon_device *rdev)
 {
 	radeon_pm_suspend(rdev);
 	radeon_audio_fini(rdev);
-	uvd_v1_0_fini(rdev);
-	radeon_uvd_suspend(rdev);
+	if (rdev->has_uvd) {
+		radeon_uvd_suspend(rdev);
+		uvd_v1_0_fini(rdev);
+	}
 	r700_cp_stop(rdev);
 	r600_dma_stop(rdev);
 	r600_irq_suspend(rdev);
@@ -1881,11 +1935,9 @@ int rv770_init(struct radeon_device *rdev)
 	/* Initialize surface registers */
 	radeon_surface_init(rdev);
 	/* Initialize clocks */
-	radeon_get_clock_info(rdev->ddev);
+	radeon_get_clock_info(rdev_to_drm(rdev));
 	/* Fence driver */
-	r = radeon_fence_driver_init(rdev);
-	if (r)
-		return r;
+	radeon_fence_driver_init(rdev);
 	/* initialize AGP */
 	if (rdev->flags & RADEON_IS_AGP) {
 		r = radeon_agp_init(rdev);
@@ -1917,12 +1969,7 @@ int rv770_init(struct radeon_device *rdev)
 	rdev->ring[R600_RING_TYPE_DMA_INDEX].ring_obj = NULL;
 	r600_ring_init(rdev, &rdev->ring[R600_RING_TYPE_DMA_INDEX], 64 * 1024);
 
-	r = radeon_uvd_init(rdev);
-	if (!r) {
-		rdev->ring[R600_RING_TYPE_UVD_INDEX].ring_obj = NULL;
-		r600_ring_init(rdev, &rdev->ring[R600_RING_TYPE_UVD_INDEX],
-			       4096);
-	}
+	rv770_uvd_init(rdev);
 
 	rdev->ih.ring_obj = NULL;
 	r600_ih_ring_init(rdev, 64 * 1024);

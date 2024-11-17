@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2014, Michael Ellerman, IBM Corp.
- * Licensed under GPLv2.
  */
 
 #define _GNU_SOURCE	/* For CPU_ZERO etc. */
@@ -13,45 +13,6 @@
 
 #include "utils.h"
 #include "lib.h"
-
-
-int pick_online_cpu(void)
-{
-	cpu_set_t mask;
-	int cpu;
-
-	CPU_ZERO(&mask);
-
-	if (sched_getaffinity(0, sizeof(mask), &mask)) {
-		perror("sched_getaffinity");
-		return -1;
-	}
-
-	/* We prefer a primary thread, but skip 0 */
-	for (cpu = 8; cpu < CPU_SETSIZE; cpu += 8)
-		if (CPU_ISSET(cpu, &mask))
-			return cpu;
-
-	/* Search for anything, but in reverse */
-	for (cpu = CPU_SETSIZE - 1; cpu >= 0; cpu--)
-		if (CPU_ISSET(cpu, &mask))
-			return cpu;
-
-	printf("No cpus in affinity mask?!\n");
-	return -1;
-}
-
-int bind_to_cpu(int cpu)
-{
-	cpu_set_t mask;
-
-	printf("Binding to cpu %d\n", cpu);
-
-	CPU_ZERO(&mask);
-	CPU_SET(cpu, &mask);
-
-	return sched_setaffinity(0, sizeof(mask), &mask);
-}
 
 #define PARENT_TOKEN	0xAA
 #define CHILD_TOKEN	0x55
@@ -142,12 +103,10 @@ static int eat_cpu_child(union pipe read_pipe, union pipe write_pipe)
 pid_t eat_cpu(int (test_function)(void))
 {
 	union pipe read_pipe, write_pipe;
-	int cpu, rc;
+	int rc;
 	pid_t pid;
 
-	cpu = pick_online_cpu();
-	FAIL_IF(cpu < 0);
-	FAIL_IF(bind_to_cpu(cpu));
+	FAIL_IF(bind_to_cpu(BIND_CPU_ANY) < 0);
 
 	if (pipe(read_pipe.fds) == -1)
 		return -1;
@@ -216,38 +175,14 @@ int parse_proc_maps(void)
 
 bool require_paranoia_below(int level)
 {
-	unsigned long current;
-	char *end, buf[16];
-	FILE *f;
-	int rc;
+	int err;
+	long current;
 
-	rc = -1;
-
-	f = fopen(PARANOID_PATH, "r");
-	if (!f) {
-		perror("fopen");
-		goto out;
-	}
-
-	if (!fgets(buf, sizeof(buf), f)) {
-		printf("Couldn't read " PARANOID_PATH "?\n");
-		goto out_close;
-	}
-
-	current = strtoul(buf, &end, 10);
-
-	if (end == buf) {
+	err = read_long(PARANOID_PATH, &current, 10);
+	if (err) {
 		printf("Couldn't parse " PARANOID_PATH "?\n");
-		goto out_close;
+		return false;
 	}
 
-	if (current >= level)
-		goto out;
-
-	rc = 0;
-out_close:
-	fclose(f);
-out:
-	return rc;
+	return current < level;
 }
-

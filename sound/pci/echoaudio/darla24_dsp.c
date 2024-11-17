@@ -36,7 +36,8 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 	if (snd_BUG_ON((subdevice_id & 0xfff0) != DARLA24))
 		return -ENODEV;
 
-	if ((err = init_dsp_comm_page(chip))) {
+	err = init_dsp_comm_page(chip);
+	if (err) {
 		dev_err(chip->card->dev,
 			"init_hw: could not initialize DSP comm page\n");
 		return err;
@@ -44,17 +45,18 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 
 	chip->device_id = device_id;
 	chip->subdevice_id = subdevice_id;
-	chip->bad_board = TRUE;
+	chip->bad_board = true;
 	chip->dsp_code_to_load = FW_DARLA24_DSP;
 	/* Since this card has no ASIC, mark it as loaded so everything
 	   works OK */
-	chip->asic_loaded = TRUE;
+	chip->asic_loaded = true;
 	chip->input_clock_types = ECHO_CLOCK_BIT_INTERNAL |
 		ECHO_CLOCK_BIT_ESYNC;
 
-	if ((err = load_firmware(chip)) < 0)
+	err = load_firmware(chip);
+	if (err < 0)
 		return err;
-	chip->bad_board = FALSE;
+	chip->bad_board = false;
 
 	return err;
 }

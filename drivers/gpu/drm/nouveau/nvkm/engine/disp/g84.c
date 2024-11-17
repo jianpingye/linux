@@ -21,15 +21,217 @@
  *
  * Authors: Ben Skeggs
  */
-#include "nv50.h"
+#include "priv.h"
+#include "chan.h"
+#include "hdmi.h"
+#include "head.h"
+#include "ior.h"
 
 #include <nvif/class.h>
 
-/*******************************************************************************
- * EVO master channel object
- ******************************************************************************/
+static void
+g84_sor_hdmi_infoframe_vsi(struct nvkm_ior *ior, int head, void *data, u32 size)
+{
+	struct nvkm_device *device = ior->disp->engine.subdev.device;
+	struct packed_hdmi_infoframe vsi;
+	const u32 hoff = head * 0x800;
 
-const struct nv50_disp_mthd_list
+	nvkm_mask(device, 0x61653c + hoff, 0x00010001, 0x00010000);
+	if (!size)
+		return;
+
+	pack_hdmi_infoframe(&vsi, data, size);
+
+	nvkm_wr32(device, 0x616544 + hoff, vsi.header);
+	nvkm_wr32(device, 0x616548 + hoff, vsi.subpack0_low);
+	nvkm_wr32(device, 0x61654c + hoff, vsi.subpack0_high);
+	/* Is there a second (or up to fourth?) set of subpack registers here? */
+	/* nvkm_wr32(device, 0x616550 + hoff, vsi.subpack1_low); */
+	/* nvkm_wr32(device, 0x616554 + hoff, vsi.subpack1_high); */
+
+	nvkm_mask(device, 0x61653c + hoff, 0x00010001, 0x00010001);
+}
+
+static void
+g84_sor_hdmi_infoframe_avi(struct nvkm_ior *ior, int head, void *data, u32 size)
+{
+	struct nvkm_device *device = ior->disp->engine.subdev.device;
+	struct packed_hdmi_infoframe avi;
+	const u32 hoff = head * 0x800;
+
+	pack_hdmi_infoframe(&avi, data, size);
+
+	nvkm_mask(device, 0x616520 + hoff, 0x00000001, 0x00000000);
+	if (!size)
+		return;
+
+	nvkm_wr32(device, 0x616528 + hoff, avi.header);
+	nvkm_wr32(device, 0x61652c + hoff, avi.subpack0_low);
+	nvkm_wr32(device, 0x616530 + hoff, avi.subpack0_high);
+	nvkm_wr32(device, 0x616534 + hoff, avi.subpack1_low);
+	nvkm_wr32(device, 0x616538 + hoff, avi.subpack1_high);
+
+	nvkm_mask(device, 0x616520 + hoff, 0x00000001, 0x00000001);
+}
+
+
+static void
+g84_sor_hdmi_ctrl(struct nvkm_ior *ior, int head, bool enable, u8 max_ac_packet, u8 rekey)
+{
+	struct nvkm_device *device = ior->disp->engine.subdev.device;
+	const u32 ctrl = 0x40000000 * enable |
+			 0x1f000000 /* ??? */ |
+			 max_ac_packet << 16 |
+			 rekey;
+	const u32 hoff = head * 0x800;
+
+	if (!(ctrl & 0x40000000)) {
+		nvkm_mask(device, 0x6165a4 + hoff, 0x40000000, 0x00000000);
+		nvkm_mask(device, 0x616500 + hoff, 0x00000001, 0x00000000);
+		return;
+	}
+
+	/* Audio InfoFrame */
+	nvkm_mask(device, 0x616500 + hoff, 0x00000001, 0x00000000);
+	nvkm_wr32(device, 0x616508 + hoff, 0x000a0184);
+	nvkm_wr32(device, 0x61650c + hoff, 0x00000071);
+	nvkm_wr32(device, 0x616510 + hoff, 0x00000000);
+	nvkm_mask(device, 0x616500 + hoff, 0x00000001, 0x00000001);
+
+
+	nvkm_mask(device, 0x6165d0 + hoff, 0x00070001, 0x00010001); /* SPARE, HW_CTS */
+	nvkm_mask(device, 0x616568 + hoff, 0x00010101, 0x00000000); /* ACR_CTRL, ?? */
+	nvkm_mask(device, 0x616578 + hoff, 0x80000000, 0x80000000); /* ACR_0441_ENABLE */
+
+	/* ??? */
+	nvkm_mask(device, 0x61733c, 0x00100000, 0x00100000); /* RESETF */
+	nvkm_mask(device, 0x61733c, 0x10000000, 0x10000000); /* LOOKUP_EN */
+	nvkm_mask(device, 0x61733c, 0x00100000, 0x00000000); /* !RESETF */
+
+	/* HDMI_CTRL */
+	nvkm_mask(device, 0x6165a4 + hoff, 0x5f1f007f, ctrl);
+}
+
+const struct nvkm_ior_func_hdmi
+g84_sor_hdmi = {
+	.ctrl = g84_sor_hdmi_ctrl,
+	.infoframe_avi = g84_sor_hdmi_infoframe_avi,
+	.infoframe_vsi = g84_sor_hdmi_infoframe_vsi,
+};
+
+static const struct nvkm_ior_func
+g84_sor = {
+	.state = nv50_sor_state,
+	.power = nv50_sor_power,
+	.clock = nv50_sor_clock,
+	.bl = &nv50_sor_bl,
+	.hdmi = &g84_sor_hdmi,
+};
+
+int
+g84_sor_new(struct nvkm_disp *disp, int id)
+{
+	return nvkm_ior_new_(&g84_sor, disp, SOR, id, false);
+}
+
+static const struct nvkm_disp_mthd_list
+g84_disp_ovly_mthd_base = {
+	.mthd = 0x0000,
+	.addr = 0x000000,
+	.data = {
+		{ 0x0080, 0x000000 },
+		{ 0x0084, 0x6109a0 },
+		{ 0x0088, 0x6109c0 },
+		{ 0x008c, 0x6109c8 },
+		{ 0x0090, 0x6109b4 },
+		{ 0x0094, 0x610970 },
+		{ 0x00a0, 0x610998 },
+		{ 0x00a4, 0x610964 },
+		{ 0x00c0, 0x610958 },
+		{ 0x00e0, 0x6109a8 },
+		{ 0x00e4, 0x6109d0 },
+		{ 0x00e8, 0x6109d8 },
+		{ 0x0100, 0x61094c },
+		{ 0x0104, 0x610984 },
+		{ 0x0108, 0x61098c },
+		{ 0x0800, 0x6109f8 },
+		{ 0x0808, 0x610a08 },
+		{ 0x080c, 0x610a10 },
+		{ 0x0810, 0x610a00 },
+		{}
+	}
+};
+
+static const struct nvkm_disp_chan_mthd
+g84_disp_ovly_mthd = {
+	.name = "Overlay",
+	.addr = 0x000540,
+	.prev = 0x000004,
+	.data = {
+		{ "Global", 1, &g84_disp_ovly_mthd_base },
+		{}
+	}
+};
+
+const struct nvkm_disp_chan_user
+g84_disp_ovly = {
+	.func = &nv50_disp_dmac_func,
+	.ctrl = 3,
+	.user = 3,
+	.mthd = &g84_disp_ovly_mthd,
+};
+
+static const struct nvkm_disp_mthd_list
+g84_disp_base_mthd_base = {
+	.mthd = 0x0000,
+	.addr = 0x000000,
+	.data = {
+		{ 0x0080, 0x000000 },
+		{ 0x0084, 0x0008c4 },
+		{ 0x0088, 0x0008d0 },
+		{ 0x008c, 0x0008dc },
+		{ 0x0090, 0x0008e4 },
+		{ 0x0094, 0x610884 },
+		{ 0x00a0, 0x6108a0 },
+		{ 0x00a4, 0x610878 },
+		{ 0x00c0, 0x61086c },
+		{ 0x00c4, 0x610800 },
+		{ 0x00c8, 0x61080c },
+		{ 0x00cc, 0x610818 },
+		{ 0x00e0, 0x610858 },
+		{ 0x00e4, 0x610860 },
+		{ 0x00e8, 0x6108ac },
+		{ 0x00ec, 0x6108b4 },
+		{ 0x00fc, 0x610824 },
+		{ 0x0100, 0x610894 },
+		{ 0x0104, 0x61082c },
+		{ 0x0110, 0x6108bc },
+		{ 0x0114, 0x61088c },
+		{}
+	}
+};
+
+static const struct nvkm_disp_chan_mthd
+g84_disp_base_mthd = {
+	.name = "Base",
+	.addr = 0x000540,
+	.prev = 0x000004,
+	.data = {
+		{ "Global", 1, &g84_disp_base_mthd_base },
+		{  "Image", 2, &nv50_disp_base_mthd_image },
+		{}
+	}
+};
+
+const struct nvkm_disp_chan_user
+g84_disp_base = {
+	.func = &nv50_disp_dmac_func,
+	.ctrl = 1,
+	.user = 1,
+	.mthd = &g84_disp_base_mthd,
+};
+
+const struct nvkm_disp_mthd_list
 g84_disp_core_mthd_dac = {
 	.mthd = 0x0080,
 	.addr = 0x000008,
@@ -41,7 +243,7 @@ g84_disp_core_mthd_dac = {
 	}
 };
 
-const struct nv50_disp_mthd_list
+const struct nvkm_disp_mthd_list
 g84_disp_core_mthd_head = {
 	.mthd = 0x0400,
 	.addr = 0x000540,
@@ -93,10 +295,11 @@ g84_disp_core_mthd_head = {
 	}
 };
 
-const struct nv50_disp_mthd_chan
-g84_disp_core_mthd_chan = {
+const struct nvkm_disp_chan_mthd
+g84_disp_core_mthd = {
 	.name = "Core",
 	.addr = 0x000000,
+	.prev = 0x000004,
 	.data = {
 		{ "Global", 1, &nv50_disp_core_mthd_base },
 		{    "DAC", 3, &g84_disp_core_mthd_dac  },
@@ -107,166 +310,40 @@ g84_disp_core_mthd_chan = {
 	}
 };
 
-/*******************************************************************************
- * EVO sync channel objects
- ******************************************************************************/
+const struct nvkm_disp_chan_user
+g84_disp_core = {
+	.func = &nv50_disp_core_func,
+	.ctrl = 0,
+	.user = 0,
+	.mthd = &g84_disp_core_mthd,
+};
 
-static const struct nv50_disp_mthd_list
-g84_disp_base_mthd_base = {
-	.mthd = 0x0000,
-	.addr = 0x000000,
-	.data = {
-		{ 0x0080, 0x000000 },
-		{ 0x0084, 0x0008c4 },
-		{ 0x0088, 0x0008d0 },
-		{ 0x008c, 0x0008dc },
-		{ 0x0090, 0x0008e4 },
-		{ 0x0094, 0x610884 },
-		{ 0x00a0, 0x6108a0 },
-		{ 0x00a4, 0x610878 },
-		{ 0x00c0, 0x61086c },
-		{ 0x00c4, 0x610800 },
-		{ 0x00c8, 0x61080c },
-		{ 0x00cc, 0x610818 },
-		{ 0x00e0, 0x610858 },
-		{ 0x00e4, 0x610860 },
-		{ 0x00e8, 0x6108ac },
-		{ 0x00ec, 0x6108b4 },
-		{ 0x00fc, 0x610824 },
-		{ 0x0100, 0x610894 },
-		{ 0x0104, 0x61082c },
-		{ 0x0110, 0x6108bc },
-		{ 0x0114, 0x61088c },
+static const struct nvkm_disp_func
+g84_disp = {
+	.oneinit = nv50_disp_oneinit,
+	.init = nv50_disp_init,
+	.fini = nv50_disp_fini,
+	.intr = nv50_disp_intr,
+	.super = nv50_disp_super,
+	.uevent = &nv50_disp_chan_uevent,
+	.head = { .cnt = nv50_head_cnt, .new = nv50_head_new },
+	.dac = { .cnt = nv50_dac_cnt, .new = nv50_dac_new },
+	.sor = { .cnt = nv50_sor_cnt, .new = g84_sor_new },
+	.pior = { .cnt = nv50_pior_cnt, .new = nv50_pior_new },
+	.root = { 0,0,G82_DISP },
+	.user = {
+		{{0,0,G82_DISP_CURSOR             }, nvkm_disp_chan_new, &nv50_disp_curs },
+		{{0,0,G82_DISP_OVERLAY            }, nvkm_disp_chan_new, &nv50_disp_oimm },
+		{{0,0,G82_DISP_BASE_CHANNEL_DMA   }, nvkm_disp_chan_new, & g84_disp_base },
+		{{0,0,G82_DISP_CORE_CHANNEL_DMA   }, nvkm_disp_core_new, & g84_disp_core },
+		{{0,0,G82_DISP_OVERLAY_CHANNEL_DMA}, nvkm_disp_chan_new, & g84_disp_ovly },
 		{}
-	}
-};
-
-const struct nv50_disp_mthd_chan
-g84_disp_base_mthd_chan = {
-	.name = "Base",
-	.addr = 0x000540,
-	.data = {
-		{ "Global", 1, &g84_disp_base_mthd_base },
-		{  "Image", 2, &nv50_disp_base_mthd_image },
-		{}
-	}
-};
-
-/*******************************************************************************
- * EVO overlay channel objects
- ******************************************************************************/
-
-static const struct nv50_disp_mthd_list
-g84_disp_ovly_mthd_base = {
-	.mthd = 0x0000,
-	.addr = 0x000000,
-	.data = {
-		{ 0x0080, 0x000000 },
-		{ 0x0084, 0x6109a0 },
-		{ 0x0088, 0x6109c0 },
-		{ 0x008c, 0x6109c8 },
-		{ 0x0090, 0x6109b4 },
-		{ 0x0094, 0x610970 },
-		{ 0x00a0, 0x610998 },
-		{ 0x00a4, 0x610964 },
-		{ 0x00c0, 0x610958 },
-		{ 0x00e0, 0x6109a8 },
-		{ 0x00e4, 0x6109d0 },
-		{ 0x00e8, 0x6109d8 },
-		{ 0x0100, 0x61094c },
-		{ 0x0104, 0x610984 },
-		{ 0x0108, 0x61098c },
-		{ 0x0800, 0x6109f8 },
-		{ 0x0808, 0x610a08 },
-		{ 0x080c, 0x610a10 },
-		{ 0x0810, 0x610a00 },
-		{}
-	}
-};
-
-const struct nv50_disp_mthd_chan
-g84_disp_ovly_mthd_chan = {
-	.name = "Overlay",
-	.addr = 0x000540,
-	.data = {
-		{ "Global", 1, &g84_disp_ovly_mthd_base },
-		{}
-	}
-};
-
-/*******************************************************************************
- * Base display object
- ******************************************************************************/
-
-static struct nvkm_oclass
-g84_disp_sclass[] = {
-	{ G82_DISP_CORE_CHANNEL_DMA, &nv50_disp_core_ofuncs.base },
-	{ G82_DISP_BASE_CHANNEL_DMA, &nv50_disp_base_ofuncs.base },
-	{ G82_DISP_OVERLAY_CHANNEL_DMA, &nv50_disp_ovly_ofuncs.base },
-	{ G82_DISP_OVERLAY, &nv50_disp_oimm_ofuncs.base },
-	{ G82_DISP_CURSOR, &nv50_disp_curs_ofuncs.base },
-	{}
-};
-
-static struct nvkm_oclass
-g84_disp_main_oclass[] = {
-	{ G82_DISP, &nv50_disp_main_ofuncs },
-	{}
-};
-
-/*******************************************************************************
- * Display engine implementation
- ******************************************************************************/
-
-static int
-g84_disp_ctor(struct nvkm_object *parent, struct nvkm_object *engine,
-	      struct nvkm_oclass *oclass, void *data, u32 size,
-	      struct nvkm_object **pobject)
-{
-	struct nv50_disp_priv *priv;
-	int ret;
-
-	ret = nvkm_disp_create(parent, engine, oclass, 2, "PDISP",
-			       "display", &priv);
-	*pobject = nv_object(priv);
-	if (ret)
-		return ret;
-
-	ret = nvkm_event_init(&nv50_disp_chan_uevent, 1, 9, &priv->uevent);
-	if (ret)
-		return ret;
-
-	nv_engine(priv)->sclass = g84_disp_main_oclass;
-	nv_engine(priv)->cclass = &nv50_disp_cclass;
-	nv_subdev(priv)->intr = nv50_disp_intr;
-	INIT_WORK(&priv->supervisor, nv50_disp_intr_supervisor);
-	priv->sclass = g84_disp_sclass;
-	priv->head.nr = 2;
-	priv->dac.nr = 3;
-	priv->sor.nr = 2;
-	priv->pior.nr = 3;
-	priv->dac.power = nv50_dac_power;
-	priv->dac.sense = nv50_dac_sense;
-	priv->sor.power = nv50_sor_power;
-	priv->sor.hdmi = g84_hdmi_ctrl;
-	priv->pior.power = nv50_pior_power;
-	return 0;
-}
-
-struct nvkm_oclass *
-g84_disp_oclass = &(struct nv50_disp_impl) {
-	.base.base.handle = NV_ENGINE(DISP, 0x82),
-	.base.base.ofuncs = &(struct nvkm_ofuncs) {
-		.ctor = g84_disp_ctor,
-		.dtor = _nvkm_disp_dtor,
-		.init = _nvkm_disp_init,
-		.fini = _nvkm_disp_fini,
 	},
-	.base.vblank = &nv50_disp_vblank_func,
-	.base.outp =  nv50_disp_outp_sclass,
-	.mthd.core = &g84_disp_core_mthd_chan,
-	.mthd.base = &g84_disp_base_mthd_chan,
-	.mthd.ovly = &g84_disp_ovly_mthd_chan,
-	.mthd.prev = 0x000004,
-	.head.scanoutpos = nv50_disp_main_scanoutpos,
-}.base.base;
+};
+
+int
+g84_disp_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst,
+	     struct nvkm_disp **pdisp)
+{
+	return nvkm_disp_new_(&g84_disp, device, type, inst, pdisp);
+}

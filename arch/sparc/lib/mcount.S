@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2000 Anton Blanchard (anton@linuxcare.com)
  *
@@ -5,6 +6,7 @@
  * This can also be tweaked for kernel stack overflow detection.
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 
 /*
@@ -16,6 +18,7 @@
 	.align		32
 	.globl		_mcount
 	.type		_mcount,#function
+	EXPORT_SYMBOL(_mcount)
 	.globl		mcount
 	.type		mcount,#function
 _mcount:

@@ -1,13 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 #ifndef _LINUX_SPMI_H
 #define _LINUX_SPMI_H
@@ -128,6 +120,9 @@ static inline void spmi_controller_put(struct spmi_controller *ctrl)
 int spmi_controller_add(struct spmi_controller *ctrl);
 void spmi_controller_remove(struct spmi_controller *ctrl);
 
+struct spmi_controller *devm_spmi_controller_alloc(struct device *parent, size_t size);
+int devm_spmi_controller_add(struct device *parent, struct spmi_controller *ctrl);
+
 /**
  * struct spmi_driver - SPMI slave device driver
  * @driver:	SPMI device drivers should initialize name and owner field of
@@ -146,6 +141,7 @@ struct spmi_driver {
 	struct device_driver driver;
 	int	(*probe)(struct spmi_device *sdev);
 	void	(*remove)(struct spmi_device *sdev);
+	void	(*shutdown)(struct spmi_device *sdev);
 };
 
 static inline struct spmi_driver *to_spmi_driver(struct device_driver *d)
@@ -153,7 +149,9 @@ static inline struct spmi_driver *to_spmi_driver(struct device_driver *d)
 	return container_of(d, struct spmi_driver, driver);
 }
 
-int spmi_driver_register(struct spmi_driver *sdrv);
+#define spmi_driver_register(sdrv) \
+	__spmi_driver_register(sdrv, THIS_MODULE)
+int __spmi_driver_register(struct spmi_driver *sdrv, struct module *owner);
 
 /**
  * spmi_driver_unregister() - unregister an SPMI client driver
@@ -169,6 +167,9 @@ static inline void spmi_driver_unregister(struct spmi_driver *sdrv)
 	module_driver(__spmi_driver, spmi_driver_register, \
 			spmi_driver_unregister)
 
+struct device_node;
+
+struct spmi_device *spmi_find_device_by_of_node(struct device_node *np);
 int spmi_register_read(struct spmi_device *sdev, u8 addr, u8 *buf);
 int spmi_ext_register_read(struct spmi_device *sdev, u8 addr, u8 *buf,
 			   size_t len);

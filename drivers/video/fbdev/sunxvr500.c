@@ -1,14 +1,16 @@
-/* sunxvr500.c: Sun 3DLABS XVR-500 Expert3D driver for sparc64 systems
+/* sunxvr500.c: Sun 3DLABS XVR-500 Expert3D fb driver for sparc64 systems
+ *
+ * License: GPL
  *
  * Copyright (C) 2007 David S. Miller (davem@davemloft.net)
  */
 
-#include <linux/module.h>
+#include <linux/aperture.h>
 #include <linux/kernel.h>
 #include <linux/fb.h>
 #include <linux/pci.h>
 #include <linux/init.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 
 #include <asm/io.h>
 
@@ -185,12 +187,14 @@ static void e3d_copyarea(struct fb_info *info, const struct fb_copyarea *area)
 	spin_unlock_irqrestore(&ep->lock, flags);
 }
 
-static struct fb_ops e3d_ops = {
+static const struct fb_ops e3d_ops = {
 	.owner			= THIS_MODULE,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_setcolreg		= e3d_setcolreg,
 	.fb_fillrect		= e3d_fillrect,
 	.fb_copyarea		= e3d_copyarea,
 	.fb_imageblit		= e3d_imageblit,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 static int e3d_set_fbinfo(struct e3d_info *ep)
@@ -198,7 +202,6 @@ static int e3d_set_fbinfo(struct e3d_info *ep)
 	struct fb_info *info = ep->info;
 	struct fb_var_screeninfo *var = &info->var;
 
-	info->flags = FBINFO_DEFAULT;
 	info->fbops = &e3d_ops;
 	info->screen_base = ep->fb_base;
 	info->screen_size = ep->fb_size;
@@ -206,7 +209,7 @@ static int e3d_set_fbinfo(struct e3d_info *ep)
 	info->pseudo_palette = ep->pseudo_palette;
 
 	/* Fill fix common fields */
-	strlcpy(info->fix.id, "e3d", sizeof(info->fix.id));
+	strscpy(info->fix.id, "e3d", sizeof(info->fix.id));
         info->fix.smem_start = ep->fb_base_phys;
         info->fix.smem_len = ep->fb_size;
         info->fix.type = FB_TYPE_PACKED_PIXELS;
@@ -248,6 +251,10 @@ static int e3d_pci_register(struct pci_dev *pdev,
 	unsigned int line_length;
 	int err;
 
+	err = aperture_remove_conflicting_pci_devices(pdev, "e3dfb");
+	if (err)
+		return err;
+
 	of_node = pci_device_to_OF_node(pdev);
 	if (!of_node) {
 		printk(KERN_ERR "e3d: Cannot find OF node of %s\n",
@@ -271,7 +278,6 @@ static int e3d_pci_register(struct pci_dev *pdev,
 
 	info = framebuffer_alloc(sizeof(struct e3d_info), &pdev->dev);
 	if (!info) {
-		printk(KERN_ERR "e3d: Cannot allocate fb_info\n");
 		err = -ENOMEM;
 		goto err_disable;
 	}
@@ -392,26 +398,7 @@ err_out:
 	return err;
 }
 
-static void e3d_pci_unregister(struct pci_dev *pdev)
-{
-	struct fb_info *info = pci_get_drvdata(pdev);
-	struct e3d_info *ep = info->par;
-
-	unregister_framebuffer(info);
-
-	iounmap(ep->ramdac);
-	iounmap(ep->fb_base);
-
-	pci_release_region(pdev, 0);
-	pci_release_region(pdev, 1);
-
-	fb_dealloc_cmap(&info->cmap);
-        framebuffer_release(info);
-
-	pci_disable_device(pdev);
-}
-
-static struct pci_device_id e3d_pci_table[] = {
+static const struct pci_device_id e3d_pci_table[] = {
 	{	PCI_DEVICE(PCI_VENDOR_ID_3DLABS, 0x7a0),	},
 	{	PCI_DEVICE(0x1091, 0x7a0),			},
 	{	PCI_DEVICE(PCI_VENDOR_ID_3DLABS, 0x7a2),	},
@@ -434,29 +421,22 @@ static struct pci_device_id e3d_pci_table[] = {
 };
 
 static struct pci_driver e3d_driver = {
+	.driver = {
+		.suppress_bind_attrs = true,
+	},
 	.name		= "e3d",
 	.id_table	= e3d_pci_table,
 	.probe		= e3d_pci_register,
-	.remove		= e3d_pci_unregister,
 };
 
 static int __init e3d_init(void)
 {
+	if (fb_modesetting_disabled("e3d"))
+		return -ENODEV;
+
 	if (fb_get_options("e3d", NULL))
 		return -ENODEV;
 
 	return pci_register_driver(&e3d_driver);
 }
-
-static void __exit e3d_exit(void)
-{
-	pci_unregister_driver(&e3d_driver);
-}
-
-module_init(e3d_init);
-module_exit(e3d_exit);
-
-MODULE_DESCRIPTION("framebuffer driver for Sun XVR-500 graphics");
-MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
-MODULE_VERSION("1.0");
-MODULE_LICENSE("GPL");
+device_initcall(e3d_init);

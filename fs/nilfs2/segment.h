@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * segment.h - NILFS Segment constructor prototypes and definitions
+ * NILFS Segment constructor prototypes and definitions
  *
  * Copyright (C) 2005-2008 Nippon Telegraph and Telephone Corporation.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * Written by Ryusuke Konishi <ryusuke@osrg.net>
+ * Written by Ryusuke Konishi.
  *
  */
 #ifndef _NILFS_SEGMENT_H
@@ -27,7 +14,6 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/workqueue.h>
-#include <linux/nilfs2_fs.h>
 #include "nilfs.h"
 
 struct nilfs_root;
@@ -36,10 +22,10 @@ struct nilfs_root;
  * struct nilfs_recovery_info - Recovery information
  * @ri_need_recovery: Recovery status
  * @ri_super_root: Block number of the last super root
- * @ri_ri_cno: Number of the last checkpoint
+ * @ri_cno: Number of the last checkpoint
  * @ri_lsegs_start: Region for roll-forwarding (start block number)
  * @ri_lsegs_end: Region for roll-forwarding (end block number)
- * @ri_lseg_start_seq: Sequence value of the segment at ri_lsegs_start
+ * @ri_lsegs_start_seq: Sequence value of the segment at ri_lsegs_start
  * @ri_used_segments: List of segments to be mark active
  * @ri_pseg_start: Block number of the last partial segment
  * @ri_seq: Sequence number on the last partial segment
@@ -67,14 +53,15 @@ struct nilfs_recovery_info {
 
 /**
  * struct nilfs_cstage - Context of collection stage
- * @scnt: Stage count
+ * @scnt: Stage count, must be accessed via wrappers:
+ *        nilfs_sc_cstage_inc(), nilfs_sc_cstage_set(), nilfs_sc_cstage_get()
  * @flags: State flags
  * @dirty_file_ptr: Pointer on dirty_files list, or inode of a target file
  * @gc_inode_ptr: Pointer on the list of gc-inodes
  */
 struct nilfs_cstage {
 	int			scnt;
-	unsigned		flags;
+	unsigned int		flags;
 	struct nilfs_inode_info *dirty_file_ptr;
 	struct nilfs_inode_info *gc_inode_ptr;
 };
@@ -83,7 +70,7 @@ struct nilfs_segment_buffer;
 
 struct nilfs_segsum_pointer {
 	struct buffer_head     *bh;
-	unsigned		offset; /* offset in bytes */
+	unsigned int		offset; /* offset in bytes */
 };
 
 /**
@@ -118,9 +105,8 @@ struct nilfs_segsum_pointer {
  * @sc_flush_request: inode bitmap of metadata files to be flushed
  * @sc_wait_request: Client request queue
  * @sc_wait_daemon: Daemon wait queue
- * @sc_wait_task: Start/end wait queue to control segctord task
  * @sc_seq_request: Request counter
- * @sc_seq_accept: Accepted request count
+ * @sc_seq_accepted: Accepted request count
  * @sc_seq_done: Completion counter
  * @sc_sync: Request of explicit sync operation
  * @sc_interval: Timeout value of background construction
@@ -161,7 +147,7 @@ struct nilfs_sc_info {
 	unsigned long		sc_blk_cnt;
 	unsigned long		sc_datablk_cnt;
 	unsigned long		sc_nblk_this_inc;
-	time_t			sc_seg_ctime;
+	time64_t		sc_seg_ctime;
 	__u64			sc_cno;
 	unsigned long		sc_flags;
 
@@ -171,7 +157,6 @@ struct nilfs_sc_info {
 
 	wait_queue_head_t	sc_wait_request;
 	wait_queue_head_t	sc_wait_daemon;
-	wait_queue_head_t	sc_wait_task;
 
 	__u32			sc_seq_request;
 	__u32			sc_seq_accepted;
@@ -192,31 +177,40 @@ enum {
 	NILFS_SC_DIRTY,		/* One or more dirty meta-data blocks exist */
 	NILFS_SC_UNCLOSED,	/* Logical segment is not closed */
 	NILFS_SC_SUPER_ROOT,	/* The latest segment has a super root */
-	NILFS_SC_PRIOR_FLUSH,	/* Requesting immediate flush without making a
-				   checkpoint */
-	NILFS_SC_HAVE_DELTA,	/* Next checkpoint will have update of files
-				   other than DAT, cpfile, sufile, or files
-				   moved by GC */
+	NILFS_SC_PRIOR_FLUSH,	/*
+				 * Requesting immediate flush without making a
+				 * checkpoint
+				 */
+	NILFS_SC_HAVE_DELTA,	/*
+				 * Next checkpoint will have update of files
+				 * other than DAT, cpfile, sufile, or files
+				 * moved by GC.
+				 */
 };
 
 /* sc_state */
-#define NILFS_SEGCTOR_QUIT	    0x0001  /* segctord is being destroyed */
 #define NILFS_SEGCTOR_COMMIT	    0x0004  /* committed transaction exists */
 
 /*
  * Constant parameters
  */
-#define NILFS_SC_CLEANUP_RETRY	    3  /* Retry count of construction when
-					  destroying segctord */
+#define NILFS_SC_CLEANUP_RETRY	    3  /*
+					* Retry count of construction when
+					* destroying segctord
+					*/
 
 /*
  * Default values of timeout, in seconds.
  */
-#define NILFS_SC_DEFAULT_TIMEOUT    5   /* Timeout value of dirty blocks.
-					   It triggers construction of a
-					   logical segment with a super root */
-#define NILFS_SC_DEFAULT_SR_FREQ    30  /* Maximum frequency of super root
-					   creation */
+#define NILFS_SC_DEFAULT_TIMEOUT    5   /*
+					 * Timeout value of dirty blocks.
+					 * It triggers construction of a
+					 * logical segment with a super root.
+					 */
+#define NILFS_SC_DEFAULT_SR_FREQ    30  /*
+					 * Maximum frequency of super root
+					 * creation
+					 */
 
 /*
  * The default threshold amount of data, in block counts.

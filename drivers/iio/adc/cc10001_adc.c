@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014-2015 Imagination Technologies Ltd.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
  */
 
 #include <linux/clk.h>
@@ -13,7 +9,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -62,6 +57,7 @@ struct cc10001_adc_device {
 	struct regulator *reg;
 	u16 *buf;
 
+	bool shared;
 	struct mutex lock;
 	unsigned int start_delay_ns;
 	unsigned int eoc_delay_ns;
@@ -153,16 +149,15 @@ static irqreturn_t cc10001_adc_trigger_h(int irq, void *p)
 
 	mutex_lock(&adc_dev->lock);
 
-	cc10001_adc_power_up(adc_dev);
+	if (!adc_dev->shared)
+		cc10001_adc_power_up(adc_dev);
 
 	/* Calculate delay step for eoc and sampled data */
 	delay_ns = adc_dev->eoc_delay_ns / CC10001_MAX_POLL_COUNT;
 
 	i = 0;
 	sample_invalid = false;
-	for_each_set_bit(scan_idx, indio_dev->active_scan_mask,
-				  indio_dev->masklength) {
-
+	iio_for_each_active_channel(indio_dev, scan_idx) {
 		channel = indio_dev->channels[scan_idx].channel;
 		cc10001_adc_start(adc_dev, channel);
 
@@ -177,13 +172,14 @@ static irqreturn_t cc10001_adc_trigger_h(int irq, void *p)
 	}
 
 done:
-	cc10001_adc_power_down(adc_dev);
+	if (!adc_dev->shared)
+		cc10001_adc_power_down(adc_dev);
 
 	mutex_unlock(&adc_dev->lock);
 
 	if (!sample_invalid)
 		iio_push_to_buffers_with_timestamp(indio_dev, data,
-						   iio_get_time_ns());
+						   iio_get_time_ns(indio_dev));
 	iio_trigger_notify_done(indio_dev->trig);
 
 	return IRQ_HANDLED;
@@ -196,7 +192,8 @@ static u16 cc10001_adc_read_raw_voltage(struct iio_dev *indio_dev,
 	unsigned int delay_ns;
 	u16 val;
 
-	cc10001_adc_power_up(adc_dev);
+	if (!adc_dev->shared)
+		cc10001_adc_power_up(adc_dev);
 
 	/* Calculate delay step for eoc and sampled data */
 	delay_ns = adc_dev->eoc_delay_ns / CC10001_MAX_POLL_COUNT;
@@ -205,7 +202,8 @@ static u16 cc10001_adc_read_raw_voltage(struct iio_dev *indio_dev,
 
 	val = cc10001_adc_poll_done(indio_dev, chan->channel, delay_ns);
 
-	cc10001_adc_power_down(adc_dev);
+	if (!adc_dev->shared)
+		cc10001_adc_power_down(adc_dev);
 
 	return val;
 }
@@ -257,7 +255,6 @@ static int cc10001_update_scan_mode(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info cc10001_adc_info = {
-	.driver_module = THIS_MODULE,
 	.read_raw = &cc10001_adc_read_raw,
 	.update_scan_mode = &cc10001_update_scan_mode,
 };
@@ -305,27 +302,39 @@ static int cc10001_adc_channel_init(struct iio_dev *indio_dev,
 	return 0;
 }
 
+static void cc10001_reg_disable(void *priv)
+{
+	regulator_disable(priv);
+}
+
+static void cc10001_pd_cb(void *priv)
+{
+	cc10001_adc_power_down(priv);
+}
+
 static int cc10001_adc_probe(struct platform_device *pdev)
 {
-	struct device_node *node = pdev->dev.of_node;
+	struct device *dev = &pdev->dev;
+	struct device_node *node = dev->of_node;
 	struct cc10001_adc_device *adc_dev;
 	unsigned long adc_clk_rate;
-	struct resource *res;
 	struct iio_dev *indio_dev;
 	unsigned long channel_map;
 	int ret;
 
-	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*adc_dev));
+	indio_dev = devm_iio_device_alloc(dev, sizeof(*adc_dev));
 	if (indio_dev == NULL)
 		return -ENOMEM;
 
 	adc_dev = iio_priv(indio_dev);
 
 	channel_map = GENMASK(CC10001_ADC_NUM_CHANNELS - 1, 0);
-	if (!of_property_read_u32(node, "adc-reserved-channels", &ret))
+	if (!of_property_read_u32(node, "adc-reserved-channels", &ret)) {
+		adc_dev->shared = true;
 		channel_map &= ~ret;
+	}
 
-	adc_dev->reg = devm_regulator_get(&pdev->dev, "vref");
+	adc_dev->reg = devm_regulator_get(dev, "vref");
 	if (IS_ERR(adc_dev->reg))
 		return PTR_ERR(adc_dev->reg);
 
@@ -333,81 +342,57 @@ static int cc10001_adc_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	indio_dev->dev.parent = &pdev->dev;
-	indio_dev->name = dev_name(&pdev->dev);
+	ret = devm_add_action_or_reset(dev, cc10001_reg_disable, adc_dev->reg);
+	if (ret)
+		return ret;
+
+	indio_dev->name = dev_name(dev);
 	indio_dev->info = &cc10001_adc_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	adc_dev->reg_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(adc_dev->reg_base)) {
-		ret = PTR_ERR(adc_dev->reg_base);
-		goto err_disable_reg;
-	}
+	adc_dev->reg_base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(adc_dev->reg_base))
+		return PTR_ERR(adc_dev->reg_base);
 
-	adc_dev->adc_clk = devm_clk_get(&pdev->dev, "adc");
+	adc_dev->adc_clk = devm_clk_get_enabled(dev, "adc");
 	if (IS_ERR(adc_dev->adc_clk)) {
-		dev_err(&pdev->dev, "failed to get the clock\n");
-		ret = PTR_ERR(adc_dev->adc_clk);
-		goto err_disable_reg;
-	}
-
-	ret = clk_prepare_enable(adc_dev->adc_clk);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to enable the clock\n");
-		goto err_disable_reg;
+		dev_err(dev, "failed to get/enable the clock\n");
+		return PTR_ERR(adc_dev->adc_clk);
 	}
 
 	adc_clk_rate = clk_get_rate(adc_dev->adc_clk);
 	if (!adc_clk_rate) {
-		ret = -EINVAL;
-		dev_err(&pdev->dev, "null clock rate!\n");
-		goto err_disable_clk;
+		dev_err(dev, "null clock rate!\n");
+		return -EINVAL;
 	}
 
 	adc_dev->eoc_delay_ns = NSEC_PER_SEC / adc_clk_rate;
 	adc_dev->start_delay_ns = adc_dev->eoc_delay_ns * CC10001_WAIT_CYCLES;
 
+	/*
+	 * There is only one register to power-up/power-down the AUX ADC.
+	 * If the ADC is shared among multiple CPUs, always power it up here.
+	 * If the ADC is used only by the MIPS, power-up/power-down at runtime.
+	 */
+	if (adc_dev->shared)
+		cc10001_adc_power_up(adc_dev);
+
+	ret = devm_add_action_or_reset(dev, cc10001_pd_cb, adc_dev);
+	if (ret)
+		return ret;
 	/* Setup the ADC channels available on the device */
 	ret = cc10001_adc_channel_init(indio_dev, channel_map);
 	if (ret < 0)
-		goto err_disable_clk;
+		return ret;
 
 	mutex_init(&adc_dev->lock);
 
-	ret = iio_triggered_buffer_setup(indio_dev, NULL,
-					 &cc10001_adc_trigger_h, NULL);
+	ret = devm_iio_triggered_buffer_setup(dev, indio_dev, NULL,
+					      &cc10001_adc_trigger_h, NULL);
 	if (ret < 0)
-		goto err_disable_clk;
+		return ret;
 
-	ret = iio_device_register(indio_dev);
-	if (ret < 0)
-		goto err_cleanup_buffer;
-
-	platform_set_drvdata(pdev, indio_dev);
-
-	return 0;
-
-err_cleanup_buffer:
-	iio_triggered_buffer_cleanup(indio_dev);
-err_disable_clk:
-	clk_disable_unprepare(adc_dev->adc_clk);
-err_disable_reg:
-	regulator_disable(adc_dev->reg);
-	return ret;
-}
-
-static int cc10001_adc_remove(struct platform_device *pdev)
-{
-	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
-	struct cc10001_adc_device *adc_dev = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-	iio_triggered_buffer_cleanup(indio_dev);
-	clk_disable_unprepare(adc_dev->adc_clk);
-	regulator_disable(adc_dev->reg);
-
-	return 0;
+	return devm_iio_device_register(dev, indio_dev);
 }
 
 static const struct of_device_id cc10001_adc_dt_ids[] = {
@@ -422,7 +407,6 @@ static struct platform_driver cc10001_adc_driver = {
 		.of_match_table = cc10001_adc_dt_ids,
 	},
 	.probe	= cc10001_adc_probe,
-	.remove	= cc10001_adc_remove,
 };
 module_platform_driver(cc10001_adc_driver);
 

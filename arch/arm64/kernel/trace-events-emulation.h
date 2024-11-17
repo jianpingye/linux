@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM emulation
 
@@ -17,7 +18,7 @@ TRACE_EVENT(instruction_emulation,
 	),
 
 	TP_fast_assign(
-		__assign_str(instr, instr);
+		__assign_str(instr);
 		__entry->addr = addr;
 	),
 

@@ -8,7 +8,7 @@
  *implementation for lzma.
  *Copyright (C) 2006  Aurelien Jacobs < aurel@gnuage.org >
  *
- *Based on LzmaDecode.c from the LZMA SDK 4.22 (http://www.7-zip.org/)
+ *Based on LzmaDecode.c from the LZMA SDK 4.22 (https://www.7-zip.org/)
  *Copyright (C) 1999-2005  Igor Pavlov
  *
  *Copyrights of the parts, see headers below.
@@ -37,7 +37,9 @@
 
 #include <linux/decompress/mm.h>
 
+#ifndef MIN
 #define	MIN(a, b) (((a) < (b)) ? (a) : (b))
+#endif
 
 static long long INIT read_int(unsigned char *ptr, int size)
 {
@@ -56,7 +58,7 @@ static long long INIT read_int(unsigned char *ptr, int size)
 /* Small range coder implementation for lzma.
  *Copyright (C) 2006  Aurelien Jacobs < aurel@gnuage.org >
  *
- *Based on LzmaDecode.c from the LZMA SDK 4.22 (http://www.7-zip.org/)
+ *Based on LzmaDecode.c from the LZMA SDK 4.22 (https://www.7-zip.org/)
  *Copyright (c) 1999-2005  Igor Pavlov
  */
 
@@ -213,7 +215,7 @@ rc_bit_tree_decode(struct rc *rc, uint16_t *p, int num_levels, int *symbol)
  * Small lzma deflate implementation.
  * Copyright (C) 2006  Aurelien Jacobs < aurel@gnuage.org >
  *
- * Based on LzmaDecode.c from the LZMA SDK 4.22 (http://www.7-zip.org/)
+ * Based on LzmaDecode.c from the LZMA SDK 4.22 (https://www.7-zip.org/)
  * Copyright (C) 1999-2005  Igor Pavlov
  */
 
@@ -391,7 +393,7 @@ static inline int INIT process_bit0(struct writer *wr, struct rc *rc,
 static inline int INIT process_bit1(struct writer *wr, struct rc *rc,
 					    struct cstate *cst, uint16_t *p,
 					    int pos_state, uint16_t *prob) {
-  int offset;
+	int offset;
 	uint16_t *prob_len;
 	int num_bits;
 	int len;
@@ -620,7 +622,7 @@ STATIC inline int INIT unlzma(unsigned char *buf, long in_len,
 
 	num_probs = LZMA_BASE_SIZE + (LZMA_LIT_SIZE << (lc + lp));
 	p = (uint16_t *) large_malloc(num_probs * sizeof(*p));
-	if (p == 0)
+	if (p == NULL)
 		goto exit_2;
 	num_probs = LZMA_LITERAL + (LZMA_LIT_SIZE << (lc + lp));
 	for (i = 0; i < num_probs; i++)
@@ -667,13 +669,12 @@ exit_0:
 }
 
 #ifdef PREBOOT
-STATIC int INIT decompress(unsigned char *buf, long in_len,
+STATIC int INIT __decompress(unsigned char *buf, long in_len,
 			      long (*fill)(void*, unsigned long),
 			      long (*flush)(void*, unsigned long),
-			      unsigned char *output,
+			      unsigned char *output, long out_len,
 			      long *posp,
-			      void(*error)(char *x)
-	)
+			      void (*error)(char *x))
 {
 	return unlzma(buf, in_len - 4, fill, flush, output, posp, error);
 }

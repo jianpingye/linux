@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/console.c
  *
@@ -14,12 +15,14 @@
 #include <asm/machvec.h>
 
 #include "pci_impl.h"
+#include "proto.h"
 
 #ifdef CONFIG_VGA_HOSE
 
 struct pci_controller *pci_vga_hose;
 static struct resource alpha_vga = {
 	.name	= "alpha-vga+",
+	.flags	= IORESOURCE_IO,
 	.start	= 0x3C0,
 	.end	= 0x3DF
 };

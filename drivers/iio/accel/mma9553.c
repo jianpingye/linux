@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Freescale MMA9553L Intelligent Pedometer driver
  * Copyright (c) 2014, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/module.h>
@@ -17,7 +9,6 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/acpi.h>
-#include <linux/gpio/consumer.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
@@ -26,7 +17,6 @@
 
 #define MMA9553_DRV_NAME			"mma9553"
 #define MMA9553_IRQ_NAME			"mma9553_event"
-#define MMA9553_GPIO_NAME			"mma9553_int"
 
 /* Pedometer configuration registers (R/W) */
 #define MMA9553_REG_CONF_SLEEPMIN		0x00
@@ -182,6 +172,10 @@ struct mma9553_conf_regs {
 
 struct mma9553_data {
 	struct i2c_client *client;
+	/*
+	 * 1. Serialize access to HW (requested by mma9551_core API).
+	 * 2. Serialize sequences that power on/off the device and access HW.
+	 */
 	struct mutex mutex;
 	struct mma9553_conf_regs conf;
 	struct mma9553_event events[MMA9553_EVENTS_INFO_SIZE];
@@ -322,7 +316,8 @@ static int mma9553_read_activity_stepcnt(struct mma9553_data *data,
 	int ret;
 
 	ret = mma9551_read_status_words(data->client, MMA9551_APPID_PEDOMETER,
-					MMA9553_REG_STATUS, sizeof(u32), buf);
+					MMA9553_REG_STATUS, ARRAY_SIZE(buf),
+					buf);
 	if (ret < 0) {
 		dev_err(&data->client->dev,
 			"error reading status and stepcnt\n");
@@ -342,10 +337,10 @@ static int mma9553_conf_gpio(struct mma9553_data *data)
 	struct mma9553_event *ev_step_detect;
 	bool activity_enabled;
 
-	activity_enabled =
-	    mma9553_is_any_event_enabled(data, true, IIO_ACTIVITY);
-	ev_step_detect =
-	    mma9553_get_event(data, IIO_STEPS, IIO_NO_MOD, IIO_EV_DIR_NONE);
+	activity_enabled = mma9553_is_any_event_enabled(data, true,
+							IIO_ACTIVITY);
+	ev_step_detect = mma9553_get_event(data, IIO_STEPS, IIO_NO_MOD,
+					   IIO_EV_DIR_NONE);
 
 	/*
 	 * If both step detector and activity are enabled, use the MRGFL bit.
@@ -371,9 +366,8 @@ static int mma9553_conf_gpio(struct mma9553_data *data)
 			return ret;
 	}
 
-	ret = mma9551_gpio_config(data->client,
-				  MMA9553_DEFAULT_GPIO_PIN,
-				  appid, bitnum, MMA9553_DEFAULT_GPIO_POLARITY);
+	ret = mma9551_gpio_config(data->client, MMA9553_DEFAULT_GPIO_PIN, appid,
+				  bitnum, MMA9553_DEFAULT_GPIO_POLARITY);
 	if (ret < 0)
 		return ret;
 	data->gpio_bitnum = bitnum;
@@ -394,16 +388,15 @@ static int mma9553_init(struct mma9553_data *data)
 	 * a device identification command to differentiate the MMA9553L
 	 * from the MMA9550L.
 	 */
-	ret =
-	    mma9551_read_config_words(data->client, MMA9551_APPID_PEDOMETER,
-				      MMA9553_REG_CONF_SLEEPMIN,
-				      sizeof(data->conf), (u16 *) &data->conf);
+	ret = mma9551_read_config_words(data->client, MMA9551_APPID_PEDOMETER,
+					MMA9553_REG_CONF_SLEEPMIN,
+					sizeof(data->conf) / sizeof(u16),
+					(u16 *)&data->conf);
 	if (ret < 0) {
 		dev_err(&data->client->dev,
 			"failed to read configuration registers\n");
 		return ret;
 	}
-
 
 	/* Reset GPIO */
 	data->gpio_bitnum = MMA9553_MAX_BITNUM;
@@ -419,18 +412,18 @@ static int mma9553_init(struct mma9553_data *data)
 	data->conf.sleepmin = MMA9553_DEFAULT_SLEEPMIN;
 	data->conf.sleepmax = MMA9553_DEFAULT_SLEEPMAX;
 	data->conf.sleepthd = MMA9553_DEFAULT_SLEEPTHD;
-	data->conf.config =
-	    mma9553_set_bits(data->conf.config, 1, MMA9553_MASK_CONF_CONFIG);
+	data->conf.config = mma9553_set_bits(data->conf.config, 1,
+					     MMA9553_MASK_CONF_CONFIG);
 	/*
 	 * Clear the activity debounce counter when the activity level changes,
 	 * so that the confidence level applies for any activity level.
 	 */
 	data->conf.config = mma9553_set_bits(data->conf.config, 1,
 					     MMA9553_MASK_CONF_ACT_DBCNTM);
-	ret =
-	    mma9551_write_config_words(data->client, MMA9551_APPID_PEDOMETER,
-				       MMA9553_REG_CONF_SLEEPMIN,
-				       sizeof(data->conf), (u16 *) &data->conf);
+	ret = mma9551_write_config_words(data->client, MMA9551_APPID_PEDOMETER,
+					 MMA9553_REG_CONF_SLEEPMIN,
+					 sizeof(data->conf) / sizeof(u16),
+					 (u16 *)&data->conf);
 	if (ret < 0) {
 		dev_err(&data->client->dev,
 			"failed to write configuration registers\n");
@@ -567,7 +560,7 @@ static int mma9553_read_raw(struct iio_dev *indio_dev,
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_CALIBHEIGHT:
 		tmp = mma9553_get_bits(data->conf.height_weight,
-					MMA9553_MASK_CONF_HEIGHT);
+				       MMA9553_MASK_CONF_HEIGHT);
 		*val = tmp / 100;	/* cm to m */
 		*val2 = (tmp % 100) * 10000;
 		return IIO_VAL_INT_PLUS_MICRO;
@@ -719,7 +712,6 @@ static int mma9553_read_event_config(struct iio_dev *indio_dev,
 				     enum iio_event_type type,
 				     enum iio_event_direction dir)
 {
-
 	struct mma9553_data *data = iio_priv(indio_dev);
 	struct mma9553_event *event;
 
@@ -925,7 +917,7 @@ static const struct iio_enum mma9553_calibgender_enum = {
 
 static const struct iio_chan_spec_ext_info mma9553_ext_info[] = {
 	IIO_ENUM("calibgender", IIO_SHARED_BY_TYPE, &mma9553_calibgender_enum),
-	IIO_ENUM_AVAILABLE("calibgender", &mma9553_calibgender_enum),
+	IIO_ENUM_AVAILABLE("calibgender", IIO_SHARED_BY_TYPE, &mma9553_calibgender_enum),
 	{},
 };
 
@@ -987,7 +979,6 @@ static const struct iio_chan_spec mma9553_channels[] = {
 };
 
 static const struct iio_info mma9553_info = {
-	.driver_module = THIS_MODULE,
 	.read_raw = mma9553_read_raw,
 	.write_raw = mma9553_write_raw,
 	.read_event_config = mma9553_read_event_config,
@@ -1001,7 +992,7 @@ static irqreturn_t mma9553_irq_handler(int irq, void *private)
 	struct iio_dev *indio_dev = private;
 	struct mma9553_data *data = iio_priv(indio_dev);
 
-	data->timestamp = iio_get_time_ns();
+	data->timestamp = iio_get_time_ns(indio_dev);
 	/*
 	 * Since we only configure the interrupt pin when an
 	 * event is enabled, we are sure we have at least
@@ -1026,22 +1017,22 @@ static irqreturn_t mma9553_event_handler(int irq, void *private)
 		return IRQ_HANDLED;
 	}
 
-	ev_prev_activity =
-	    mma9553_get_event(data, IIO_ACTIVITY,
-			      mma9553_activity_to_mod(data->activity),
-			      IIO_EV_DIR_FALLING);
-	ev_activity =
-	    mma9553_get_event(data, IIO_ACTIVITY,
-			      mma9553_activity_to_mod(activity),
-			      IIO_EV_DIR_RISING);
-	ev_step_detect =
-	    mma9553_get_event(data, IIO_STEPS, IIO_NO_MOD, IIO_EV_DIR_NONE);
+	ev_prev_activity = mma9553_get_event(data, IIO_ACTIVITY,
+					     mma9553_activity_to_mod(
+					     data->activity),
+					     IIO_EV_DIR_FALLING);
+	ev_activity = mma9553_get_event(data, IIO_ACTIVITY,
+					mma9553_activity_to_mod(activity),
+					IIO_EV_DIR_RISING);
+	ev_step_detect = mma9553_get_event(data, IIO_STEPS, IIO_NO_MOD,
+					   IIO_EV_DIR_NONE);
 
 	if (ev_step_detect->enabled && (stepcnt != data->stepcnt)) {
 		data->stepcnt = stepcnt;
 		iio_push_event(indio_dev,
 			       IIO_EVENT_CODE(IIO_STEPS, 0, IIO_NO_MOD,
-			       IIO_EV_DIR_NONE, IIO_EV_TYPE_CHANGE, 0, 0, 0),
+					      IIO_EV_DIR_NONE,
+					      IIO_EV_TYPE_CHANGE, 0, 0, 0),
 			       data->timestamp);
 	}
 
@@ -1051,47 +1042,24 @@ static irqreturn_t mma9553_event_handler(int irq, void *private)
 		if (ev_prev_activity && ev_prev_activity->enabled)
 			iio_push_event(indio_dev,
 				       IIO_EVENT_CODE(IIO_ACTIVITY, 0,
-				       ev_prev_activity->info->mod,
-				       IIO_EV_DIR_FALLING,
-				       IIO_EV_TYPE_THRESH, 0, 0, 0),
+						    ev_prev_activity->info->mod,
+						    IIO_EV_DIR_FALLING,
+						    IIO_EV_TYPE_THRESH, 0, 0,
+						    0),
 				       data->timestamp);
 
 		if (ev_activity && ev_activity->enabled)
 			iio_push_event(indio_dev,
 				       IIO_EVENT_CODE(IIO_ACTIVITY, 0,
-				       ev_activity->info->mod,
-				       IIO_EV_DIR_RISING,
-				       IIO_EV_TYPE_THRESH, 0, 0, 0),
+						      ev_activity->info->mod,
+						      IIO_EV_DIR_RISING,
+						      IIO_EV_TYPE_THRESH, 0, 0,
+						      0),
 				       data->timestamp);
 	}
 	mutex_unlock(&data->mutex);
 
 	return IRQ_HANDLED;
-}
-
-static int mma9553_gpio_probe(struct i2c_client *client)
-{
-	struct device *dev;
-	struct gpio_desc *gpio;
-	int ret;
-
-	if (!client)
-		return -EINVAL;
-
-	dev = &client->dev;
-
-	/* data ready GPIO interrupt pin */
-	gpio = devm_gpiod_get_index(dev, MMA9553_GPIO_NAME, 0, GPIOD_IN);
-	if (IS_ERR(gpio)) {
-		dev_err(dev, "ACPI GPIO get index failed\n");
-		return PTR_ERR(gpio);
-	}
-
-	ret = gpiod_to_irq(gpio);
-
-	dev_dbg(dev, "GPIO resource, no:%d irq:%d\n", desc_to_gpio(gpio), ret);
-
-	return ret;
 }
 
 static const char *mma9553_match_acpi_device(struct device *dev)
@@ -1105,9 +1073,9 @@ static const char *mma9553_match_acpi_device(struct device *dev)
 	return dev_name(dev);
 }
 
-static int mma9553_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int mma9553_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct mma9553_data *data;
 	struct iio_dev *indio_dev;
 	const char *name = NULL;
@@ -1135,17 +1103,13 @@ static int mma9553_probe(struct i2c_client *client,
 	if (ret < 0)
 		return ret;
 
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->channels = mma9553_channels;
 	indio_dev->num_channels = ARRAY_SIZE(mma9553_channels);
 	indio_dev->name = name;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &mma9553_info;
 
-	if (client->irq < 0)
-		client->irq = mma9553_gpio_probe(client);
-
-	if (client->irq >= 0) {
+	if (client->irq > 0) {
 		ret = devm_request_threaded_irq(&client->dev, client->irq,
 						mma9553_irq_handler,
 						mma9553_event_handler,
@@ -1156,53 +1120,49 @@ static int mma9553_probe(struct i2c_client *client,
 				client->irq);
 			goto out_poweroff;
 		}
-
-	}
-
-	ret = iio_device_register(indio_dev);
-	if (ret < 0) {
-		dev_err(&client->dev, "unable to register iio device\n");
-		goto out_poweroff;
 	}
 
 	ret = pm_runtime_set_active(&client->dev);
 	if (ret < 0)
-		goto out_iio_unregister;
+		goto out_poweroff;
 
 	pm_runtime_enable(&client->dev);
 	pm_runtime_set_autosuspend_delay(&client->dev,
 					 MMA9551_AUTO_SUSPEND_DELAY_MS);
 	pm_runtime_use_autosuspend(&client->dev);
 
-	dev_dbg(&indio_dev->dev, "Registered device %s\n", name);
+	ret = iio_device_register(indio_dev);
+	if (ret < 0) {
+		dev_err(&client->dev, "unable to register iio device\n");
+		goto err_pm_cleanup;
+	}
 
+	dev_dbg(&indio_dev->dev, "Registered device %s\n", name);
 	return 0;
 
-out_iio_unregister:
-	iio_device_unregister(indio_dev);
+err_pm_cleanup:
+	pm_runtime_dont_use_autosuspend(&client->dev);
+	pm_runtime_disable(&client->dev);
 out_poweroff:
 	mma9551_set_device_state(client, false);
 	return ret;
 }
 
-static int mma9553_remove(struct i2c_client *client)
+static void mma9553_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct mma9553_data *data = iio_priv(indio_dev);
 
+	iio_device_unregister(indio_dev);
+
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-	pm_runtime_put_noidle(&client->dev);
 
-	iio_device_unregister(indio_dev);
 	mutex_lock(&data->mutex);
 	mma9551_set_device_state(data->client, false);
 	mutex_unlock(&data->mutex);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM
 static int mma9553_runtime_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
@@ -1234,9 +1194,7 @@ static int mma9553_runtime_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_PM_SLEEP
 static int mma9553_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
@@ -1262,12 +1220,10 @@ static int mma9553_resume(struct device *dev)
 
 	return ret;
 }
-#endif
 
 static const struct dev_pm_ops mma9553_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(mma9553_suspend, mma9553_resume)
-	SET_RUNTIME_PM_OPS(mma9553_runtime_suspend,
-			   mma9553_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(mma9553_suspend, mma9553_resume)
+	RUNTIME_PM_OPS(mma9553_runtime_suspend, mma9553_runtime_resume, NULL)
 };
 
 static const struct acpi_device_id mma9553_acpi_match[] = {
@@ -1278,8 +1234,8 @@ static const struct acpi_device_id mma9553_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, mma9553_acpi_match);
 
 static const struct i2c_device_id mma9553_id[] = {
-	{"mma9553", 0},
-	{},
+	{ "mma9553" },
+	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, mma9553_id);
@@ -1287,9 +1243,9 @@ MODULE_DEVICE_TABLE(i2c, mma9553_id);
 static struct i2c_driver mma9553_driver = {
 	.driver = {
 		   .name = MMA9553_DRV_NAME,
-		   .acpi_match_table = ACPI_PTR(mma9553_acpi_match),
-		   .pm = &mma9553_pm_ops,
-		   },
+		   .acpi_match_table = mma9553_acpi_match,
+		   .pm = pm_ptr(&mma9553_pm_ops),
+	},
 	.probe = mma9553_probe,
 	.remove = mma9553_remove,
 	.id_table = mma9553_id,
@@ -1300,3 +1256,4 @@ module_i2c_driver(mma9553_driver);
 MODULE_AUTHOR("Irina Tirdea <irina.tirdea@intel.com>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MMA9553L pedometer platform driver");
+MODULE_IMPORT_NS(IIO_MMA9551);

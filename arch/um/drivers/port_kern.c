@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2001 - 2007 Jeff Dike (jdike@{linux.intel,addtoit}.com)
- * Licensed under the GPL
  */
 
 #include <linux/completion.h>
@@ -45,15 +45,17 @@ struct connection {
 static irqreturn_t pipe_interrupt(int irq, void *data)
 {
 	struct connection *conn = data;
-	int fd;
+	int n_fds = 1, fd = -1;
+	ssize_t ret;
 
-	fd = os_rcv_fd(conn->socket[0], &conn->helper_pid);
-	if (fd < 0) {
-		if (fd == -EAGAIN)
+	ret = os_rcv_fd_msg(conn->socket[0], &fd, n_fds, &conn->helper_pid,
+			    sizeof(conn->helper_pid));
+	if (ret != sizeof(conn->helper_pid)) {
+		if (ret == -EAGAIN)
 			return IRQ_NONE;
 
-		printk(KERN_ERR "pipe_interrupt : os_rcv_fd returned %d\n",
-		       -fd);
+		printk(KERN_ERR "pipe_interrupt : os_rcv_fd_msg returned %zd\n",
+		       ret);
 		os_close_file(conn->fd);
 	}
 
@@ -100,7 +102,7 @@ static int port_accept(struct port_list *port)
 		  .port 	= port });
 
 	if (um_request_irq(TELNETD_IRQ, socket[0], IRQ_READ, pipe_interrupt,
-			  IRQF_SHARED, "telnetd", conn)) {
+			  IRQF_SHARED, "telnetd", conn) < 0) {
 		printk(KERN_ERR "port_accept : failed to get IRQ for "
 		       "telnetd\n");
 		goto out_free;
@@ -137,7 +139,6 @@ static void port_work_proc(struct work_struct *unused)
 		if (!port->has_connection)
 			continue;
 
-		reactivate_fd(port->fd, ACCEPT_IRQ);
 		while (port_accept(port))
 			;
 		port->has_connection = 0;
@@ -145,7 +146,7 @@ static void port_work_proc(struct work_struct *unused)
 	local_irq_restore(flags);
 }
 
-DECLARE_WORK(port_work, port_work_proc);
+static DECLARE_WORK(port_work, port_work_proc);
 
 static irqreturn_t port_interrupt(int irq, void *data)
 {
@@ -183,7 +184,7 @@ void *port_data(int port_num)
 	}
 
 	if (um_request_irq(ACCEPT_IRQ, fd, IRQ_READ, port_interrupt,
-			  IRQF_SHARED, "port", port)) {
+			  IRQF_SHARED, "port", port) < 0) {
 		printk(KERN_ERR "Failed to get IRQ for port %d\n", port_num);
 		goto out_close;
 	}

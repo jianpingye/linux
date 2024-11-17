@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LOONGSON_HWMON_H_
 #define __LOONGSON_HWMON_H_
 
@@ -24,7 +25,7 @@ struct temp_range {
 	u8 level;
 };
 
-#define CONSTANT_SPEED_POLICY	0  /* at constent speed */
+#define CONSTANT_SPEED_POLICY	0  /* at constant speed */
 #define STEP_SPEED_POLICY	1  /* use up/down arrays to describe policy */
 #define KERNEL_HELPER_POLICY	2  /* kernel as a helper to fan control */
 
@@ -41,7 +42,7 @@ struct loongson_fan_policy {
 	/* period between two check. (Unit: S) */
 	u8	adjust_period;
 
-	/* fan adjust usually depend on a temprature input */
+	/* fan adjust usually depend on a temperature input */
 	get_temp_fun	depend_temp;
 
 	/* up_step/down_step used when type is STEP_SPEED_POLICY */

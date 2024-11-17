@@ -1,21 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SPI driver for Nvidia's Tegra20 Serial Flash Controller.
  *
  * Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved.
  *
  * Author: Laxman Dewangan <ldewangan@nvidia.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/clk.h>
@@ -113,7 +102,7 @@
 
 struct tegra_sflash_data {
 	struct device				*dev;
-	struct spi_master			*master;
+	struct spi_controller			*host;
 	spinlock_t				lock;
 
 	struct clk				*clk;
@@ -262,7 +251,7 @@ static int tegra_sflash_start_transfer_one(struct spi_device *spi,
 		struct spi_transfer *t, bool is_first_of_msg,
 		bool is_single_xfer)
 {
-	struct tegra_sflash_data *tsd = spi_master_get_devdata(spi->master);
+	struct tegra_sflash_data *tsd = spi_controller_get_devdata(spi->controller);
 	u32 speed;
 	u32 command;
 
@@ -291,7 +280,7 @@ static int tegra_sflash_start_transfer_one(struct spi_device *spi,
 			command |= SPI_ACTIVE_SCLK_DRIVE_HIGH;
 		else
 			command |= SPI_ACTIVE_SCLK_DRIVE_LOW;
-		command |= SPI_CS0_EN << spi->chip_select;
+		command |= SPI_CS0_EN << spi_get_chipselect(spi, 0);
 	} else {
 		command = tsd->command_reg;
 		command &= ~SPI_BIT_LENGTH(~0);
@@ -314,12 +303,12 @@ static int tegra_sflash_start_transfer_one(struct spi_device *spi,
 	return tegra_sflash_start_cpu_based_transfer(tsd, t);
 }
 
-static int tegra_sflash_transfer_one_message(struct spi_master *master,
+static int tegra_sflash_transfer_one_message(struct spi_controller *host,
 			struct spi_message *msg)
 {
 	bool is_first_msg = true;
 	int single_xfer;
-	struct tegra_sflash_data *tsd = spi_master_get_devdata(master);
+	struct tegra_sflash_data *tsd = spi_controller_get_devdata(host);
 	struct spi_transfer *xfer;
 	struct spi_device *spi = msg->spi;
 	int ret;
@@ -341,7 +330,7 @@ static int tegra_sflash_transfer_one_message(struct spi_master *master,
 						SPI_DMA_TIMEOUT);
 		if (WARN_ON(ret == 0)) {
 			dev_err(tsd->dev,
-				"spi trasfer timeout, err %d\n", ret);
+				"spi transfer timeout, err %d\n", ret);
 			ret = -EIO;
 			goto exit;
 		}
@@ -352,26 +341,25 @@ static int tegra_sflash_transfer_one_message(struct spi_master *master,
 			goto exit;
 		}
 		msg->actual_length += xfer->len;
-		if (xfer->cs_change && xfer->delay_usecs) {
+		if (xfer->cs_change && xfer->delay.value) {
 			tegra_sflash_writel(tsd, tsd->def_command_reg,
 					SPI_COMMAND);
-			udelay(xfer->delay_usecs);
+			spi_transfer_delay_exec(xfer);
 		}
 	}
 	ret = 0;
 exit:
 	tegra_sflash_writel(tsd, tsd->def_command_reg, SPI_COMMAND);
 	msg->status = ret;
-	spi_finalize_current_message(master);
+	spi_finalize_current_message(host);
 	return ret;
 }
 
 static irqreturn_t handle_cpu_based_xfer(struct tegra_sflash_data *tsd)
 {
 	struct spi_transfer *t = tsd->curr_xfer;
-	unsigned long flags;
 
-	spin_lock_irqsave(&tsd->lock, flags);
+	spin_lock(&tsd->lock);
 	if (tsd->tx_status || tsd->rx_status || (tsd->status_reg & SPI_BSY)) {
 		dev_err(tsd->dev,
 			"CpuXfer ERROR bit set 0x%x\n", tsd->status_reg);
@@ -401,7 +389,7 @@ static irqreturn_t handle_cpu_based_xfer(struct tegra_sflash_data *tsd)
 	tegra_sflash_calculate_curr_xfer_param(tsd->cur_spi, tsd, t);
 	tegra_sflash_start_cpu_based_transfer(tsd, t);
 exit:
-	spin_unlock_irqrestore(&tsd->lock, flags);
+	spin_unlock(&tsd->lock);
 	return IRQ_HANDLED;
 }
 
@@ -428,9 +416,8 @@ MODULE_DEVICE_TABLE(of, tegra_sflash_of_match);
 
 static int tegra_sflash_probe(struct platform_device *pdev)
 {
-	struct spi_master	*master;
+	struct spi_controller	*host;
 	struct tegra_sflash_data	*tsd;
-	struct resource		*r;
 	int ret;
 	const struct of_device_id *match;
 
@@ -440,42 +427,45 @@ static int tegra_sflash_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	master = spi_alloc_master(&pdev->dev, sizeof(*tsd));
-	if (!master) {
-		dev_err(&pdev->dev, "master allocation failed\n");
+	host = spi_alloc_host(&pdev->dev, sizeof(*tsd));
+	if (!host) {
+		dev_err(&pdev->dev, "host allocation failed\n");
 		return -ENOMEM;
 	}
 
 	/* the spi->mode bits understood by this driver: */
-	master->mode_bits = SPI_CPOL | SPI_CPHA;
-	master->transfer_one_message = tegra_sflash_transfer_one_message;
-	master->auto_runtime_pm = true;
-	master->num_chipselect = MAX_CHIP_SELECT;
+	host->mode_bits = SPI_CPOL | SPI_CPHA;
+	host->transfer_one_message = tegra_sflash_transfer_one_message;
+	host->auto_runtime_pm = true;
+	host->num_chipselect = MAX_CHIP_SELECT;
 
-	platform_set_drvdata(pdev, master);
-	tsd = spi_master_get_devdata(master);
-	tsd->master = master;
+	platform_set_drvdata(pdev, host);
+	tsd = spi_controller_get_devdata(host);
+	tsd->host = host;
 	tsd->dev = &pdev->dev;
 	spin_lock_init(&tsd->lock);
 
 	if (of_property_read_u32(tsd->dev->of_node, "spi-max-frequency",
-				 &master->max_speed_hz))
-		master->max_speed_hz = 25000000; /* 25MHz */
+				 &host->max_speed_hz))
+		host->max_speed_hz = 25000000; /* 25MHz */
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	tsd->base = devm_ioremap_resource(&pdev->dev, r);
+	tsd->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(tsd->base)) {
 		ret = PTR_ERR(tsd->base);
-		goto exit_free_master;
+		goto exit_free_host;
 	}
 
-	tsd->irq = platform_get_irq(pdev, 0);
+	ret = platform_get_irq(pdev, 0);
+	if (ret < 0)
+		goto exit_free_host;
+	tsd->irq = ret;
+
 	ret = request_irq(tsd->irq, tegra_sflash_isr, 0,
 			dev_name(&pdev->dev), tsd);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Failed to register ISR for IRQ %d\n",
 					tsd->irq);
-		goto exit_free_master;
+		goto exit_free_host;
 	}
 
 	tsd->clk = devm_clk_get(&pdev->dev, NULL);
@@ -485,7 +475,7 @@ static int tegra_sflash_probe(struct platform_device *pdev)
 		goto exit_free_irq;
 	}
 
-	tsd->rst = devm_reset_control_get(&pdev->dev, "spi");
+	tsd->rst = devm_reset_control_get_exclusive(&pdev->dev, "spi");
 	if (IS_ERR(tsd->rst)) {
 		dev_err(&pdev->dev, "can not get reset\n");
 		ret = PTR_ERR(tsd->rst);
@@ -500,7 +490,7 @@ static int tegra_sflash_probe(struct platform_device *pdev)
 			goto exit_pm_disable;
 	}
 
-	ret = pm_runtime_get_sync(&pdev->dev);
+	ret = pm_runtime_resume_and_get(&pdev->dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "pm runtime get failed, e = %d\n", ret);
 		goto exit_pm_disable;
@@ -515,10 +505,10 @@ static int tegra_sflash_probe(struct platform_device *pdev)
 	tegra_sflash_writel(tsd, tsd->def_command_reg, SPI_COMMAND);
 	pm_runtime_put(&pdev->dev);
 
-	master->dev.of_node = pdev->dev.of_node;
-	ret = devm_spi_register_master(&pdev->dev, master);
+	host->dev.of_node = pdev->dev.of_node;
+	ret = devm_spi_register_controller(&pdev->dev, host);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "can not register to master err %d\n", ret);
+		dev_err(&pdev->dev, "can not register to host err %d\n", ret);
 		goto exit_pm_disable;
 	}
 	return ret;
@@ -529,40 +519,38 @@ exit_pm_disable:
 		tegra_sflash_runtime_suspend(&pdev->dev);
 exit_free_irq:
 	free_irq(tsd->irq, tsd);
-exit_free_master:
-	spi_master_put(master);
+exit_free_host:
+	spi_controller_put(host);
 	return ret;
 }
 
-static int tegra_sflash_remove(struct platform_device *pdev)
+static void tegra_sflash_remove(struct platform_device *pdev)
 {
-	struct spi_master *master = platform_get_drvdata(pdev);
-	struct tegra_sflash_data	*tsd = spi_master_get_devdata(master);
+	struct spi_controller *host = platform_get_drvdata(pdev);
+	struct tegra_sflash_data	*tsd = spi_controller_get_devdata(host);
 
 	free_irq(tsd->irq, tsd);
 
 	pm_runtime_disable(&pdev->dev);
 	if (!pm_runtime_status_suspended(&pdev->dev))
 		tegra_sflash_runtime_suspend(&pdev->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
 static int tegra_sflash_suspend(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
+	struct spi_controller *host = dev_get_drvdata(dev);
 
-	return spi_master_suspend(master);
+	return spi_controller_suspend(host);
 }
 
 static int tegra_sflash_resume(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
-	struct tegra_sflash_data *tsd = spi_master_get_devdata(master);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct tegra_sflash_data *tsd = spi_controller_get_devdata(host);
 	int ret;
 
-	ret = pm_runtime_get_sync(dev);
+	ret = pm_runtime_resume_and_get(dev);
 	if (ret < 0) {
 		dev_err(dev, "pm runtime failed, e = %d\n", ret);
 		return ret;
@@ -570,14 +558,14 @@ static int tegra_sflash_resume(struct device *dev)
 	tegra_sflash_writel(tsd, tsd->command_reg, SPI_COMMAND);
 	pm_runtime_put(dev);
 
-	return spi_master_resume(master);
+	return spi_controller_resume(host);
 }
 #endif
 
 static int tegra_sflash_runtime_suspend(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
-	struct tegra_sflash_data *tsd = spi_master_get_devdata(master);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct tegra_sflash_data *tsd = spi_controller_get_devdata(host);
 
 	/* Flush all write which are in PPSB queue by reading back */
 	tegra_sflash_readl(tsd, SPI_COMMAND);
@@ -588,8 +576,8 @@ static int tegra_sflash_runtime_suspend(struct device *dev)
 
 static int tegra_sflash_runtime_resume(struct device *dev)
 {
-	struct spi_master *master = dev_get_drvdata(dev);
-	struct tegra_sflash_data *tsd = spi_master_get_devdata(master);
+	struct spi_controller *host = dev_get_drvdata(dev);
+	struct tegra_sflash_data *tsd = spi_controller_get_devdata(host);
 	int ret;
 
 	ret = clk_prepare_enable(tsd->clk);
@@ -612,7 +600,7 @@ static struct platform_driver tegra_sflash_driver = {
 		.of_match_table	= tegra_sflash_of_match,
 	},
 	.probe =	tegra_sflash_probe,
-	.remove =	tegra_sflash_remove,
+	.remove_new =	tegra_sflash_remove,
 };
 module_platform_driver(tegra_sflash_driver);
 

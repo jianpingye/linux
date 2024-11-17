@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*********************************************************************
  *
  * 2002/06/30 Karsten Wiese:
@@ -19,23 +20,10 @@
  *
  * Copyright (C) 1998 Andrew Veliath
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  ********************************************************************/
 
 #include <linux/kernel.h>
+#include <linux/sched/signal.h>
 #include <linux/types.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -53,7 +41,7 @@
 #define LOGNAME			"msnd"
 
 
-void snd_msnd_init_queue(void *base, int start, int size)
+void snd_msnd_init_queue(void __iomem *base, int start, int size)
 {
 	writew(PCTODSP_BASED(start), base + JQS_wStart);
 	writew(PCTODSP_OFFSET(size) - 1, base + JQS_wSize);
@@ -98,7 +86,7 @@ int snd_msnd_send_dsp_cmd(struct snd_msnd *dev, u8 cmd)
 	}
 	spin_unlock_irqrestore(&dev->lock, flags);
 
-	snd_printd(KERN_ERR LOGNAME ": Send DSP command timeout\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Send DSP command timeout\n");
 
 	return -EIO;
 }
@@ -116,7 +104,7 @@ int snd_msnd_send_word(struct snd_msnd *dev, unsigned char high,
 		return 0;
 	}
 
-	snd_printd(KERN_ERR LOGNAME ": Send host word timeout\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Send host word timeout\n");
 
 	return -EIO;
 }
@@ -127,7 +115,7 @@ int snd_msnd_upload_host(struct snd_msnd *dev, const u8 *bin, int len)
 	int i;
 
 	if (len % 3 != 0) {
-		snd_printk(KERN_ERR LOGNAME
+		dev_err(dev->card->dev, LOGNAME
 			   ": Upload host data not multiple of 3!\n");
 		return -EINVAL;
 	}
@@ -150,7 +138,7 @@ int snd_msnd_enable_irq(struct snd_msnd *dev)
 	if (dev->irq_ref++)
 		return 0;
 
-	snd_printdd(LOGNAME ": Enabling IRQ\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Enabling IRQ\n");
 
 	spin_lock_irqsave(&dev->lock, flags);
 	if (snd_msnd_wait_TXDE(dev) == 0) {
@@ -168,7 +156,7 @@ int snd_msnd_enable_irq(struct snd_msnd *dev)
 	}
 	spin_unlock_irqrestore(&dev->lock, flags);
 
-	snd_printd(KERN_ERR LOGNAME ": Enable IRQ failed\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Enable IRQ failed\n");
 
 	return -EIO;
 }
@@ -182,10 +170,10 @@ int snd_msnd_disable_irq(struct snd_msnd *dev)
 		return 0;
 
 	if (dev->irq_ref < 0)
-		snd_printd(KERN_WARNING LOGNAME ": IRQ ref count is %d\n",
-			   dev->irq_ref);
+		dev_dbg(dev->card->dev, LOGNAME ": IRQ ref count is %d\n",
+			dev->irq_ref);
 
-	snd_printdd(LOGNAME ": Disabling IRQ\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Disabling IRQ\n");
 
 	spin_lock_irqsave(&dev->lock, flags);
 	if (snd_msnd_wait_TXDE(dev) == 0) {
@@ -198,7 +186,7 @@ int snd_msnd_disable_irq(struct snd_msnd *dev)
 	}
 	spin_unlock_irqrestore(&dev->lock, flags);
 
-	snd_printd(KERN_ERR LOGNAME ": Disable IRQ failed\n");
+	dev_dbg(dev->card->dev, LOGNAME ": Disable IRQ failed\n");
 
 	return -EIO;
 }
@@ -232,8 +220,8 @@ void snd_msnd_dsp_halt(struct snd_msnd *chip, struct file *file)
 		snd_msnd_send_dsp_cmd(chip, HDEX_RECORD_STOP);
 		snd_msnd_disable_irq(chip);
 		if (file) {
-			snd_printd(KERN_INFO LOGNAME
-				   ": Stopping read for %p\n", file);
+			dev_dbg(chip->card->dev, LOGNAME
+				": Stopping read for %p\n", file);
 			chip->mode &= ~FMODE_READ;
 		}
 		clear_bit(F_AUDIO_READ_INUSE, &chip->flags);
@@ -245,8 +233,8 @@ void snd_msnd_dsp_halt(struct snd_msnd *chip, struct file *file)
 		}
 		snd_msnd_disable_irq(chip);
 		if (file) {
-			snd_printd(KERN_INFO
-				   LOGNAME ": Stopping write for %p\n", file);
+			dev_dbg(chip->card->dev,
+				LOGNAME ": Stopping write for %p\n", file);
 			chip->mode &= ~FMODE_WRITE;
 		}
 		clear_bit(F_AUDIO_WRITE_INUSE, &chip->flags);
@@ -269,7 +257,7 @@ int snd_msnd_DARQ(struct snd_msnd *chip, int bank)
 		udelay(1);
 
 	if (chip->capturePeriods == 2) {
-		void *pDAQ = chip->mappedbase + DARQ_DATA_BUFF +
+		void __iomem *pDAQ = chip->mappedbase + DARQ_DATA_BUFF +
 			     bank * DAQDS__size + DAQDS_wStart;
 		unsigned short offset = 0x3000 + chip->capturePeriodBytes;
 
@@ -308,7 +296,7 @@ int snd_msnd_DAPQ(struct snd_msnd *chip, int start)
 {
 	u16	DAPQ_tail;
 	int	protect = start, nbanks = 0;
-	void	*DAQD;
+	void	__iomem *DAQD;
 	static int play_banks_submitted;
 	/* unsigned long flags;
 	spin_lock_irqsave(&chip->lock, flags); not necessary */
@@ -341,12 +329,6 @@ int snd_msnd_DAPQ(struct snd_msnd *chip, int start)
 		++nbanks;
 
 		/* Then advance the tail */
-		/*
-		if (protect)
-			snd_printd(KERN_INFO "B %X %lX\n",
-				   bank_num, xtime.tv_usec);
-		*/
-
 		DAPQ_tail = (++bank_num % 3) * PCTODSP_OFFSET(DAQDS__size);
 		writew(DAPQ_tail, chip->DAPQ + JQS_wTail);
 		/* Tell the DSP to play the bank */
@@ -355,10 +337,6 @@ int snd_msnd_DAPQ(struct snd_msnd *chip, int start)
 			if (2 == bank_num)
 				break;
 	}
-	/*
-	if (protect)
-		snd_printd(KERN_INFO "%lX\n", xtime.tv_usec);
-	*/
 	/* spin_unlock_irqrestore(&chip->lock, flags); not necessary */
 	return nbanks;
 }
@@ -369,7 +347,7 @@ static void snd_msnd_play_reset_queue(struct snd_msnd *chip,
 				      unsigned int pcm_count)
 {
 	int	n;
-	void	*pDAQ = chip->mappedbase + DAPQ_DATA_BUFF;
+	void	__iomem *pDAQ = chip->mappedbase + DAPQ_DATA_BUFF;
 
 	chip->last_playbank = -1;
 	chip->playLimit = pcm_count * (pcm_periods - 1);
@@ -397,7 +375,7 @@ static void snd_msnd_capture_reset_queue(struct snd_msnd *chip,
 					 unsigned int pcm_count)
 {
 	int		n;
-	void		*pDAQ;
+	void		__iomem *pDAQ;
 	/* unsigned long	flags; */
 
 	/* snd_msnd_init_queue(chip->DARQ, DARQ_DATA_BUFF, DARQ_BUFF_SIZE); */
@@ -418,7 +396,7 @@ static void snd_msnd_capture_reset_queue(struct snd_msnd *chip,
 #endif
 
 	chip->capturePeriodBytes = pcm_count;
-	snd_printdd("snd_msnd_capture_reset_queue() %i\n", pcm_count);
+	dev_dbg(chip->card->dev, "%s() %i\n", __func__, pcm_count);
 
 	pDAQ = chip->mappedbase + DARQ_DATA_BUFF;
 
@@ -436,8 +414,8 @@ static void snd_msnd_capture_reset_queue(struct snd_msnd *chip,
 	}
 }
 
-static struct snd_pcm_hardware snd_msnd_playback = {
-	.info =			SNDRV_PCM_INFO_MMAP |
+static const struct snd_pcm_hardware snd_msnd_playback = {
+	.info =			SNDRV_PCM_INFO_MMAP_IOMEM |
 				SNDRV_PCM_INFO_INTERLEAVED |
 				SNDRV_PCM_INFO_MMAP_VALID |
 				SNDRV_PCM_INFO_BATCH,
@@ -455,8 +433,8 @@ static struct snd_pcm_hardware snd_msnd_playback = {
 	.fifo_size =		0,
 };
 
-static struct snd_pcm_hardware snd_msnd_capture = {
-	.info =			SNDRV_PCM_INFO_MMAP |
+static const struct snd_pcm_hardware snd_msnd_capture = {
+	.info =			SNDRV_PCM_INFO_MMAP_IOMEM |
 				SNDRV_PCM_INFO_INTERLEAVED |
 				SNDRV_PCM_INFO_MMAP_VALID |
 				SNDRV_PCM_INFO_BATCH,
@@ -484,7 +462,8 @@ static int snd_msnd_playback_open(struct snd_pcm_substream *substream)
 	clear_bit(F_WRITING, &chip->flags);
 	snd_msnd_enable_irq(chip);
 
-	runtime->dma_area = chip->mappedbase;
+	runtime->dma_area = (__force void *)chip->mappedbase;
+	runtime->dma_addr = chip->base;
 	runtime->dma_bytes = 0x3000;
 
 	chip->playback_substream = substream;
@@ -507,7 +486,7 @@ static int snd_msnd_playback_hw_params(struct snd_pcm_substream *substream,
 {
 	int	i;
 	struct snd_msnd *chip = snd_pcm_substream_chip(substream);
-	void	*pDAQ =	chip->mappedbase + DAPQ_DATA_BUFF;
+	void	__iomem *pDAQ =	chip->mappedbase + DAPQ_DATA_BUFF;
 
 	chip->play_sample_size = snd_pcm_format_width(params_format(params));
 	chip->play_channels = params_channels(params);
@@ -544,21 +523,21 @@ static int snd_msnd_playback_trigger(struct snd_pcm_substream *substream,
 	int	result = 0;
 
 	if (cmd == SNDRV_PCM_TRIGGER_START) {
-		snd_printdd("snd_msnd_playback_trigger(START)\n");
+		dev_dbg(chip->card->dev, "%s(START)\n", __func__);
 		chip->banksPlayed = 0;
 		set_bit(F_WRITING, &chip->flags);
 		snd_msnd_DAPQ(chip, 1);
 	} else if (cmd == SNDRV_PCM_TRIGGER_STOP) {
-		snd_printdd("snd_msnd_playback_trigger(STop)\n");
+		dev_dbg(chip->card->dev, "%s(STOP)\n", __func__);
 		/* interrupt diagnostic, comment this out later */
 		clear_bit(F_WRITING, &chip->flags);
 		snd_msnd_send_dsp_cmd(chip, HDEX_PLAY_STOP);
 	} else {
-		snd_printd(KERN_ERR "snd_msnd_playback_trigger(?????)\n");
+		dev_dbg(chip->card->dev, "%s(?????)\n", __func__);
 		result = -EINVAL;
 	}
 
-	snd_printdd("snd_msnd_playback_trigger() ENDE\n");
+	dev_dbg(chip->card->dev, "%s() ENDE\n", __func__);
 	return result;
 }
 
@@ -571,14 +550,14 @@ snd_msnd_playback_pointer(struct snd_pcm_substream *substream)
 }
 
 
-static struct snd_pcm_ops snd_msnd_playback_ops = {
+static const struct snd_pcm_ops snd_msnd_playback_ops = {
 	.open =		snd_msnd_playback_open,
 	.close =	snd_msnd_playback_close,
-	.ioctl =	snd_pcm_lib_ioctl,
 	.hw_params =	snd_msnd_playback_hw_params,
 	.prepare =	snd_msnd_playback_prepare,
 	.trigger =	snd_msnd_playback_trigger,
 	.pointer =	snd_msnd_playback_pointer,
+	.mmap =		snd_pcm_lib_mmap_iomem,
 };
 
 static int snd_msnd_capture_open(struct snd_pcm_substream *substream)
@@ -588,7 +567,8 @@ static int snd_msnd_capture_open(struct snd_pcm_substream *substream)
 
 	set_bit(F_AUDIO_READ_INUSE, &chip->flags);
 	snd_msnd_enable_irq(chip);
-	runtime->dma_area = chip->mappedbase + 0x3000;
+	runtime->dma_area = (__force void *)chip->mappedbase + 0x3000;
+	runtime->dma_addr = chip->base + 0x3000;
 	runtime->dma_bytes = 0x3000;
 	memset(runtime->dma_area, 0, runtime->dma_bytes);
 	chip->capture_substream = substream;
@@ -653,7 +633,7 @@ static int snd_msnd_capture_hw_params(struct snd_pcm_substream *substream,
 {
 	int		i;
 	struct snd_msnd *chip = snd_pcm_substream_chip(substream);
-	void		*pDAQ = chip->mappedbase + DARQ_DATA_BUFF;
+	void		__iomem *pDAQ = chip->mappedbase + DARQ_DATA_BUFF;
 
 	chip->capture_sample_size = snd_pcm_format_width(params_format(params));
 	chip->capture_channels = params_channels(params);
@@ -668,14 +648,14 @@ static int snd_msnd_capture_hw_params(struct snd_pcm_substream *substream,
 }
 
 
-static struct snd_pcm_ops snd_msnd_capture_ops = {
+static const struct snd_pcm_ops snd_msnd_capture_ops = {
 	.open =		snd_msnd_capture_open,
 	.close =	snd_msnd_capture_close,
-	.ioctl =	snd_pcm_lib_ioctl,
 	.hw_params =	snd_msnd_capture_hw_params,
 	.prepare =	snd_msnd_capture_prepare,
 	.trigger =	snd_msnd_capture_trigger,
 	.pointer =	snd_msnd_capture_pointer,
+	.mmap =		snd_pcm_lib_mmap_iomem,
 };
 
 

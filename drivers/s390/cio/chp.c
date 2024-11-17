@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    Copyright IBM Corp. 1999, 2010
  *    Author(s): Cornelia Huck (cornelia.huck@de.ibm.com)
@@ -37,8 +38,7 @@ enum cfg_task_t {
 
 /* Map for pending configure tasks. */
 static enum cfg_task_t chp_cfg_task[__MAX_CSSID + 1][__MAX_CHPID + 1];
-static DEFINE_MUTEX(cfg_lock);
-static int cfg_busy;
+static DEFINE_SPINLOCK(cfg_lock);
 
 /* Map for channel-path status. */
 static struct sclp_chp_info chp_info;
@@ -47,12 +47,10 @@ static DEFINE_MUTEX(info_lock);
 /* Time after which channel-path status may be outdated. */
 static unsigned long chp_info_expires;
 
-/* Workqueue to perform pending configure tasks. */
-static struct workqueue_struct *chp_wq;
 static struct work_struct cfg_work;
 
 /* Wait queue for configure completion events. */
-static wait_queue_head_t cfg_wait_queue;
+static DECLARE_WAIT_QUEUE_HEAD(cfg_wait_queue);
 
 /* Set vary state for given chpid. */
 static void set_chp_logically_online(struct chp_id chpid, int onoff)
@@ -129,103 +127,94 @@ static int s390_vary_chpid(struct chp_id chpid, int on)
 /*
  * Channel measurement related functions
  */
-static ssize_t chp_measurement_chars_read(struct file *filp,
-					  struct kobject *kobj,
-					  struct bin_attribute *bin_attr,
-					  char *buf, loff_t off, size_t count)
+static ssize_t measurement_chars_read(struct file *filp, struct kobject *kobj,
+				      struct bin_attribute *bin_attr,
+				      char *buf, loff_t off, size_t count)
 {
 	struct channel_path *chp;
 	struct device *device;
 
-	device = container_of(kobj, struct device, kobj);
+	device = kobj_to_dev(kobj);
 	chp = to_channelpath(device);
-	if (!chp->cmg_chars)
+	if (chp->cmg == -1)
 		return 0;
 
-	return memory_read_from_buffer(buf, count, &off,
-				chp->cmg_chars, sizeof(struct cmg_chars));
+	return memory_read_from_buffer(buf, count, &off, &chp->cmg_chars,
+				       sizeof(chp->cmg_chars));
 }
+static BIN_ATTR_ADMIN_RO(measurement_chars, sizeof(struct cmg_chars));
 
-static struct bin_attribute chp_measurement_chars_attr = {
-	.attr = {
-		.name = "measurement_chars",
-		.mode = S_IRUSR,
-	},
-	.size = sizeof(struct cmg_chars),
-	.read = chp_measurement_chars_read,
-};
-
-static void chp_measurement_copy_block(struct cmg_entry *buf,
-				       struct channel_subsystem *css,
-				       struct chp_id chpid)
-{
-	void *area;
-	struct cmg_entry *entry, reference_buf;
-	int idx;
-
-	if (chpid.id < 128) {
-		area = css->cub_addr1;
-		idx = chpid.id;
-	} else {
-		area = css->cub_addr2;
-		idx = chpid.id - 128;
-	}
-	entry = area + (idx * sizeof(struct cmg_entry));
-	do {
-		memcpy(buf, entry, sizeof(*entry));
-		memcpy(&reference_buf, entry, sizeof(*entry));
-	} while (reference_buf.values[0] != buf->values[0]);
-}
-
-static ssize_t chp_measurement_read(struct file *filp, struct kobject *kobj,
-				    struct bin_attribute *bin_attr,
-				    char *buf, loff_t off, size_t count)
+static ssize_t chp_measurement_copy_block(void *buf, loff_t off, size_t count,
+					  struct kobject *kobj, bool extended)
 {
 	struct channel_path *chp;
 	struct channel_subsystem *css;
 	struct device *device;
 	unsigned int size;
+	void *area, *entry;
+	int id, idx;
 
-	device = container_of(kobj, struct device, kobj);
+	device = kobj_to_dev(kobj);
 	chp = to_channelpath(device);
 	css = to_css(chp->dev.parent);
+	id = chp->chpid.id;
 
-	size = sizeof(struct cmg_entry);
+	if (extended) {
+		/* Check if extended measurement data is available. */
+		if (!chp->extended)
+			return 0;
+
+		size = sizeof(struct cmg_ext_entry);
+		area = css->ecub[id / CSS_ECUES_PER_PAGE];
+		idx = id % CSS_ECUES_PER_PAGE;
+	} else {
+		size = sizeof(struct cmg_entry);
+		area = css->cub[id / CSS_CUES_PER_PAGE];
+		idx = id % CSS_CUES_PER_PAGE;
+	}
+	entry = area + (idx * size);
 
 	/* Only allow single reads. */
 	if (off || count < size)
 		return 0;
-	chp_measurement_copy_block((struct cmg_entry *)buf, css, chp->chpid);
-	count = size;
-	return count;
+
+	memcpy(buf, entry, size);
+
+	return size;
 }
 
-static struct bin_attribute chp_measurement_attr = {
-	.attr = {
-		.name = "measurement",
-		.mode = S_IRUSR,
-	},
-	.size = sizeof(struct cmg_entry),
-	.read = chp_measurement_read,
+static ssize_t measurement_read(struct file *filp, struct kobject *kobj,
+				struct bin_attribute *bin_attr,
+				char *buf, loff_t off, size_t count)
+{
+	return chp_measurement_copy_block(buf, off, count, kobj, false);
+}
+static BIN_ATTR_ADMIN_RO(measurement, sizeof(struct cmg_entry));
+
+static ssize_t ext_measurement_read(struct file *filp, struct kobject *kobj,
+				    struct bin_attribute *bin_attr,
+				    char *buf, loff_t off, size_t count)
+{
+	return chp_measurement_copy_block(buf, off, count, kobj, true);
+}
+static BIN_ATTR_ADMIN_RO(ext_measurement, sizeof(struct cmg_ext_entry));
+
+static struct bin_attribute *measurement_attrs[] = {
+	&bin_attr_measurement_chars,
+	&bin_attr_measurement,
+	&bin_attr_ext_measurement,
+	NULL,
 };
+BIN_ATTRIBUTE_GROUPS(measurement);
 
 void chp_remove_cmg_attr(struct channel_path *chp)
 {
-	device_remove_bin_file(&chp->dev, &chp_measurement_chars_attr);
-	device_remove_bin_file(&chp->dev, &chp_measurement_attr);
+	device_remove_groups(&chp->dev, measurement_groups);
 }
 
 int chp_add_cmg_attr(struct channel_path *chp)
 {
-	int ret;
-
-	ret = device_create_bin_file(&chp->dev, &chp_measurement_chars_attr);
-	if (ret)
-		return ret;
-	ret = device_create_bin_file(&chp->dev, &chp_measurement_attr);
-	if (ret)
-		device_remove_bin_file(&chp->dev, &chp_measurement_chars_attr);
-	return ret;
+	return device_add_groups(&chp->dev, measurement_groups);
 }
 
 /*
@@ -257,6 +246,9 @@ static ssize_t chp_status_write(struct device *dev,
 	if (!num_args)
 		return count;
 
+	/* Wait until previous actions have settled. */
+	css_wait_for_slow_path();
+
 	if (!strncasecmp(cmd, "on", 2) || !strcmp(cmd, "1")) {
 		mutex_lock(&cp->lock);
 		error = s390_vary_chpid(cp->chpid, 1);
@@ -284,7 +276,7 @@ static ssize_t chp_configure_show(struct device *dev,
 	if (status < 0)
 		return status;
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", status);
+	return sysfs_emit(buf, "%d\n", status);
 }
 
 static int cfg_wait_idle(void);
@@ -333,7 +325,7 @@ static ssize_t chp_cmg_show(struct device *dev, struct device_attribute *attr,
 		return 0;
 	if (chp->cmg == -1) /* channel measurements not available */
 		return sprintf(buf, "unknown\n");
-	return sprintf(buf, "%x\n", chp->cmg);
+	return sprintf(buf, "%d\n", chp->cmg);
 }
 
 static DEVICE_ATTR(cmg, 0444, chp_cmg_show, NULL);
@@ -386,6 +378,71 @@ static ssize_t chp_chid_external_show(struct device *dev,
 }
 static DEVICE_ATTR(chid_external, 0444, chp_chid_external_show, NULL);
 
+static ssize_t chp_esc_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct channel_path *chp = to_channelpath(dev);
+	ssize_t rc;
+
+	mutex_lock(&chp->lock);
+	rc = sprintf(buf, "%x\n", chp->desc_fmt1.esc);
+	mutex_unlock(&chp->lock);
+
+	return rc;
+}
+static DEVICE_ATTR(esc, 0444, chp_esc_show, NULL);
+
+static char apply_max_suffix(unsigned long *value, unsigned long base)
+{
+	static char suffixes[] = { 0, 'K', 'M', 'G', 'T' };
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(suffixes) - 1; i++) {
+		if (*value < base || *value % base != 0)
+			break;
+		*value /= base;
+	}
+
+	return suffixes[i];
+}
+
+static ssize_t speed_bps_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct channel_path *chp = to_channelpath(dev);
+	unsigned long speed = chp->speed;
+	char suffix;
+
+	suffix = apply_max_suffix(&speed, 1000);
+
+	return suffix ? sysfs_emit(buf, "%lu%c\n", speed, suffix) :
+			sysfs_emit(buf, "%lu\n", speed);
+}
+
+static DEVICE_ATTR_RO(speed_bps);
+
+static ssize_t util_string_read(struct file *filp, struct kobject *kobj,
+				struct bin_attribute *attr, char *buf,
+				loff_t off, size_t count)
+{
+	struct channel_path *chp = to_channelpath(kobj_to_dev(kobj));
+	ssize_t rc;
+
+	mutex_lock(&chp->lock);
+	rc = memory_read_from_buffer(buf, count, &off, chp->desc_fmt3.util_str,
+				     sizeof(chp->desc_fmt3.util_str));
+	mutex_unlock(&chp->lock);
+
+	return rc;
+}
+static BIN_ATTR_RO(util_string,
+		   sizeof(((struct channel_path_desc_fmt3 *)0)->util_str));
+
+static struct bin_attribute *chp_bin_attrs[] = {
+	&bin_attr_util_string,
+	NULL,
+};
+
 static struct attribute *chp_attrs[] = {
 	&dev_attr_status.attr,
 	&dev_attr_configure.attr,
@@ -394,10 +451,13 @@ static struct attribute *chp_attrs[] = {
 	&dev_attr_shared.attr,
 	&dev_attr_chid.attr,
 	&dev_attr_chid_external.attr,
+	&dev_attr_esc.attr,
+	&dev_attr_speed_bps.attr,
 	NULL,
 };
 static struct attribute_group chp_attr_group = {
 	.attrs = chp_attrs,
+	.bin_attrs = chp_bin_attrs,
 };
 static const struct attribute_group *chp_attr_groups[] = {
 	&chp_attr_group,
@@ -414,46 +474,57 @@ static void chp_release(struct device *dev)
 
 /**
  * chp_update_desc - update channel-path description
- * @chp - channel-path
+ * @chp: channel-path
  *
- * Update the channel-path description of the specified channel-path.
+ * Update the channel-path description of the specified channel-path
+ * including channel measurement related information.
  * Return zero on success, non-zero otherwise.
  */
 int chp_update_desc(struct channel_path *chp)
 {
 	int rc;
 
-	rc = chsc_determine_base_channel_path_desc(chp->chpid, &chp->desc);
+	rc = chsc_determine_fmt0_channel_path_desc(chp->chpid, &chp->desc);
 	if (rc)
 		return rc;
 
-	rc = chsc_determine_fmt1_channel_path_desc(chp->chpid, &chp->desc_fmt1);
+	/*
+	 * Fetching the following data is optional. Not all machines or
+	 * hypervisors implement the required chsc commands.
+	 */
+	chsc_determine_fmt1_channel_path_desc(chp->chpid, &chp->desc_fmt1);
+	chsc_determine_fmt3_channel_path_desc(chp->chpid, &chp->desc_fmt3);
+	chsc_get_channel_measurement_chars(chp);
 
-	return rc;
+	return 0;
 }
 
 /**
  * chp_new - register a new channel-path
- * @chpid - channel-path ID
+ * @chpid: channel-path ID
  *
  * Create and register data structure representing new channel-path. Return
  * zero on success, non-zero otherwise.
  */
 int chp_new(struct chp_id chpid)
 {
+	struct channel_subsystem *css = css_by_id(chpid.cssid);
 	struct channel_path *chp;
-	int ret;
+	int ret = 0;
 
+	mutex_lock(&css->mutex);
 	if (chp_is_registered(chpid))
-		return 0;
-	chp = kzalloc(sizeof(struct channel_path), GFP_KERNEL);
-	if (!chp)
-		return -ENOMEM;
+		goto out;
 
+	chp = kzalloc(sizeof(struct channel_path), GFP_KERNEL);
+	if (!chp) {
+		ret = -ENOMEM;
+		goto out;
+	}
 	/* fill in status, etc. */
 	chp->chpid = chpid;
 	chp->state = 1;
-	chp->dev.parent = &channel_subsystems[chpid.cssid]->device;
+	chp->dev.parent = &css->device;
 	chp->dev.groups = chp_attr_groups;
 	chp->dev.release = chp_release;
 	mutex_init(&chp->lock);
@@ -466,14 +537,6 @@ int chp_new(struct chp_id chpid)
 		ret = -ENODEV;
 		goto out_free;
 	}
-	/* Get channel-measurement characteristics. */
-	if (css_chsc_characteristics.scmc && css_chsc_characteristics.secm) {
-		ret = chsc_get_channel_measurement_chars(chp);
-		if (ret)
-			goto out_free;
-	} else {
-		chp->cmg = -1;
-	}
 	dev_set_name(&chp->dev, "chp%x.%02x", chpid.cssid, chpid.id);
 
 	/* make it known to the system */
@@ -484,21 +547,20 @@ int chp_new(struct chp_id chpid)
 		put_device(&chp->dev);
 		goto out;
 	}
-	mutex_lock(&channel_subsystems[chpid.cssid]->mutex);
-	if (channel_subsystems[chpid.cssid]->cm_enabled) {
+
+	if (css->cm_enabled) {
 		ret = chp_add_cmg_attr(chp);
 		if (ret) {
 			device_unregister(&chp->dev);
-			mutex_unlock(&channel_subsystems[chpid.cssid]->mutex);
 			goto out;
 		}
 	}
-	channel_subsystems[chpid.cssid]->chps[chpid.id] = chp;
-	mutex_unlock(&channel_subsystems[chpid.cssid]->mutex);
+	css->chps[chpid.id] = chp;
 	goto out;
 out_free:
 	kfree(chp);
 out:
+	mutex_unlock(&css->mutex);
 	return ret;
 }
 
@@ -509,20 +571,20 @@ out:
  * On success return a newly allocated copy of the channel-path description
  * data associated with the given channel-path ID. Return %NULL on error.
  */
-struct channel_path_desc *chp_get_chp_desc(struct chp_id chpid)
+struct channel_path_desc_fmt0 *chp_get_chp_desc(struct chp_id chpid)
 {
 	struct channel_path *chp;
-	struct channel_path_desc *desc;
+	struct channel_path_desc_fmt0 *desc;
 
 	chp = chpid_to_chp(chpid);
 	if (!chp)
 		return NULL;
-	desc = kmalloc(sizeof(struct channel_path_desc), GFP_KERNEL);
+	desc = kmalloc(sizeof(*desc), GFP_KERNEL);
 	if (!desc)
 		return NULL;
 
 	mutex_lock(&chp->lock);
-	memcpy(desc, &chp->desc, sizeof(struct channel_path_desc));
+	memcpy(desc, &chp->desc, sizeof(*desc));
 	mutex_unlock(&chp->lock);
 	return desc;
 }
@@ -563,8 +625,8 @@ static void chp_process_crw(struct crw *crw0, struct crw *crw1,
 	chpid.id = crw0->rsid;
 	switch (crw0->erc) {
 	case CRW_ERC_IPARM: /* Path has come. */
-		if (!chp_is_registered(chpid))
-			chp_new(chpid);
+	case CRW_ERC_INIT:
+		chp_new(chpid);
 		chsc_chp_online(chpid);
 		break;
 	case CRW_ERC_PERRI: /* Path has gone. */
@@ -670,6 +732,20 @@ static void cfg_set_task(struct chp_id chpid, enum cfg_task_t cfg)
 	chp_cfg_task[chpid.cssid][chpid.id] = cfg;
 }
 
+/* Fetch the first configure task. Set chpid accordingly. */
+static enum cfg_task_t chp_cfg_fetch_task(struct chp_id *chpid)
+{
+	enum cfg_task_t t = cfg_none;
+
+	chp_id_for_each(chpid) {
+		t = cfg_get_task(*chpid);
+		if (t != cfg_none)
+			break;
+	}
+
+	return t;
+}
+
 /* Perform one configure/deconfigure request. Reschedule work function until
  * last request. */
 static void cfg_func(struct work_struct *work)
@@ -678,16 +754,9 @@ static void cfg_func(struct work_struct *work)
 	enum cfg_task_t t;
 	int rc;
 
-	mutex_lock(&cfg_lock);
-	t = cfg_none;
-	chp_id_for_each(&chpid) {
-		t = cfg_get_task(chpid);
-		if (t != cfg_none) {
-			cfg_set_task(chpid, cfg_none);
-			break;
-		}
-	}
-	mutex_unlock(&cfg_lock);
+	spin_lock(&cfg_lock);
+	t = chp_cfg_fetch_task(&chpid);
+	spin_unlock(&cfg_lock);
 
 	switch (t) {
 	case cfg_configure:
@@ -713,19 +782,20 @@ static void cfg_func(struct work_struct *work)
 	case cfg_none:
 		/* Get updated information after last change. */
 		info_update();
-		mutex_lock(&cfg_lock);
-		cfg_busy = 0;
-		mutex_unlock(&cfg_lock);
 		wake_up_interruptible(&cfg_wait_queue);
 		return;
 	}
-	queue_work(chp_wq, &cfg_work);
+	spin_lock(&cfg_lock);
+	if (t == cfg_get_task(chpid))
+		cfg_set_task(chpid, cfg_none);
+	spin_unlock(&cfg_lock);
+	schedule_work(&cfg_work);
 }
 
 /**
  * chp_cfg_schedule - schedule chpid configuration request
- * @chpid - channel-path ID
- * @configure - Non-zero for configure, zero for deconfigure
+ * @chpid: channel-path ID
+ * @configure: Non-zero for configure, zero for deconfigure
  *
  * Schedule a channel-path configuration/deconfiguration request.
  */
@@ -733,16 +803,15 @@ void chp_cfg_schedule(struct chp_id chpid, int configure)
 {
 	CIO_MSG_EVENT(2, "chp_cfg_sched%x.%02x=%d\n", chpid.cssid, chpid.id,
 		      configure);
-	mutex_lock(&cfg_lock);
+	spin_lock(&cfg_lock);
 	cfg_set_task(chpid, configure ? cfg_configure : cfg_deconfigure);
-	cfg_busy = 1;
-	mutex_unlock(&cfg_lock);
-	queue_work(chp_wq, &cfg_work);
+	spin_unlock(&cfg_lock);
+	schedule_work(&cfg_work);
 }
 
 /**
  * chp_cfg_cancel_deconfigure - cancel chpid deconfiguration request
- * @chpid - channel-path ID
+ * @chpid: channel-path ID
  *
  * Cancel an active channel-path deconfiguration request if it has not yet
  * been performed.
@@ -750,15 +819,27 @@ void chp_cfg_schedule(struct chp_id chpid, int configure)
 void chp_cfg_cancel_deconfigure(struct chp_id chpid)
 {
 	CIO_MSG_EVENT(2, "chp_cfg_cancel:%x.%02x\n", chpid.cssid, chpid.id);
-	mutex_lock(&cfg_lock);
+	spin_lock(&cfg_lock);
 	if (cfg_get_task(chpid) == cfg_deconfigure)
 		cfg_set_task(chpid, cfg_none);
-	mutex_unlock(&cfg_lock);
+	spin_unlock(&cfg_lock);
+}
+
+static bool cfg_idle(void)
+{
+	struct chp_id chpid;
+	enum cfg_task_t t;
+
+	spin_lock(&cfg_lock);
+	t = chp_cfg_fetch_task(&chpid);
+	spin_unlock(&cfg_lock);
+
+	return t == cfg_none;
 }
 
 static int cfg_wait_idle(void)
 {
-	if (wait_event_interruptible(cfg_wait_queue, !cfg_busy))
+	if (wait_event_interruptible(cfg_wait_queue, cfg_idle()))
 		return -ERESTARTSYS;
 	return 0;
 }
@@ -766,23 +847,19 @@ static int cfg_wait_idle(void)
 static int __init chp_init(void)
 {
 	struct chp_id chpid;
-	int ret;
+	int state, ret;
 
 	ret = crw_register_handler(CRW_RSC_CPATH, chp_process_crw);
 	if (ret)
 		return ret;
-	chp_wq = create_singlethread_workqueue("cio_chp");
-	if (!chp_wq) {
-		crw_unregister_handler(CRW_RSC_CPATH);
-		return -ENOMEM;
-	}
 	INIT_WORK(&cfg_work, cfg_func);
-	init_waitqueue_head(&cfg_wait_queue);
 	if (info_update())
 		return 0;
 	/* Register available channel-paths. */
 	chp_id_for_each(&chpid) {
-		if (chp_info_get_status(chpid) != CHP_STATUS_NOT_RECOGNIZED)
+		state = chp_info_get_status(chpid);
+		if (state == CHP_STATUS_CONFIGURED ||
+		    state == CHP_STATUS_STANDBY)
 			chp_new(chpid);
 	}
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Apple USB BCM5974 (Macbook Air and Penryn Macbook Pro) multitouch driver
  *
@@ -16,21 +17,6 @@
  * Copyright (C) 2005	   Peter Osterlund (petero2@telia.com)
  * Copyright (C) 2005	   Michael Hanselmann (linux-kernel@hansmi.ch)
  * Copyright (C) 2006	   Nicolas Boichat (nicolas@boichat.ch)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #include <linux/kernel.h>
@@ -665,7 +651,7 @@ static int bcm5974_wellspring_mode(struct bcm5974 *dev, bool on)
 	char *data;
 
 	/* Type 3 does not require a mode switch */
-	if (dev->cfg.tp_type == TYPE3)
+	if (c->tp_type == TYPE3)
 		return 0;
 
 	data = kmalloc(c->um_size, GFP_KERNEL);
@@ -848,13 +834,11 @@ static int bcm5974_open(struct input_dev *input)
 	if (error)
 		return error;
 
-	mutex_lock(&dev->pm_mutex);
-
-	error = bcm5974_start_traffic(dev);
-	if (!error)
-		dev->opened = 1;
-
-	mutex_unlock(&dev->pm_mutex);
+	scoped_guard(mutex, &dev->pm_mutex) {
+		error = bcm5974_start_traffic(dev);
+		if (!error)
+			dev->opened = 1;
+	}
 
 	if (error)
 		usb_autopm_put_interface(dev->intf);
@@ -866,12 +850,10 @@ static void bcm5974_close(struct input_dev *input)
 {
 	struct bcm5974 *dev = input_get_drvdata(input);
 
-	mutex_lock(&dev->pm_mutex);
-
-	bcm5974_pause_traffic(dev);
-	dev->opened = 0;
-
-	mutex_unlock(&dev->pm_mutex);
+	scoped_guard(mutex, &dev->pm_mutex) {
+		bcm5974_pause_traffic(dev);
+		dev->opened = 0;
+	}
 
 	usb_autopm_put_interface(dev->intf);
 }
@@ -880,12 +862,10 @@ static int bcm5974_suspend(struct usb_interface *iface, pm_message_t message)
 {
 	struct bcm5974 *dev = usb_get_intfdata(iface);
 
-	mutex_lock(&dev->pm_mutex);
+	guard(mutex)(&dev->pm_mutex);
 
 	if (dev->opened)
 		bcm5974_pause_traffic(dev);
-
-	mutex_unlock(&dev->pm_mutex);
 
 	return 0;
 }
@@ -893,16 +873,13 @@ static int bcm5974_suspend(struct usb_interface *iface, pm_message_t message)
 static int bcm5974_resume(struct usb_interface *iface)
 {
 	struct bcm5974 *dev = usb_get_intfdata(iface);
-	int error = 0;
 
-	mutex_lock(&dev->pm_mutex);
+	guard(mutex)(&dev->pm_mutex);
 
 	if (dev->opened)
-		error = bcm5974_start_traffic(dev);
+		return bcm5974_start_traffic(dev);
 
-	mutex_unlock(&dev->pm_mutex);
-
-	return error;
+	return 0;
 }
 
 static int bcm5974_probe(struct usb_interface *iface,
@@ -918,7 +895,7 @@ static int bcm5974_probe(struct usb_interface *iface,
 	cfg = bcm5974_get_config(udev);
 
 	/* allocate memory for our device state and initialize it */
-	dev = kzalloc(sizeof(struct bcm5974), GFP_KERNEL);
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	input_dev = input_allocate_device();
 	if (!dev || !input_dev) {
 		dev_err(&iface->dev, "out of memory\n");
@@ -956,16 +933,21 @@ static int bcm5974_probe(struct usb_interface *iface,
 	if (!dev->tp_data)
 		goto err_free_bt_buffer;
 
-	if (dev->bt_urb)
+	if (dev->bt_urb) {
 		usb_fill_int_urb(dev->bt_urb, udev,
 				 usb_rcvintpipe(udev, cfg->bt_ep),
 				 dev->bt_data, dev->cfg.bt_datalen,
 				 bcm5974_irq_button, dev, 1);
 
+		dev->bt_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+	}
+
 	usb_fill_int_urb(dev->tp_urb, udev,
 			 usb_rcvintpipe(udev, cfg->tp_ep),
 			 dev->tp_data, dev->cfg.tp_datalen,
 			 bcm5974_irq_trackpad, dev, 1);
+
+	dev->tp_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
 	/* create bcm5974 device */
 	usb_make_path(udev, dev->phys, sizeof(dev->phys));

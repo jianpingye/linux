@@ -30,29 +30,40 @@
 #ifndef AMDGPU_MODE_H
 #define AMDGPU_MODE_H
 
+#include <drm/display/drm_dp_helper.h>
 #include <drm/drm_crtc.h>
-#include <drm/drm_edid.h>
-#include <drm/drm_dp_helper.h>
+#include <drm/drm_encoder.h>
 #include <drm/drm_fixed.h>
-#include <drm/drm_crtc_helper.h>
-#include <drm/drm_plane_helper.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_probe_helper.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
+#include <linux/hrtimer.h>
+#include "amdgpu_irq.h"
+
+#include <drm/display/drm_dp_mst_helper.h>
+#include "modules/inc/mod_freesync.h"
+#include "amdgpu_dm_irq_params.h"
 
 struct amdgpu_bo;
 struct amdgpu_device;
 struct amdgpu_encoder;
 struct amdgpu_router;
 struct amdgpu_hpd;
+struct edid;
+struct drm_edid;
 
 #define to_amdgpu_crtc(x) container_of(x, struct amdgpu_crtc, base)
 #define to_amdgpu_connector(x) container_of(x, struct amdgpu_connector, base)
 #define to_amdgpu_encoder(x) container_of(x, struct amdgpu_encoder, base)
 #define to_amdgpu_framebuffer(x) container_of(x, struct amdgpu_framebuffer, base)
 
+#define to_dm_plane_state(x)	container_of(x, struct dm_plane_state, base)
+
 #define AMDGPU_MAX_HPD_PINS 6
 #define AMDGPU_MAX_CRTCS 6
-#define AMDGPU_MAX_AFMT_BLOCKS 7
+#define AMDGPU_MAX_PLANES 6
+#define AMDGPU_MAX_AFMT_BLOCKS 9
 
 enum amdgpu_rmx_type {
 	RMX_OFF,
@@ -77,7 +88,6 @@ enum amdgpu_hpd_id {
 	AMDGPU_HPD_4,
 	AMDGPU_HPD_5,
 	AMDGPU_HPD_6,
-	AMDGPU_HPD_LAST,
 	AMDGPU_HPD_NONE = 0xff,
 };
 
@@ -94,7 +104,6 @@ enum amdgpu_crtc_irq {
 	AMDGPU_CRTC_IRQ_VLINE4,
 	AMDGPU_CRTC_IRQ_VLINE5,
 	AMDGPU_CRTC_IRQ_VLINE6,
-	AMDGPU_CRTC_IRQ_LAST,
 	AMDGPU_CRTC_IRQ_NONE = 0xff
 };
 
@@ -105,7 +114,6 @@ enum amdgpu_pageflip_irq {
 	AMDGPU_PAGEFLIP_IRQ_D4,
 	AMDGPU_PAGEFLIP_IRQ_D5,
 	AMDGPU_PAGEFLIP_IRQ_D6,
-	AMDGPU_PAGEFLIP_IRQ_LAST,
 	AMDGPU_PAGEFLIP_IRQ_NONE = 0xff
 };
 
@@ -223,8 +231,6 @@ struct amdgpu_i2c_chan {
 	struct mutex mutex;
 };
 
-struct amdgpu_fbdev;
-
 struct amdgpu_afmt {
 	bool enabled;
 	int offset;
@@ -253,23 +259,11 @@ struct amdgpu_audio {
 	int num_pins;
 };
 
-struct amdgpu_mode_mc_save {
-	u32 vga_render_control;
-	u32 vga_hdp_control;
-	bool crtc_enabled[AMDGPU_MAX_CRTCS];
-};
-
 struct amdgpu_display_funcs {
-	/* vga render */
-	void (*set_vga_render_state)(struct amdgpu_device *adev, bool render);
 	/* display watermarks */
 	void (*bandwidth_update)(struct amdgpu_device *adev);
 	/* get frame count */
 	u32 (*vblank_get_counter)(struct amdgpu_device *adev, int crtc);
-	/* wait for vblank */
-	void (*vblank_wait)(struct amdgpu_device *adev, int crtc);
-	/* is dce hung */
-	bool (*is_display_hung)(struct amdgpu_device *adev);
 	/* set backlight level */
 	void (*backlight_set_level)(struct amdgpu_encoder *amdgpu_encoder,
 				    u8 level);
@@ -282,7 +276,7 @@ struct amdgpu_display_funcs {
 	u32 (*hpd_get_gpio_reg)(struct amdgpu_device *adev);
 	/* pageflipping */
 	void (*page_flip)(struct amdgpu_device *adev,
-			 int crtc_id, u64 crtc_base);
+			  int crtc_id, u64 crtc_base, bool async);
 	int (*page_flip_get_scanoutpos)(struct amdgpu_device *adev, int crtc,
 					u32 *vbl, u32 *position);
 	/* display topology setup */
@@ -298,18 +292,28 @@ struct amdgpu_display_funcs {
 			      uint16_t connector_object_id,
 			      struct amdgpu_hpd *hpd,
 			      struct amdgpu_router *router);
-	void (*stop_mc_access)(struct amdgpu_device *adev,
-			       struct amdgpu_mode_mc_save *save);
-	void (*resume_mc_access)(struct amdgpu_device *adev,
-				 struct amdgpu_mode_mc_save *save);
+
+
+};
+
+struct amdgpu_framebuffer {
+	struct drm_framebuffer base;
+
+	uint64_t tiling_flags;
+	bool tmz_surface;
+	bool gfx12_dcc;
+
+	/* caching for later use */
+	uint64_t address;
 };
 
 struct amdgpu_mode_info {
 	struct atom_context *atom_context;
 	struct card_info *atom_card_info;
 	bool mode_config_initialized;
-	struct amdgpu_crtc *crtcs[6];
-	struct amdgpu_afmt *afmt[7];
+	struct amdgpu_crtc *crtcs[AMDGPU_MAX_CRTCS];
+	struct drm_plane *planes[AMDGPU_MAX_PLANES];
+	struct amdgpu_afmt *afmt[AMDGPU_MAX_AFMT_BLOCKS];
 	/* DVI-I properties */
 	struct drm_property *coherent_mode_property;
 	/* DAC enable load detect */
@@ -323,33 +327,120 @@ struct amdgpu_mode_info {
 	/* FMT dithering */
 	struct drm_property *dither_property;
 	/* hardcoded DFP edid from BIOS */
-	struct edid *bios_hardcoded_edid;
-	int bios_hardcoded_edid_size;
+	const struct drm_edid *bios_hardcoded_edid;
 
-	/* pointer to fbdev info structure */
-	struct amdgpu_fbdev *rfbdev;
 	/* firmware flags */
-	u16 firmware_flags;
+	u32 firmware_flags;
 	/* pointer to backlight encoder */
 	struct amdgpu_encoder *bl_encoder;
+	u8 bl_level; /* saved backlight level */
 	struct amdgpu_audio	audio; /* audio stuff */
 	int			num_crtc; /* number of crtcs */
 	int			num_hpd; /* number of hpd pins */
 	int			num_dig; /* number of dig blocks */
+	bool			gpu_vm_support; /* supports display from GTT */
 	int			disp_priority;
 	const struct amdgpu_display_funcs *funcs;
+	const enum drm_plane_type *plane_type;
+
+	/* Driver-private color mgmt props */
+
+	/* @plane_degamma_lut_property: Plane property to set a degamma LUT to
+	 * convert encoded values to light linear values before sampling or
+	 * blending.
+	 */
+	struct drm_property *plane_degamma_lut_property;
+	/* @plane_degamma_lut_size_property: Plane property to define the max
+	 * size of degamma LUT as supported by the driver (read-only).
+	 */
+	struct drm_property *plane_degamma_lut_size_property;
+	/**
+	 * @plane_degamma_tf_property: Plane pre-defined transfer function to
+	 * to go from scanout/encoded values to linear values.
+	 */
+	struct drm_property *plane_degamma_tf_property;
+	/**
+	 * @plane_hdr_mult_property:
+	 */
+	struct drm_property *plane_hdr_mult_property;
+
+	struct drm_property *plane_ctm_property;
+	/**
+	 * @shaper_lut_property: Plane property to set pre-blending shaper LUT
+	 * that converts color content before 3D LUT. If
+	 * plane_shaper_tf_property != Identity TF, AMD color module will
+	 * combine the user LUT values with pre-defined TF into the LUT
+	 * parameters to be programmed.
+	 */
+	struct drm_property *plane_shaper_lut_property;
+	/**
+	 * @shaper_lut_size_property: Plane property for the size of
+	 * pre-blending shaper LUT as supported by the driver (read-only).
+	 */
+	struct drm_property *plane_shaper_lut_size_property;
+	/**
+	 * @plane_shaper_tf_property: Plane property to set a predefined
+	 * transfer function for pre-blending shaper (before applying 3D LUT)
+	 * with or without LUT. There is no shaper ROM, but we can use AMD
+	 * color modules to program LUT parameters from predefined TF (or
+	 * from a combination of pre-defined TF and the custom 1D LUT).
+	 */
+	struct drm_property *plane_shaper_tf_property;
+	/**
+	 * @plane_lut3d_property: Plane property for color transformation using
+	 * a 3D LUT (pre-blending), a three-dimensional array where each
+	 * element is an RGB triplet. Each dimension has the size of
+	 * lut3d_size. The array contains samples from the approximated
+	 * function. On AMD, values between samples are estimated by
+	 * tetrahedral interpolation. The array is accessed with three indices,
+	 * one for each input dimension (color channel), blue being the
+	 * outermost dimension, red the innermost.
+	 */
+	struct drm_property *plane_lut3d_property;
+	/**
+	 * @plane_degamma_lut_size_property: Plane property to define the max
+	 * size of 3D LUT as supported by the driver (read-only). The max size
+	 * is the max size of one dimension and, therefore, the max number of
+	 * entries for 3D LUT array is the 3D LUT size cubed;
+	 */
+	struct drm_property *plane_lut3d_size_property;
+	/**
+	 * @plane_blend_lut_property: Plane property for output gamma before
+	 * blending. Userspace set a blend LUT to convert colors after 3D LUT
+	 * conversion. It works as a post-3DLUT 1D LUT. With shaper LUT, they
+	 * are sandwiching 3D LUT with two 1D LUT. If plane_blend_tf_property
+	 * != Identity TF, AMD color module will combine the user LUT values
+	 * with pre-defined TF into the LUT parameters to be programmed.
+	 */
+	struct drm_property *plane_blend_lut_property;
+	/**
+	 * @plane_blend_lut_size_property: Plane property to define the max
+	 * size of blend LUT as supported by the driver (read-only).
+	 */
+	struct drm_property *plane_blend_lut_size_property;
+	/**
+	 * @plane_blend_tf_property: Plane property to set a predefined
+	 * transfer function for pre-blending blend/out_gamma (after applying
+	 * 3D LUT) with or without LUT. There is no blend ROM, but we can use
+	 * AMD color modules to program LUT parameters from predefined TF (or
+	 * from a combination of pre-defined TF and the custom 1D LUT).
+	 */
+	struct drm_property *plane_blend_tf_property;
+	/* @regamma_tf_property: Transfer function for CRTC regamma
+	 * (post-blending). Possible values are defined by `enum
+	 * amdgpu_transfer_function`. There is no regamma ROM, but we can use
+	 * AMD color modules to program LUT parameters from predefined TF (or
+	 * from a combination of pre-defined TF and the custom 1D LUT).
+	 */
+	struct drm_property *regamma_tf_property;
 };
 
 #define AMDGPU_MAX_BL_LEVEL 0xFF
-
-#if defined(CONFIG_BACKLIGHT_CLASS_DEVICE) || defined(CONFIG_BACKLIGHT_CLASS_DEVICE_MODULE)
 
 struct amdgpu_backlight_privdata {
 	struct amdgpu_encoder *encoder;
 	uint8_t negative;
 };
-
-#endif
 
 struct amdgpu_atom_ss {
 	uint16_t percentage;
@@ -367,12 +458,15 @@ struct amdgpu_atom_ss {
 struct amdgpu_crtc {
 	struct drm_crtc base;
 	int crtc_id;
-	u16 lut_r[256], lut_g[256], lut_b[256];
 	bool enabled;
 	bool can_tile;
 	uint32_t crtc_offset;
 	struct drm_gem_object *cursor_bo;
 	uint64_t cursor_addr;
+	int cursor_x;
+	int cursor_y;
+	int cursor_hot_x;
+	int cursor_hot_y;
 	int cursor_width;
 	int cursor_height;
 	int max_cursor_width;
@@ -385,10 +479,11 @@ struct amdgpu_crtc {
 	struct drm_display_mode native_mode;
 	u32 pll_id;
 	/* page flipping */
-	struct workqueue_struct *pflip_queue;
 	struct amdgpu_flip_work *pflip_works;
 	enum amdgpu_flip_status pflip_status;
 	int deferred_flip_completion;
+	/* parameters access from DM IRQ handler */
+	struct dm_irq_params dm_irq_params;
 	/* pll sharing */
 	struct amdgpu_atom_ss ss;
 	bool ss_enabled;
@@ -403,7 +498,18 @@ struct amdgpu_crtc {
 	u32 line_time;
 	u32 wm_low;
 	u32 wm_high;
+	u32 lb_vblank_lead_lines;
 	struct drm_display_mode hw_mode;
+	/* for virtual dce */
+	struct hrtimer vblank_timer;
+	enum amdgpu_interrupt_state vsync_timer_enabled;
+
+	int otg_inst;
+	struct drm_pending_vblank_event *event;
+
+	bool wb_pending;
+	bool wb_enabled;
+	struct drm_writeback_connector *wb_conn;
 };
 
 struct amdgpu_encoder_atom_dig {
@@ -446,6 +552,7 @@ struct amdgpu_encoder {
 struct amdgpu_connector_atom_dig {
 	/* displayport */
 	u8 dpcd[DP_RECEIVER_CAP_SIZE];
+	u8 downstream_ports[DP_MAX_DOWNSTREAM_PORTS];
 	u8 dp_sink_type;
 	int dp_clock;
 	int dp_lane_count;
@@ -493,6 +600,19 @@ enum amdgpu_connector_dither {
 	AMDGPU_FMT_DITHER_ENABLE = 1,
 };
 
+struct amdgpu_dm_dp_aux {
+	struct drm_dp_aux aux;
+	struct ddc_service *ddc_service;
+};
+
+struct amdgpu_i2c_adapter {
+	struct i2c_adapter base;
+
+	struct ddc_service *ddc_service;
+};
+
+#define TO_DM_AUX(x) container_of((x), struct amdgpu_dm_dp_aux, aux)
+
 struct amdgpu_connector {
 	struct drm_connector base;
 	uint32_t connector_id;
@@ -507,6 +627,7 @@ struct amdgpu_connector {
 	void *con_priv;
 	bool dac_load_detect;
 	bool detected_by_load; /* if the connection status was determined by load */
+	bool detected_hpd_without_ddc; /* if an HPD signal was detected on DVI, but ddc probing failed */
 	uint16_t connector_object_id;
 	struct amdgpu_hpd hpd;
 	struct amdgpu_router router;
@@ -516,13 +637,27 @@ struct amdgpu_connector {
 	unsigned pixelclock_for_modeset;
 };
 
-struct amdgpu_framebuffer {
-	struct drm_framebuffer base;
-	struct drm_gem_object *obj;
+/* TODO: start to use this struct and remove same field from base one */
+struct amdgpu_mst_connector {
+	struct amdgpu_connector base;
+
+	struct drm_dp_mst_topology_mgr mst_mgr;
+	struct amdgpu_dm_dp_aux dm_dp_aux;
+	struct drm_dp_mst_port *mst_output_port;
+	struct amdgpu_connector *mst_root;
+	bool is_mst_connector;
+	struct amdgpu_encoder *mst_encoder;
 };
 
 #define ENCODER_MODE_IS_DP(em) (((em) == ATOM_ENCODER_MODE_DP) || \
 				((em) == ATOM_ENCODER_MODE_DP_MST))
+
+/* Driver internal use only flags of amdgpu_display_get_crtc_scanoutpos() */
+#define DRM_SCANOUTPOS_VALID        (1 << 0)
+#define DRM_SCANOUTPOS_IN_VBLANK    (1 << 1)
+#define DRM_SCANOUTPOS_ACCURATE     (1 << 2)
+#define USE_REAL_VBLANKSTART		(1 << 30)
+#define GET_DISTANCE_TO_VBLANKSTART	(1 << 31)
 
 void amdgpu_link_encoder_connector(struct drm_device *dev);
 
@@ -536,51 +671,42 @@ bool amdgpu_dig_monitor_is_duallink(struct drm_encoder *encoder,
 u16 amdgpu_encoder_get_dp_bridge_encoder_id(struct drm_encoder *encoder);
 struct drm_encoder *amdgpu_get_external_encoder(struct drm_encoder *encoder);
 
-bool amdgpu_ddc_probe(struct amdgpu_connector *amdgpu_connector, bool use_aux);
+bool amdgpu_display_ddc_probe(struct amdgpu_connector *amdgpu_connector,
+			      bool use_aux);
 
 void amdgpu_encoder_set_active_device(struct drm_encoder *encoder);
 
-int amdgpu_get_crtc_scanoutpos(struct drm_device *dev, int crtc,
-				      unsigned int flags,
-				      int *vpos, int *hpos, ktime_t *stime,
-				      ktime_t *etime);
-
-int amdgpu_framebuffer_init(struct drm_device *dev,
-			     struct amdgpu_framebuffer *rfb,
-			     struct drm_mode_fb_cmd2 *mode_cmd,
-			     struct drm_gem_object *obj);
+int amdgpu_display_get_crtc_scanoutpos(struct drm_device *dev,
+			unsigned int pipe, unsigned int flags, int *vpos,
+			int *hpos, ktime_t *stime, ktime_t *etime,
+			const struct drm_display_mode *mode);
 
 int amdgpufb_remove(struct drm_device *dev, struct drm_framebuffer *fb);
 
 void amdgpu_enc_destroy(struct drm_encoder *encoder);
 void amdgpu_copy_fb(struct drm_device *dev, struct drm_gem_object *dst_obj);
-bool amdgpu_crtc_scaling_mode_fixup(struct drm_crtc *crtc,
-					const struct drm_display_mode *mode,
-					struct drm_display_mode *adjusted_mode);
+bool amdgpu_display_crtc_scaling_mode_fixup(struct drm_crtc *crtc,
+				const struct drm_display_mode *mode,
+				struct drm_display_mode *adjusted_mode);
 void amdgpu_panel_mode_fixup(struct drm_encoder *encoder,
 			     struct drm_display_mode *adjusted_mode);
-int amdgpu_crtc_idx_to_irq_type(struct amdgpu_device *adev, int crtc);
+int amdgpu_display_crtc_idx_to_irq_type(struct amdgpu_device *adev, int crtc);
 
-/* fbdev layer */
-int amdgpu_fbdev_init(struct amdgpu_device *adev);
-void amdgpu_fbdev_fini(struct amdgpu_device *adev);
-void amdgpu_fbdev_set_suspend(struct amdgpu_device *adev, int state);
-int amdgpu_fbdev_total_size(struct amdgpu_device *adev);
-bool amdgpu_fbdev_robj_is_fb(struct amdgpu_device *adev, struct amdgpu_bo *robj);
-
-void amdgpu_fb_output_poll_changed(struct amdgpu_device *adev);
-
-
-int amdgpu_align_pitch(struct amdgpu_device *adev, int width, int bpp, bool tiled);
+bool amdgpu_crtc_get_scanout_position(struct drm_crtc *crtc,
+			bool in_vblank_irq, int *vpos,
+			int *hpos, ktime_t *stime, ktime_t *etime,
+			const struct drm_display_mode *mode);
 
 /* amdgpu_display.c */
-void amdgpu_print_display_setup(struct drm_device *dev);
-int amdgpu_modeset_create_props(struct amdgpu_device *adev);
-int amdgpu_crtc_set_config(struct drm_mode_set *set);
-int amdgpu_crtc_page_flip(struct drm_crtc *crtc,
-			  struct drm_framebuffer *fb,
-			  struct drm_pending_vblank_event *event,
-			  uint32_t page_flip_flags);
+void amdgpu_display_print_display_setup(struct drm_device *dev);
+int amdgpu_display_modeset_create_props(struct amdgpu_device *adev);
+int amdgpu_display_crtc_set_config(struct drm_mode_set *set,
+				   struct drm_modeset_acquire_ctx *ctx);
+int amdgpu_display_crtc_page_flip_target(struct drm_crtc *crtc,
+				struct drm_framebuffer *fb,
+				struct drm_pending_vblank_event *event,
+				uint32_t page_flip_flags, uint32_t target,
+				struct drm_modeset_acquire_ctx *ctx);
 extern const struct drm_mode_config_funcs amdgpu_mode_funcs;
 
 #endif

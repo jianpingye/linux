@@ -1,10 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License version 2 as published
- *  by the Free Software Foundation.
  *
  *  Copyright (C) 2004 Liu Peng Infineon IFAP DC COM CPE
- *  Copyright (C) 2010 John Crispin <blogic@openwrt.org>
+ *  Copyright (C) 2010 John Crispin <john@phrozen.org>
  */
 
 #include <linux/err.h>
@@ -110,16 +108,9 @@ ltq_copy_to(struct map_info *map, unsigned long to,
 static int
 ltq_mtd_probe(struct platform_device *pdev)
 {
-	struct mtd_part_parser_data ppdata;
 	struct ltq_mtd *ltq_mtd;
 	struct cfi_private *cfi;
 	int err;
-
-	if (of_machine_is_compatible("lantiq,falcon") &&
-			(ltq_boot_select() != BS_FLASH)) {
-		dev_err(&pdev->dev, "invalid bootstrap options\n");
-		return -ENODEV;
-	}
 
 	ltq_mtd = devm_kzalloc(&pdev->dev, sizeof(struct ltq_mtd), GFP_KERNEL);
 	if (!ltq_mtd)
@@ -127,11 +118,9 @@ ltq_mtd_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, ltq_mtd);
 
-	ltq_mtd->res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!ltq_mtd->res) {
-		dev_err(&pdev->dev, "failed to get memory resource\n");
-		return -ENOENT;
-	}
+	ltq_mtd->map->virt = devm_platform_get_and_ioremap_resource(pdev, 0, &ltq_mtd->res);
+	if (IS_ERR(ltq_mtd->map->virt))
+		return PTR_ERR(ltq_mtd->map->virt);
 
 	ltq_mtd->map = devm_kzalloc(&pdev->dev, sizeof(struct map_info),
 				    GFP_KERNEL);
@@ -140,9 +129,6 @@ ltq_mtd_probe(struct platform_device *pdev)
 
 	ltq_mtd->map->phys = ltq_mtd->res->start;
 	ltq_mtd->map->size = resource_size(ltq_mtd->res);
-	ltq_mtd->map->virt = devm_ioremap_resource(&pdev->dev, ltq_mtd->res);
-	if (IS_ERR(ltq_mtd->map->virt))
-		return PTR_ERR(ltq_mtd->map->virt);
 
 	ltq_mtd->map->name = ltq_map_name;
 	ltq_mtd->map->bankwidth = 2;
@@ -160,14 +146,14 @@ ltq_mtd_probe(struct platform_device *pdev)
 		return -ENXIO;
 	}
 
-	ltq_mtd->mtd->owner = THIS_MODULE;
+	ltq_mtd->mtd->dev.parent = &pdev->dev;
+	mtd_set_of_node(ltq_mtd->mtd, pdev->dev.of_node);
 
 	cfi = ltq_mtd->map->fldrv_priv;
 	cfi->addr_unlock1 ^= 1;
 	cfi->addr_unlock2 ^= 1;
 
-	ppdata.of_node = pdev->dev.of_node;
-	err = mtd_device_parse_register(ltq_mtd->mtd, NULL, &ppdata, NULL, 0);
+	err = mtd_device_register(ltq_mtd->mtd, NULL, 0);
 	if (err) {
 		dev_err(&pdev->dev, "failed to add partitions\n");
 		goto err_destroy;
@@ -180,8 +166,7 @@ err_destroy:
 	return err;
 }
 
-static int
-ltq_mtd_remove(struct platform_device *pdev)
+static void ltq_mtd_remove(struct platform_device *pdev)
 {
 	struct ltq_mtd *ltq_mtd = platform_get_drvdata(pdev);
 
@@ -189,7 +174,6 @@ ltq_mtd_remove(struct platform_device *pdev)
 		mtd_device_unregister(ltq_mtd->mtd);
 		map_destroy(ltq_mtd->mtd);
 	}
-	return 0;
 }
 
 static const struct of_device_id ltq_mtd_match[] = {
@@ -200,7 +184,7 @@ MODULE_DEVICE_TABLE(of, ltq_mtd_match);
 
 static struct platform_driver ltq_mtd_driver = {
 	.probe = ltq_mtd_probe,
-	.remove = ltq_mtd_remove,
+	.remove_new = ltq_mtd_remove,
 	.driver = {
 		.name = "ltq-nor",
 		.of_match_table = ltq_mtd_match,
@@ -210,5 +194,5 @@ static struct platform_driver ltq_mtd_driver = {
 module_platform_driver(ltq_mtd_driver);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("John Crispin <blogic@openwrt.org>");
+MODULE_AUTHOR("John Crispin <john@phrozen.org>");
 MODULE_DESCRIPTION("Lantiq SoC NOR");

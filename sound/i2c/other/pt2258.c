@@ -1,22 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   ALSA Driver for the PT2258 volume controller.
  *
  *	Copyright (c) 2006  Jochen Voss <voss@seehuhn.de>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */      
 
 #include <sound/core.h>
@@ -77,7 +63,7 @@ int snd_pt2258_reset(struct snd_pt2258 *pt)
 
       __error:
 	snd_i2c_unlock(pt->i2c_bus);
-	snd_printk(KERN_ERR "PT2258 reset failed\n");
+	dev_err(pt->card->dev, "PT2258 reset failed\n");
 	return -EIO;
 }
 
@@ -138,7 +124,7 @@ static int pt2258_stereo_volume_put(struct snd_kcontrol *kcontrol,
 
       __error:
 	snd_i2c_unlock(pt->i2c_bus);
-	snd_printk(KERN_ERR "PT2258 access failed\n");
+	dev_err(pt->card->dev, "PT2258 access failed\n");
 	return -EIO;
 }
 
@@ -175,7 +161,7 @@ static int pt2258_switch_put(struct snd_kcontrol *kcontrol,
 
       __error:
 	snd_i2c_unlock(pt->i2c_bus);
-	snd_printk(KERN_ERR "PT2258 access failed 2\n");
+	dev_err(pt->card->dev, "PT2258 access failed 2\n");
 	return -EIO;
 }
 

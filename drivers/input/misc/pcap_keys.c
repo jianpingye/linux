@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Input driver for PCAP events:
  *   * Power key
  *   * Headphone button
  *
  *  Copyright (c) 2008,2009 Ilya Petrov <ilya.muromec@gmail.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
  */
 
 #include <linux/module.h>
@@ -53,7 +49,7 @@ static int pcap_keys_probe(struct platform_device *pdev)
 	struct pcap_keys *pcap_keys;
 	struct input_dev *input_dev;
 
-	pcap_keys = kmalloc(sizeof(struct pcap_keys), GFP_KERNEL);
+	pcap_keys = kmalloc(sizeof(*pcap_keys), GFP_KERNEL);
 	if (!pcap_keys)
 		return err;
 
@@ -103,7 +99,7 @@ fail:
 	return err;
 }
 
-static int pcap_keys_remove(struct platform_device *pdev)
+static void pcap_keys_remove(struct platform_device *pdev)
 {
 	struct pcap_keys *pcap_keys = platform_get_drvdata(pdev);
 
@@ -112,13 +108,11 @@ static int pcap_keys_remove(struct platform_device *pdev)
 
 	input_unregister_device(pcap_keys->input);
 	kfree(pcap_keys);
-
-	return 0;
 }
 
 static struct platform_driver pcap_keys_device_driver = {
 	.probe		= pcap_keys_probe,
-	.remove		= pcap_keys_remove,
+	.remove_new	= pcap_keys_remove,
 	.driver		= {
 		.name	= "pcap-keys",
 	}

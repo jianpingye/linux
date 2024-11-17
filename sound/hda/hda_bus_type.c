@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HD-audio bus
  */
 #include <linux/init.h>
 #include <linux/device.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/export.h>
 #include <sound/hdaudio.h>
 
@@ -44,7 +46,7 @@ static int hdac_codec_match(struct hdac_device *dev, struct hdac_driver *drv)
 		return 0;
 }
 
-static int hda_bus_match(struct device *dev, struct device_driver *drv)
+static int hda_bus_match(struct device *dev, const struct device_driver *drv)
 {
 	struct hdac_device *hdev = dev_to_hdac_dev(dev);
 	struct hdac_driver *hdrv = drv_to_hdac_driver(drv);
@@ -63,9 +65,21 @@ static int hda_bus_match(struct device *dev, struct device_driver *drv)
 	return 1;
 }
 
-struct bus_type snd_hda_bus_type = {
+static int hda_uevent(const struct device *dev, struct kobj_uevent_env *env)
+{
+	char modalias[32];
+
+	snd_hdac_codec_modalias(dev_to_hdac_dev(dev), modalias,
+				sizeof(modalias));
+	if (add_uevent_var(env, "MODALIAS=%s", modalias))
+		return -ENOMEM;
+	return 0;
+}
+
+const struct bus_type snd_hda_bus_type = {
 	.name = "hdaudio",
 	.match = hda_bus_match,
+	.uevent = hda_uevent,
 };
 EXPORT_SYMBOL_GPL(snd_hda_bus_type);
 

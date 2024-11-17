@@ -11,27 +11,6 @@
 
 #include <linux/kvm_host.h>
 
-char *kvm_mips_exit_types_str[MAX_KVM_MIPS_EXIT_TYPES] = {
-	"WAIT",
-	"CACHE",
-	"Signal",
-	"Interrupt",
-	"COP0/1 Unusable",
-	"TLB Mod",
-	"TLB Miss (LD)",
-	"TLB Miss (ST)",
-	"Address Err (ST)",
-	"Address Error (LD)",
-	"System Call",
-	"Reserved Inst",
-	"Break Inst",
-	"Trap Inst",
-	"MSA FPE",
-	"FPE",
-	"MSA Disabled",
-	"D-Cache Flushes",
-};
-
 char *kvm_cop0_str[N_MIPS_COPROC_REGS] = {
 	"Index",
 	"Random",
@@ -75,9 +54,9 @@ void kvm_mips_dump_stats(struct kvm_vcpu *vcpu)
 	kvm_info("\nKVM VCPU[%d] COP0 Access Profile:\n", vcpu->vcpu_id);
 	for (i = 0; i < N_MIPS_COPROC_REGS; i++) {
 		for (j = 0; j < N_MIPS_COPROC_SEL; j++) {
-			if (vcpu->arch.cop0->stat[i][j])
+			if (vcpu->arch.cop0.stat[i][j])
 				kvm_info("%s[%d]: %lu\n", kvm_cop0_str[i], j,
-					 vcpu->arch.cop0->stat[i][j]);
+					 vcpu->arch.cop0.stat[i][j]);
 		}
 	}
 #endif

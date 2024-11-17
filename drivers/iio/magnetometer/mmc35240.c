@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * MMC35240 - MEMSIC 3-axis Magnetic Sensor
  *
  * Copyright (c) 2015, Intel Corporation.
- *
- * This file is subject to the terms and conditions of version 2 of
- * the GNU General Public License.  See the file COPYING in the main
- * directory of this archive for more details.
  *
  * IIO driver for MMC35240 (7-bit I2C slave address 0x30).
  *
@@ -13,11 +10,11 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/delay.h>
 #include <linux/regmap.h>
-#include <linux/acpi.h>
 #include <linux/pm.h>
 
 #include <linux/iio/iio.h>
@@ -56,7 +53,7 @@
 #define MMC35240_CTRL1_BW_SHIFT		0
 
 #define MMC35240_WAIT_CHARGE_PUMP	50000	/* us */
-#define MMC53240_WAIT_SET_RESET		1000	/* us */
+#define MMC35240_WAIT_SET_RESET		1000	/* us */
 
 /*
  * Memsic OTP process code piece is put here for reference:
@@ -189,9 +186,8 @@ static int mmc35240_hw_set(struct mmc35240_data *data, bool set)
 	 * Recharge the capacitor at VCAP pin, requested to be issued
 	 * before a SET/RESET command.
 	 */
-	ret = regmap_update_bits(data->regmap, MMC35240_REG_CTRL0,
-				 MMC35240_CTRL0_REFILL_BIT,
-				 MMC35240_CTRL0_REFILL_BIT);
+	ret = regmap_set_bits(data->regmap, MMC35240_REG_CTRL0,
+			      MMC35240_CTRL0_REFILL_BIT);
 	if (ret < 0)
 		return ret;
 	usleep_range(MMC35240_WAIT_CHARGE_PUMP, MMC35240_WAIT_CHARGE_PUMP + 1);
@@ -201,8 +197,7 @@ static int mmc35240_hw_set(struct mmc35240_data *data, bool set)
 	else
 		coil_bit = MMC35240_CTRL0_RESET_BIT;
 
-	return regmap_update_bits(data->regmap, MMC35240_REG_CTRL0,
-				  coil_bit, coil_bit);
+	return regmap_set_bits(data->regmap, MMC35240_REG_CTRL0, coil_bit);
 
 }
 
@@ -228,7 +223,7 @@ static int mmc35240_init(struct mmc35240_data *data)
 	ret = mmc35240_hw_set(data, true);
 	if (ret < 0)
 		return ret;
-	usleep_range(MMC53240_WAIT_SET_RESET, MMC53240_WAIT_SET_RESET + 1);
+	usleep_range(MMC35240_WAIT_SET_RESET, MMC35240_WAIT_SET_RESET + 1);
 
 	ret = mmc35240_hw_set(data, false);
 	if (ret < 0)
@@ -242,7 +237,7 @@ static int mmc35240_init(struct mmc35240_data *data)
 		return ret;
 
 	ret = regmap_bulk_read(data->regmap, MMC35240_OTP_START_ADDR,
-			       (u8 *)otp_data, sizeof(otp_data));
+			       otp_data, sizeof(otp_data));
 	if (ret < 0)
 		return ret;
 
@@ -298,13 +293,13 @@ static int mmc35240_read_measurement(struct mmc35240_data *data, __le16 buf[3])
 	if (ret < 0)
 		return ret;
 
-	return regmap_bulk_read(data->regmap, MMC35240_REG_XOUT_L, (u8 *)buf,
+	return regmap_bulk_read(data->regmap, MMC35240_REG_XOUT_L, buf,
 				3 * sizeof(__le16));
 }
 
 /**
  * mmc35240_raw_to_mgauss - convert raw readings to milli gauss. Also apply
-			    compensation for output value.
+ *			    compensation for output value.
  *
  * @data: device private data
  * @index: axis index for which we want the conversion
@@ -316,31 +311,31 @@ static int mmc35240_read_measurement(struct mmc35240_data *data, __le16 buf[3])
 static int mmc35240_raw_to_mgauss(struct mmc35240_data *data, int index,
 				  __le16 buf[], int *val)
 {
-	int raw_x, raw_y, raw_z;
-	int sens_x, sens_y, sens_z;
+	int raw[3];
+	int sens[3];
 	int nfo;
 
-	raw_x = le16_to_cpu(buf[AXIS_X]);
-	raw_y = le16_to_cpu(buf[AXIS_Y]);
-	raw_z = le16_to_cpu(buf[AXIS_Z]);
+	raw[AXIS_X] = le16_to_cpu(buf[AXIS_X]);
+	raw[AXIS_Y] = le16_to_cpu(buf[AXIS_Y]);
+	raw[AXIS_Z] = le16_to_cpu(buf[AXIS_Z]);
 
-	sens_x = mmc35240_props_table[data->res].sens[AXIS_X];
-	sens_y = mmc35240_props_table[data->res].sens[AXIS_Y];
-	sens_z = mmc35240_props_table[data->res].sens[AXIS_Z];
+	sens[AXIS_X] = mmc35240_props_table[data->res].sens[AXIS_X];
+	sens[AXIS_Y] = mmc35240_props_table[data->res].sens[AXIS_Y];
+	sens[AXIS_Z] = mmc35240_props_table[data->res].sens[AXIS_Z];
 
 	nfo = mmc35240_props_table[data->res].nfo;
 
 	switch (index) {
 	case AXIS_X:
-		*val = (raw_x - nfo) * 1000 / sens_x;
+		*val = (raw[AXIS_X] - nfo) * 1000 / sens[AXIS_X];
 		break;
 	case AXIS_Y:
-		*val = (raw_y - nfo) * 1000 / sens_y -
-			(raw_z - nfo)  * 1000 / sens_z;
+		*val = (raw[AXIS_Y] - nfo) * 1000 / sens[AXIS_Y] -
+			(raw[AXIS_Z] - nfo)  * 1000 / sens[AXIS_Z];
 		break;
 	case AXIS_Z:
-		*val = (raw_y - nfo) * 1000 / sens_y +
-			(raw_z - nfo) * 1000 / sens_z;
+		*val = (raw[AXIS_Y] - nfo) * 1000 / sens[AXIS_Y] +
+			(raw[AXIS_Z] - nfo) * 1000 / sens[AXIS_Z];
 		break;
 	default:
 		return -EINVAL;
@@ -418,7 +413,6 @@ static int mmc35240_write_raw(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info mmc35240_info = {
-	.driver_module	= THIS_MODULE,
 	.read_raw	= mmc35240_read_raw,
 	.write_raw	= mmc35240_write_raw,
 	.attrs		= &mmc35240_attribute_group,
@@ -463,7 +457,7 @@ static bool mmc35240_is_volatile_reg(struct device *dev, unsigned int reg)
 	}
 }
 
-static struct reg_default mmc35240_reg_defaults[] = {
+static const struct reg_default mmc35240_reg_defaults[] = {
 	{ MMC35240_REG_CTRL0,  0x00 },
 	{ MMC35240_REG_CTRL1,  0x00 },
 };
@@ -485,8 +479,7 @@ static const struct regmap_config mmc35240_regmap_config = {
 	.num_reg_defaults = ARRAY_SIZE(mmc35240_reg_defaults),
 };
 
-static int mmc35240_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int mmc35240_probe(struct i2c_client *client)
 {
 	struct mmc35240_data *data;
 	struct iio_dev *indio_dev;
@@ -511,7 +504,6 @@ static int mmc35240_probe(struct i2c_client *client,
 
 	mutex_init(&data->mutex);
 
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->info = &mmc35240_info;
 	indio_dev->name = MMC35240_DRV_NAME;
 	indio_dev->channels = mmc35240_channels;
@@ -526,7 +518,6 @@ static int mmc35240_probe(struct i2c_client *client,
 	return devm_iio_device_register(&client->dev, indio_dev);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int mmc35240_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
@@ -553,11 +544,15 @@ static int mmc35240_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-static const struct dev_pm_ops mmc35240_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(mmc35240_suspend, mmc35240_resume)
+static DEFINE_SIMPLE_DEV_PM_OPS(mmc35240_pm_ops, mmc35240_suspend,
+				mmc35240_resume);
+
+static const struct of_device_id mmc35240_of_match[] = {
+	{ .compatible = "memsic,mmc35240", },
+	{ }
 };
+MODULE_DEVICE_TABLE(of, mmc35240_of_match);
 
 static const struct acpi_device_id mmc35240_acpi_match[] = {
 	{"MMC35240", 0},
@@ -566,7 +561,7 @@ static const struct acpi_device_id mmc35240_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, mmc35240_acpi_match);
 
 static const struct i2c_device_id mmc35240_id[] = {
-	{"mmc35240", 0},
+	{ "mmc35240" },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, mmc35240_id);
@@ -574,8 +569,9 @@ MODULE_DEVICE_TABLE(i2c, mmc35240_id);
 static struct i2c_driver mmc35240_driver = {
 	.driver = {
 		.name = MMC35240_DRV_NAME,
-		.pm = &mmc35240_pm_ops,
-		.acpi_match_table = ACPI_PTR(mmc35240_acpi_match),
+		.of_match_table = mmc35240_of_match,
+		.pm = pm_sleep_ptr(&mmc35240_pm_ops),
+		.acpi_match_table = mmc35240_acpi_match,
 	},
 	.probe		= mmc35240_probe,
 	.id_table	= mmc35240_id,

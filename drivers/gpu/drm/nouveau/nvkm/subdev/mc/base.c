@@ -23,147 +23,125 @@
  */
 #include "priv.h"
 
-#include <core/device.h>
 #include <core/option.h>
+#include <subdev/top.h>
 
-static inline void
-nvkm_mc_unk260(struct nvkm_mc *pmc, u32 data)
+void
+nvkm_mc_unk260(struct nvkm_device *device, u32 data)
 {
-	const struct nvkm_mc_oclass *impl = (void *)nv_oclass(pmc);
-	if (impl->unk260)
-		impl->unk260(pmc, data);
-}
-
-static inline u32
-nvkm_mc_intr_mask(struct nvkm_mc *pmc)
-{
-	u32 intr = nv_rd32(pmc, 0x000100);
-	if (intr == 0xffffffff) /* likely fallen off the bus */
-		intr = 0x00000000;
-	return intr;
-}
-
-static irqreturn_t
-nvkm_mc_intr(int irq, void *arg)
-{
-	struct nvkm_mc *pmc = arg;
-	const struct nvkm_mc_oclass *oclass = (void *)nv_object(pmc)->oclass;
-	const struct nvkm_mc_intr *map = oclass->intr;
-	struct nvkm_subdev *unit;
-	u32 intr;
-
-	nv_wr32(pmc, 0x000140, 0x00000000);
-	nv_rd32(pmc, 0x000140);
-	intr = nvkm_mc_intr_mask(pmc);
-	if (pmc->use_msi)
-		oclass->msi_rearm(pmc);
-
-	if (intr) {
-		u32 stat = intr = nvkm_mc_intr_mask(pmc);
-		while (map->stat) {
-			if (intr & map->stat) {
-				unit = nvkm_subdev(pmc, map->unit);
-				if (unit && unit->intr)
-					unit->intr(unit);
-				stat &= ~map->stat;
-			}
-			map++;
-		}
-
-		if (stat)
-			nv_error(pmc, "unknown intr 0x%08x\n", stat);
-	}
-
-	nv_wr32(pmc, 0x000140, 0x00000001);
-	return intr ? IRQ_HANDLED : IRQ_NONE;
-}
-
-int
-_nvkm_mc_fini(struct nvkm_object *object, bool suspend)
-{
-	struct nvkm_mc *pmc = (void *)object;
-	nv_wr32(pmc, 0x000140, 0x00000000);
-	return nvkm_subdev_fini(&pmc->base, suspend);
-}
-
-int
-_nvkm_mc_init(struct nvkm_object *object)
-{
-	struct nvkm_mc *pmc = (void *)object;
-	int ret = nvkm_subdev_init(&pmc->base);
-	if (ret)
-		return ret;
-	nv_wr32(pmc, 0x000140, 0x00000001);
-	return 0;
+	struct nvkm_mc *mc = device->mc;
+	if (likely(mc) && mc->func->unk260)
+		mc->func->unk260(mc, data);
 }
 
 void
-_nvkm_mc_dtor(struct nvkm_object *object)
+nvkm_mc_intr_mask(struct nvkm_device *device, enum nvkm_subdev_type type, int inst, bool en)
 {
-	struct nvkm_device *device = nv_device(object);
-	struct nvkm_mc *pmc = (void *)object;
-	free_irq(pmc->irq, pmc);
-	if (pmc->use_msi)
-		pci_disable_msi(device->pdev);
-	nvkm_subdev_destroy(&pmc->base);
+	struct nvkm_subdev *subdev = nvkm_device_subdev(device, type, inst);
+
+	if (subdev) {
+		if (en)
+			nvkm_intr_allow(subdev, NVKM_INTR_SUBDEV);
+		else
+			nvkm_intr_block(subdev, NVKM_INTR_SUBDEV);
+	}
 }
 
-int
-nvkm_mc_create_(struct nvkm_object *parent, struct nvkm_object *engine,
-		struct nvkm_oclass *bclass, int length, void **pobject)
+static u32
+nvkm_mc_reset_mask(struct nvkm_device *device, bool isauto, enum nvkm_subdev_type type, int inst)
 {
-	const struct nvkm_mc_oclass *oclass = (void *)bclass;
-	struct nvkm_device *device = nv_device(parent);
-	struct nvkm_mc *pmc;
-	int ret;
-
-	ret = nvkm_subdev_create_(parent, engine, bclass, 0, "PMC",
-				  "master", length, pobject);
-	pmc = *pobject;
-	if (ret)
-		return ret;
-
-	pmc->unk260 = nvkm_mc_unk260;
-
-	if (nv_device_is_pci(device)) {
-		switch (device->pdev->device & 0x0ff0) {
-		case 0x00f0:
-		case 0x02e0:
-			/* BR02? NFI how these would be handled yet exactly */
-			break;
-		default:
-			switch (device->chipset) {
-			case 0xaa:
-				/* reported broken, nv also disable it */
-				break;
-			default:
-				pmc->use_msi = true;
-				break;
+	struct nvkm_mc *mc = device->mc;
+	const struct nvkm_mc_map *map;
+	u64 pmc_enable = 0;
+	if (likely(mc)) {
+		if (!(pmc_enable = nvkm_top_reset(device, type, inst))) {
+			for (map = mc->func->reset; map && map->stat; map++) {
+				if (!isauto || !map->noauto) {
+					if (map->type == type && map->inst == inst) {
+						pmc_enable = map->stat;
+						break;
+					}
+				}
 			}
-		}
-
-		pmc->use_msi = nvkm_boolopt(device->cfgopt, "NvMSI",
-					    pmc->use_msi);
-
-		if (pmc->use_msi && oclass->msi_rearm) {
-			pmc->use_msi = pci_enable_msi(device->pdev) == 0;
-			if (pmc->use_msi) {
-				nv_info(pmc, "MSI interrupts enabled\n");
-				oclass->msi_rearm(pmc);
-			}
-		} else {
-			pmc->use_msi = false;
 		}
 	}
+	return pmc_enable;
+}
 
-	ret = nv_device_get_irq(device, true);
-	if (ret < 0)
-		return ret;
-	pmc->irq = ret;
+void
+nvkm_mc_reset(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	u64 pmc_enable = nvkm_mc_reset_mask(device, true, type, inst);
+	if (pmc_enable) {
+		device->mc->func->device->disable(device->mc, pmc_enable);
+		device->mc->func->device->enable(device->mc, pmc_enable);
+	}
+}
 
-	ret = request_irq(pmc->irq, nvkm_mc_intr, IRQF_SHARED, "nvkm", pmc);
-	if (ret < 0)
-		return ret;
+void
+nvkm_mc_disable(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	u64 pmc_enable = nvkm_mc_reset_mask(device, false, type, inst);
+	if (pmc_enable)
+		device->mc->func->device->disable(device->mc, pmc_enable);
+}
+
+void
+nvkm_mc_enable(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	u64 pmc_enable = nvkm_mc_reset_mask(device, false, type, inst);
+	if (pmc_enable)
+		device->mc->func->device->enable(device->mc, pmc_enable);
+}
+
+bool
+nvkm_mc_enabled(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	u64 pmc_enable = nvkm_mc_reset_mask(device, false, type, inst);
+
+	return (pmc_enable != 0) && device->mc->func->device->enabled(device->mc, pmc_enable);
+}
+
+static int
+nvkm_mc_init(struct nvkm_subdev *subdev)
+{
+	struct nvkm_mc *mc = nvkm_mc(subdev);
+	if (mc->func->init)
+		mc->func->init(mc);
+	return 0;
+}
+
+static void *
+nvkm_mc_dtor(struct nvkm_subdev *subdev)
+{
+	return nvkm_mc(subdev);
+}
+
+static const struct nvkm_subdev_func
+nvkm_mc = {
+	.dtor = nvkm_mc_dtor,
+	.init = nvkm_mc_init,
+};
+
+int
+nvkm_mc_new_(const struct nvkm_mc_func *func, struct nvkm_device *device,
+	     enum nvkm_subdev_type type, int inst, struct nvkm_mc **pmc)
+{
+	struct nvkm_mc *mc;
+	int ret;
+
+	if (!(mc = *pmc = kzalloc(sizeof(*mc), GFP_KERNEL)))
+		return -ENOMEM;
+
+	nvkm_subdev_ctor(&nvkm_mc, device, type, inst, &mc->subdev);
+	mc->func = func;
+
+	if (mc->func->intr) {
+		ret = nvkm_intr_add(mc->func->intr, mc->func->intrs, &mc->subdev,
+				    mc->func->intr_nonstall ? 2 : 1, &mc->intr);
+		if (ret)
+			return ret;
+	}
 
 	return 0;
 }

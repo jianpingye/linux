@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* ffb.c: Creator/Elite3D frame buffer driver
  *
  * Copyright (C) 2003, 2006 David S. Miller (davem@davemloft.net)
@@ -15,7 +16,8 @@
 #include <linux/fb.h>
 #include <linux/mm.h>
 #include <linux/timer.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 
 #include <asm/io.h>
 #include <asm/upa.h>
@@ -35,16 +37,18 @@ static void ffb_imageblit(struct fb_info *, const struct fb_image *);
 static void ffb_fillrect(struct fb_info *, const struct fb_fillrect *);
 static void ffb_copyarea(struct fb_info *, const struct fb_copyarea *);
 static int ffb_sync(struct fb_info *);
-static int ffb_mmap(struct fb_info *, struct vm_area_struct *);
-static int ffb_ioctl(struct fb_info *, unsigned int, unsigned long);
 static int ffb_pan_display(struct fb_var_screeninfo *, struct fb_info *);
+
+static int ffb_sbusfb_mmap(struct fb_info *info, struct vm_area_struct *vma);
+static int ffb_sbusfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg);
 
 /*
  *  Frame buffer operations
  */
 
-static struct fb_ops ffb_ops = {
+static const struct fb_ops ffb_ops = {
 	.owner			= THIS_MODULE,
+	__FB_DEFAULT_SBUS_OPS_RDWR(ffb),
 	.fb_setcolreg		= ffb_setcolreg,
 	.fb_blank		= ffb_blank,
 	.fb_pan_display		= ffb_pan_display,
@@ -52,11 +56,8 @@ static struct fb_ops ffb_ops = {
 	.fb_copyarea		= ffb_copyarea,
 	.fb_imageblit		= ffb_imageblit,
 	.fb_sync		= ffb_sync,
-	.fb_mmap		= ffb_mmap,
-	.fb_ioctl		= ffb_ioctl,
-#ifdef CONFIG_COMPAT
-	.fb_compat_ioctl	= sbusfb_compat_ioctl,
-#endif
+	__FB_DEFAULT_SBUS_OPS_IOCTL(ffb),
+	__FB_DEFAULT_SBUS_OPS_MMAP(ffb),
 };
 
 /* Register layout and definitions */
@@ -666,7 +667,7 @@ static int ffb_setcolreg(unsigned regno,
 
 /**
  *	ffb_blank - Optional function.  Blanks the display.
- *	@blank_mode: the blank mode we want.
+ *	@blank: the blank mode we want.
  *	@info: frame buffer structure that represents a single frame buffer
  */
 static int ffb_blank(int blank, struct fb_info *info)
@@ -709,7 +710,7 @@ static int ffb_blank(int blank, struct fb_info *info)
 	return 0;
 }
 
-static struct sbus_mmap_map ffb_mmap_map[] = {
+static const struct sbus_mmap_map ffb_mmap_map[] = {
 	{
 		.voff	= FFB_SFB8R_VOFF,
 		.poff	= FFB_SFB8R_POFF,
@@ -848,7 +849,7 @@ static struct sbus_mmap_map ffb_mmap_map[] = {
 	{ .size = 0 }
 };
 
-static int ffb_mmap(struct fb_info *info, struct vm_area_struct *vma)
+static int ffb_sbusfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
 	struct ffb_par *par = (struct ffb_par *)info->par;
 
@@ -857,7 +858,7 @@ static int ffb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 				  0, vma);
 }
 
-static int ffb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
+static int ffb_sbusfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 {
 	struct ffb_par *par = (struct ffb_par *)info->par;
 
@@ -882,7 +883,7 @@ static void ffb_init_fix(struct fb_info *info)
 	} else
 		ffb_type_name = "Elite 3D";
 
-	strlcpy(info->fix.id, ffb_type_name, sizeof(info->fix.id));
+	strscpy(info->fix.id, ffb_type_name, sizeof(info->fix.id));
 
 	info->fix.type = FB_TYPE_PACKED_PIXELS;
 	info->fix.visual = FB_VISUAL_TRUECOLOR;
@@ -928,8 +929,7 @@ static int ffb_probe(struct platform_device *op)
 	/* Don't mention copyarea, so SCROLL_REDRAW is always
 	 * used.  It is the fastest on this chip.
 	 */
-	info->flags = (FBINFO_DEFAULT |
-		       /* FBINFO_HWACCEL_COPYAREA | */
+	info->flags = (/* FBINFO_HWACCEL_COPYAREA | */
 		       FBINFO_HWACCEL_FILLRECT |
 		       FBINFO_HWACCEL_IMAGEBLIT);
 
@@ -944,7 +944,7 @@ static int ffb_probe(struct platform_device *op)
 
 	info->var.accel_flags = FB_ACCELF_TEXT;
 
-	if (!strcmp(dp->name, "SUNW,afb"))
+	if (of_node_name_eq(dp, "SUNW,afb"))
 		par->flags |= FFB_FLAG_AFB;
 
 	par->board_type = of_getintprop_default(dp, "board_type", 0);
@@ -997,9 +997,9 @@ static int ffb_probe(struct platform_device *op)
 
 	dev_set_drvdata(&op->dev, info);
 
-	printk(KERN_INFO "%s: %s at %016lx, type %d, "
+	printk(KERN_INFO "%pOF: %s at %016lx, type %d, "
 	       "DAC pnum[%x] rev[%d] manuf_rev[%d]\n",
-	       dp->full_name,
+	       dp,
 	       ((par->flags & FFB_FLAG_AFB) ? "AFB" : "FFB"),
 	       par->physbase, par->board_type,
 	       dac_pnum, dac_rev, dac_mrev);
@@ -1022,7 +1022,7 @@ out_err:
 	return err;
 }
 
-static int ffb_remove(struct platform_device *op)
+static void ffb_remove(struct platform_device *op)
 {
 	struct fb_info *info = dev_get_drvdata(&op->dev);
 	struct ffb_par *par = info->par;
@@ -1034,8 +1034,6 @@ static int ffb_remove(struct platform_device *op)
 	of_iounmap(&op->resource[1], par->dac, sizeof(struct ffb_dac));
 
 	framebuffer_release(info);
-
-	return 0;
 }
 
 static const struct of_device_id ffb_match[] = {

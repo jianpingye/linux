@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * MEN 16z135 High Speed UART
  *
  * Copyright (C) 2014 MEN Mikroelektronik GmbH (www.men.de)
  * Author: Johannes Thumshirn <johannes.thumshirn@men.de>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; version 2 of the License.
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ":" fmt
 
@@ -34,8 +31,6 @@
 #define MEN_Z135_UART_FREQ		0x80c
 #define MEN_Z135_BAUD_REG		0x810
 #define MEN_Z135_TIMEOUT		0x814
-
-#define MEN_Z135_MEM_SIZE		0x818
 
 #define IRQ_ID(x) ((x) & 0x1f)
 
@@ -124,6 +119,7 @@ MODULE_PARM_DESC(rx_timeout, "RX timeout. "
 struct men_z135_port {
 	struct uart_port port;
 	struct mcb_device *mdev;
+	struct resource *mem;
 	unsigned char *rxbuf;
 	u32 stat_reg;
 	spinlock_t lock;
@@ -159,7 +155,7 @@ static inline void men_z135_reg_set(struct men_z135_port *uart,
  * @addr: Register address
  * @val: value to clear
  */
-static inline void men_z135_reg_clr(struct men_z135_port *uart,
+static void men_z135_reg_clr(struct men_z135_port *uart,
 				u32 addr, u32 val)
 {
 	struct uart_port *port = &uart->port;
@@ -177,7 +173,7 @@ static inline void men_z135_reg_clr(struct men_z135_port *uart,
 
 /**
  * men_z135_handle_modem_status() - Handle change of modem status
- * @port: The UART port
+ * @uart: The UART port
  *
  * Handle change of modem status register. This is done by reading the "delta"
  * versions of DCD (Data Carrier Detect) and CTS (Clear To Send).
@@ -240,7 +236,7 @@ static u16 get_rx_fifo_content(struct men_z135_port *uart)
 
 /**
  * men_z135_handle_rx() - RX tasklet routine
- * @arg: Pointer to struct men_z135_port
+ * @uart: Pointer to struct men_z135_port
  *
  * Copy from RX FIFO and acknowledge number of bytes copied.
  */
@@ -291,23 +287,20 @@ static void men_z135_handle_rx(struct men_z135_port *uart)
 
 /**
  * men_z135_handle_tx() - TX tasklet routine
- * @arg: Pointer to struct men_z135_port
+ * @uart: Pointer to struct men_z135_port
  *
  */
 static void men_z135_handle_tx(struct men_z135_port *uart)
 {
 	struct uart_port *port = &uart->port;
-	struct circ_buf *xmit = &port->state->xmit;
+	struct tty_port *tport = &port->state->port;
+	unsigned char *tail;
+	unsigned int n, txfree;
 	u32 txc;
 	u32 wptr;
 	int qlen;
-	int n;
-	int txfree;
-	int head;
-	int tail;
-	int s;
 
-	if (uart_circ_empty(xmit))
+	if (kfifo_is_empty(&tport->xmit_fifo))
 		goto out;
 
 	if (uart_tx_stopped(port))
@@ -317,7 +310,7 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 		goto out;
 
 	/* calculate bytes to copy */
-	qlen = uart_circ_chars_pending(xmit);
+	qlen = kfifo_len(&tport->xmit_fifo);
 	if (qlen <= 0)
 		goto out;
 
@@ -349,25 +342,18 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 	if (n <= 0)
 		goto irq_en;
 
-	head = xmit->head & (UART_XMIT_SIZE - 1);
-	tail = xmit->tail & (UART_XMIT_SIZE - 1);
-
-	s = ((head >= tail) ? head : UART_XMIT_SIZE) - tail;
-	n = min(n, s);
-
-	memcpy_toio(port->membase + MEN_Z135_TX_RAM, &xmit->buf[xmit->tail], n);
-	xmit->tail = (xmit->tail + n) & (UART_XMIT_SIZE - 1);
-	mmiowb();
+	n = kfifo_out_linear_ptr(&tport->xmit_fifo, &tail,
+			min_t(unsigned int, UART_XMIT_SIZE, n));
+	memcpy_toio(port->membase + MEN_Z135_TX_RAM, tail, n);
 
 	iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
+	uart_xmit_advance(port, n);
 
-	port->icount.tx += n;
-
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+	if (kfifo_len(&tport->xmit_fifo) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
 
 irq_en:
-	if (!uart_circ_empty(xmit))
+	if (!kfifo_is_empty(&tport->xmit_fifo))
 		men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
 	else
 		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
@@ -392,7 +378,6 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	struct men_z135_port *uart = (struct men_z135_port *)data;
 	struct uart_port *port = &uart->port;
 	bool handled = false;
-	unsigned long flags;
 	int irq_id;
 
 	uart->stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
@@ -401,7 +386,7 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	if (!irq_id)
 		goto out;
 
-	spin_lock_irqsave(&port->lock, flags);
+	uart_port_lock(port);
 	/* It's save to write to IIR[7:6] RXC[9:8] */
 	iowrite8(irq_id, port->membase + MEN_Z135_STAT_REG);
 
@@ -427,7 +412,7 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 		handled = true;
 	}
 
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock(port);
 out:
 	return IRQ_RETVAL(handled);
 }
@@ -602,7 +587,7 @@ static void men_z135_stop_rx(struct uart_port *port)
 
 /**
  * men_z135_enable_ms() - Enable Modem Status
- * port:
+ * @port: the port
  *
  * Enable Modem Status IRQ.
  */
@@ -652,8 +637,8 @@ static void men_z135_shutdown(struct uart_port *port)
 }
 
 static void men_z135_set_termios(struct uart_port *port,
-				struct ktermios *termios,
-				struct ktermios *old)
+				 struct ktermios *termios,
+				 const struct ktermios *old)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 	unsigned int baud;
@@ -717,7 +702,7 @@ static void men_z135_set_termios(struct uart_port *port,
 
 	baud = uart_get_baud_rate(port, termios, old, 0, uart_freq / 16);
 
-	spin_lock(&port->lock);
+	uart_port_lock_irq(port);
 	if (tty_termios_baud_rate(termios))
 		tty_termios_encode_baud_rate(termios, baud, baud);
 
@@ -725,7 +710,7 @@ static void men_z135_set_termios(struct uart_port *port,
 	iowrite32(bd_reg, port->membase + MEN_Z135_BAUD_REG);
 
 	uart_update_timeout(port, termios->c_cflag, baud);
-	spin_unlock(&port->lock);
+	uart_port_unlock_irq(port);
 }
 
 static const char *men_z135_type(struct uart_port *port)
@@ -735,22 +720,30 @@ static const char *men_z135_type(struct uart_port *port)
 
 static void men_z135_release_port(struct uart_port *port)
 {
+	struct men_z135_port *uart = to_men_z135(port);
+
 	iounmap(port->membase);
 	port->membase = NULL;
 
-	release_mem_region(port->mapbase, MEN_Z135_MEM_SIZE);
+	mcb_release_mem(uart->mem);
 }
 
 static int men_z135_request_port(struct uart_port *port)
 {
-	int size = MEN_Z135_MEM_SIZE;
+	struct men_z135_port *uart = to_men_z135(port);
+	struct mcb_device *mdev = uart->mdev;
+	struct resource *mem;
 
-	if (!request_mem_region(port->mapbase, size, "men_z135_port"))
-		return -EBUSY;
+	mem = mcb_request_mem(uart->mdev, dev_name(&mdev->dev));
+	if (IS_ERR(mem))
+		return PTR_ERR(mem);
 
-	port->membase = ioremap(port->mapbase, MEN_Z135_MEM_SIZE);
+	port->mapbase = mem->start;
+	uart->mem = mem;
+
+	port->membase = ioremap(mem->start, resource_size(mem));
 	if (port->membase == NULL) {
-		release_mem_region(port->mapbase, MEN_Z135_MEM_SIZE);
+		mcb_release_mem(mem);
 		return -ENOMEM;
 	}
 
@@ -769,7 +762,7 @@ static int men_z135_verify_port(struct uart_port *port,
 	return -EINVAL;
 }
 
-static struct uart_ops men_z135_ops = {
+static const struct uart_ops men_z135_ops = {
 	.tx_empty = men_z135_tx_empty,
 	.set_mctrl = men_z135_set_mctrl,
 	.get_mctrl = men_z135_get_mctrl,
@@ -831,7 +824,6 @@ static int men_z135_probe(struct mcb_device *mdev,
 	uart->port.iotype = UPIO_MEM;
 	uart->port.ops = &men_z135_ops;
 	uart->port.irq = mcb_get_irq(mdev);
-	uart->port.iotype = UPIO_MEM;
 	uart->port.flags = UPF_BOOT_AUTOCONF | UPF_IOREMAP;
 	uart->port.line = line++;
 	uart->port.dev = dev;
@@ -840,7 +832,6 @@ static int men_z135_probe(struct mcb_device *mdev,
 	uart->port.membase = NULL;
 	uart->mdev = mdev;
 
-	spin_lock_init(&uart->port.lock);
 	spin_lock_init(&uart->lock);
 
 	err = uart_add_one_port(&men_z135_driver, &uart->port);
@@ -929,3 +920,4 @@ MODULE_AUTHOR("Johannes Thumshirn <johannes.thumshirn@men.de>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MEN 16z135 High Speed UART");
 MODULE_ALIAS("mcb:16z135");
+MODULE_IMPORT_NS(MCB);

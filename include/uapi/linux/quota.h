@@ -33,7 +33,6 @@
 #ifndef _UAPI_LINUX_QUOTA_
 #define _UAPI_LINUX_QUOTA_
 
-#include <linux/errno.h>
 #include <linux/types.h>
 
 #define __DQUOT_VERSION__	"dquot_6.6.0"
@@ -71,12 +70,14 @@
 #define Q_SETINFO  0x800006	/* set information about quota files */
 #define Q_GETQUOTA 0x800007	/* get user quota structure */
 #define Q_SETQUOTA 0x800008	/* set user quota structure */
+#define Q_GETNEXTQUOTA 0x800009	/* get disk limits and usage >= ID */
 
 /* Quota format type IDs */
 #define	QFMT_VFS_OLD 1
 #define	QFMT_VFS_V0 2
 #define QFMT_OCFS2 3
 #define	QFMT_VFS_V1 4
+#define	QFMT_SHMEM 5
 
 /* Size of block in which space limits are passed through the quota
  * interface */
@@ -117,6 +118,19 @@ struct if_dqblk {
 	__u64 dqb_btime;
 	__u64 dqb_itime;
 	__u32 dqb_valid;
+};
+
+struct if_nextdqblk {
+	__u64 dqb_bhardlimit;
+	__u64 dqb_bsoftlimit;
+	__u64 dqb_curspace;
+	__u64 dqb_ihardlimit;
+	__u64 dqb_isoftlimit;
+	__u64 dqb_curinodes;
+	__u64 dqb_btime;
+	__u64 dqb_itime;
+	__u32 dqb_valid;
+	__u32 dqb_id;
 };
 
 /*
@@ -177,6 +191,7 @@ enum {
 	QUOTA_NL_A_DEV_MAJOR,
 	QUOTA_NL_A_DEV_MINOR,
 	QUOTA_NL_A_CAUSED_ID,
+	QUOTA_NL_A_PAD,
 	__QUOTA_NL_A_MAX,
 };
 #define QUOTA_NL_A_MAX (__QUOTA_NL_A_MAX - 1)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
  * sched-messaging.c
@@ -9,10 +10,7 @@
  *
  */
 
-#include "../perf.h"
-#include "../util/util.h"
-#include "../util/parse-options.h"
-#include "../builtin.h"
+#include <subcmd/parse-options.h>
 #include "bench.h"
 
 /* Test groups of 20 processes spraying to 20 receivers */
@@ -29,27 +27,41 @@
 #include <poll.h>
 #include <limits.h>
 #include <err.h>
+#include <linux/list.h>
+#include <linux/time64.h>
 
 #define DATASIZE 100
 
 static bool use_pipes = false;
-static unsigned int loops = 100;
+static unsigned int nr_loops = 100;
 static bool thread_mode = false;
 static unsigned int num_groups = 10;
+static unsigned int total_children = 0;
+static struct list_head sender_contexts = LIST_HEAD_INIT(sender_contexts);
+static struct list_head receiver_contexts = LIST_HEAD_INIT(receiver_contexts);
 
 struct sender_context {
+	struct list_head list;
 	unsigned int num_fds;
 	int ready_out;
 	int wakefd;
-	int out_fds[0];
+	int out_fds[];
 };
 
 struct receiver_context {
+	struct list_head list;
 	unsigned int num_packets;
 	int in_fds[2];
 	int ready_out;
 	int wakefd;
 };
+
+union messaging_worker {
+	pthread_t thread;
+	pid_t pid;
+};
+
+static union messaging_worker *worker_tab;
 
 static void fdpair(int fds[2])
 {
@@ -67,11 +79,10 @@ static void fdpair(int fds[2])
 /* Block until we're ready to go */
 static void ready(int ready_out, int wakefd)
 {
-	char dummy;
 	struct pollfd pollfd = { .fd = wakefd, .events = POLLIN };
 
 	/* Tell them we're ready. */
-	if (write(ready_out, &dummy, 1) != 1)
+	if (write(ready_out, "R", 1) != 1)
 		err(EXIT_FAILURE, "CLIENT: ready write");
 
 	/* Wait for "GO" signal */
@@ -79,22 +90,23 @@ static void ready(int ready_out, int wakefd)
 		err(EXIT_FAILURE, "poll");
 }
 
-/* Sender sprays loops messages down each file descriptor */
+/* Sender sprays nr_loops messages down each file descriptor */
 static void *sender(struct sender_context *ctx)
 {
 	char data[DATASIZE];
 	unsigned int i, j;
 
 	ready(ctx->ready_out, ctx->wakefd);
+	memset(data, 'S', sizeof(data));
 
 	/* Now pump to every receiver. */
-	for (i = 0; i < loops; i++) {
+	for (i = 0; i < nr_loops; i++) {
 		for (j = 0; j < ctx->num_fds; j++) {
 			int ret, done = 0;
 
 again:
 			ret = write(ctx->out_fds[j], data + done,
-				    sizeof(data)-done);
+				    sizeof(data) - done);
 			if (ret < 0)
 				err(EXIT_FAILURE, "SENDER: write");
 			done += ret;
@@ -135,29 +147,11 @@ again:
 	return NULL;
 }
 
-static pthread_t create_worker(void *ctx, void *(*func)(void *))
+static void create_thread_worker(union messaging_worker *worker,
+				 void *ctx, void *(*func)(void *))
 {
 	pthread_attr_t attr;
-	pthread_t childid;
 	int ret;
-
-	if (!thread_mode) {
-		/* process mode */
-		/* Fork the receiver. */
-		switch (fork()) {
-		case -1:
-			err(EXIT_FAILURE, "fork()");
-			break;
-		case 0:
-			(*func) (ctx);
-			exit(0);
-			break;
-		default:
-			break;
-		}
-
-		return (pthread_t)0;
-	}
 
 	if (pthread_attr_init(&attr) != 0)
 		err(EXIT_FAILURE, "pthread_attr_init:");
@@ -167,14 +161,37 @@ static pthread_t create_worker(void *ctx, void *(*func)(void *))
 		err(EXIT_FAILURE, "pthread_attr_setstacksize");
 #endif
 
-	ret = pthread_create(&childid, &attr, func, ctx);
+	ret = pthread_create(&worker->thread, &attr, func, ctx);
 	if (ret != 0)
 		err(EXIT_FAILURE, "pthread_create failed");
 
-	return childid;
+	pthread_attr_destroy(&attr);
 }
 
-static void reap_worker(pthread_t id)
+static void create_process_worker(union messaging_worker *worker,
+				  void *ctx, void *(*func)(void *))
+{
+	/* Fork the receiver. */
+	worker->pid = fork();
+
+	if (worker->pid == -1) {
+		err(EXIT_FAILURE, "fork()");
+	} else if (worker->pid == 0) {
+		(*func) (ctx);
+		exit(0);
+	}
+}
+
+static void create_worker(union messaging_worker *worker,
+			  void *ctx, void *(*func)(void *))
+{
+	if (!thread_mode)
+		return create_process_worker(worker, ctx, func);
+	else
+		return create_thread_worker(worker, ctx, func);
+}
+
+static void reap_worker(union messaging_worker *worker)
 {
 	int proc_status;
 	void *thread_status;
@@ -185,23 +202,24 @@ static void reap_worker(pthread_t id)
 		if (!WIFEXITED(proc_status))
 			exit(1);
 	} else {
-		pthread_join(id, &thread_status);
+		pthread_join(worker->thread, &thread_status);
 	}
 }
 
 /* One group of senders and receivers */
-static unsigned int group(pthread_t *pth,
+static unsigned int group(union messaging_worker *worker,
 		unsigned int num_fds,
 		int ready_out,
 		int wakefd)
 {
 	unsigned int i;
-	struct sender_context *snd_ctx = malloc(sizeof(struct sender_context)
-			+ num_fds * sizeof(int));
+	struct sender_context *snd_ctx = malloc(sizeof(struct sender_context) +
+						num_fds * sizeof(int));
 
 	if (!snd_ctx)
 		err(EXIT_FAILURE, "malloc()");
 
+	list_add(&snd_ctx->list, &sender_contexts);
 	for (i = 0; i < num_fds; i++) {
 		int fds[2];
 		struct receiver_context *ctx = malloc(sizeof(*ctx));
@@ -209,17 +227,18 @@ static unsigned int group(pthread_t *pth,
 		if (!ctx)
 			err(EXIT_FAILURE, "malloc()");
 
+		list_add(&ctx->list, &receiver_contexts);
 
 		/* Create the pipe between client and server */
 		fdpair(fds);
 
-		ctx->num_packets = num_fds * loops;
+		ctx->num_packets = num_fds * nr_loops;
 		ctx->in_fds[0] = fds[0];
 		ctx->in_fds[1] = fds[1];
 		ctx->ready_out = ready_out;
 		ctx->wakefd = wakefd;
 
-		pth[i] = create_worker(ctx, (void *)receiver);
+		create_worker(worker + i, ctx, (void *)receiver);
 
 		snd_ctx->out_fds[i] = fds[1];
 		if (!thread_mode)
@@ -232,7 +251,7 @@ static unsigned int group(pthread_t *pth,
 		snd_ctx->wakefd = wakefd;
 		snd_ctx->num_fds = num_fds;
 
-		pth[num_fds+i] = create_worker(snd_ctx, (void *)sender);
+		create_worker(worker + num_fds + i, snd_ctx, (void *)sender);
 	}
 
 	/* Close the fds we have left */
@@ -244,13 +263,24 @@ static unsigned int group(pthread_t *pth,
 	return num_fds * 2;
 }
 
+static void sig_handler(int sig __maybe_unused)
+{
+	unsigned int i;
+
+	/*
+	 * When exit abnormally, kill all forked child processes.
+	 */
+	for (i = 0; i < total_children; i++)
+		kill(worker_tab[i].pid, SIGKILL);
+}
+
 static const struct option options[] = {
 	OPT_BOOLEAN('p', "pipe", &use_pipes,
 		    "Use pipe() instead of socketpair()"),
 	OPT_BOOLEAN('t', "thread", &thread_mode,
 		    "Be multi thread instead of multi process"),
 	OPT_UINTEGER('g', "group", &num_groups, "Specify number of groups"),
-	OPT_UINTEGER('l', "loop", &loops, "Specify number of loops"),
+	OPT_UINTEGER('l', "nr_loops", &nr_loops, "Specify the number of loops to run (default: 100)"),
 	OPT_END()
 };
 
@@ -259,29 +289,32 @@ static const char * const bench_sched_message_usage[] = {
 	NULL
 };
 
-int bench_sched_messaging(int argc, const char **argv,
-		    const char *prefix __maybe_unused)
+int bench_sched_messaging(int argc, const char **argv)
 {
-	unsigned int i, total_children;
+	unsigned int i;
 	struct timeval start, stop, diff;
 	unsigned int num_fds = 20;
 	int readyfds[2], wakefds[2];
 	char dummy;
-	pthread_t *pth_tab;
+	struct sender_context *pos, *n;
 
 	argc = parse_options(argc, argv, options,
 			     bench_sched_message_usage, 0);
 
-	pth_tab = malloc(num_fds * 2 * num_groups * sizeof(pthread_t));
-	if (!pth_tab)
+	worker_tab = malloc(num_fds * 2 * num_groups * sizeof(union messaging_worker));
+	if (!worker_tab)
 		err(EXIT_FAILURE, "main:malloc()");
 
 	fdpair(readyfds);
 	fdpair(wakefds);
 
-	total_children = 0;
+	if (!thread_mode) {
+		signal(SIGINT, sig_handler);
+		signal(SIGTERM, sig_handler);
+	}
+
 	for (i = 0; i < num_groups; i++)
-		total_children += group(pth_tab+total_children, num_fds,
+		total_children += group(worker_tab + total_children, num_fds,
 					readyfds[1], wakefds[0]);
 
 	/* Wait for everyone to be ready */
@@ -297,7 +330,7 @@ int bench_sched_messaging(int argc, const char **argv,
 
 	/* Reap them all */
 	for (i = 0; i < total_children; i++)
-		reap_worker(pth_tab[i]);
+		reap_worker(worker_tab + i);
 
 	gettimeofday(&stop, NULL);
 
@@ -311,12 +344,12 @@ int bench_sched_messaging(int argc, const char **argv,
 		       num_groups, num_groups * 2 * num_fds,
 		       thread_mode ? "threads" : "processes");
 		printf(" %14s: %lu.%03lu [sec]\n", "Total time",
-		       diff.tv_sec,
-		       (unsigned long) (diff.tv_usec/1000));
+		       (unsigned long) diff.tv_sec,
+		       (unsigned long) (diff.tv_usec / USEC_PER_MSEC));
 		break;
 	case BENCH_FORMAT_SIMPLE:
-		printf("%lu.%03lu\n", diff.tv_sec,
-		       (unsigned long) (diff.tv_usec/1000));
+		printf("%lu.%03lu\n", (unsigned long) diff.tv_sec,
+		       (unsigned long) (diff.tv_usec / USEC_PER_MSEC));
 		break;
 	default:
 		/* reaching here is something disaster */
@@ -325,7 +358,14 @@ int bench_sched_messaging(int argc, const char **argv,
 		break;
 	}
 
-	free(pth_tab);
-
+	free(worker_tab);
+	list_for_each_entry_safe(pos, n, &sender_contexts, list) {
+		list_del_init(&pos->list);
+		free(pos);
+	}
+	list_for_each_entry_safe(pos, n, &receiver_contexts, list) {
+		list_del_init(&pos->list);
+		free(pos);
+	}
 	return 0;
 }

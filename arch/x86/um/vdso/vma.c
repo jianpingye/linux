@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 Richard Weinberger <richrd@nod.at>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/slab.h>
@@ -55,20 +52,25 @@ subsys_initcall(init_vdso);
 
 int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 {
-	int err;
+	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
+	static struct vm_special_mapping vdso_mapping = {
+		.name = "[vdso]",
+	};
 
 	if (!vdso_enabled)
 		return 0;
 
-	down_write(&mm->mmap_sem);
+	if (mmap_write_lock_killable(mm))
+		return -EINTR;
 
-	err = install_special_mapping(mm, um_vdso_addr, PAGE_SIZE,
+	vdso_mapping.pages = vdsop;
+	vma = _install_special_mapping(mm, um_vdso_addr, PAGE_SIZE,
 		VM_READ|VM_EXEC|
 		VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC,
-		vdsop);
+		&vdso_mapping);
 
-	up_write(&mm->mmap_sem);
+	mmap_write_unlock(mm);
 
-	return err;
+	return IS_ERR(vma) ? PTR_ERR(vma) : 0;
 }

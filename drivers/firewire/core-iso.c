@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Isochronous I/O functionality:
  *   - Isochronous DMA context management
  *   - Isochronous bus resource management (channels, bandwidth), client side
  *
  * Copyright (C) 2006 Kristian Hoegsberg <krh@bitplanet.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 #include <linux/dma-mapping.h>
@@ -35,6 +22,8 @@
 
 #include "core.h"
 
+#include <trace/events/firewire.h>
+
 /*
  * Isochronous DMA context management
  */
@@ -45,8 +34,8 @@ int fw_iso_buffer_alloc(struct fw_iso_buffer *buffer, int page_count)
 
 	buffer->page_count = 0;
 	buffer->page_count_mapped = 0;
-	buffer->pages = kmalloc(page_count * sizeof(buffer->pages[0]),
-				GFP_KERNEL);
+	buffer->pages = kmalloc_array(page_count, sizeof(buffer->pages[0]),
+				      GFP_KERNEL);
 	if (buffer->pages == NULL)
 		return -ENOMEM;
 
@@ -103,24 +92,6 @@ int fw_iso_buffer_init(struct fw_iso_buffer *buffer, struct fw_card *card,
 	return ret;
 }
 EXPORT_SYMBOL(fw_iso_buffer_init);
-
-int fw_iso_buffer_map_vma(struct fw_iso_buffer *buffer,
-			  struct vm_area_struct *vma)
-{
-	unsigned long uaddr;
-	int i, err;
-
-	uaddr = vma->vm_start;
-	for (i = 0; i < buffer->page_count; i++) {
-		err = vm_insert_page(vma, uaddr, buffer->pages[i]);
-		if (err)
-			return err;
-
-		uaddr += PAGE_SIZE;
-	}
-
-	return 0;
-}
 
 void fw_iso_buffer_destroy(struct fw_iso_buffer *buffer,
 			   struct fw_card *card)
@@ -179,12 +150,20 @@ struct fw_iso_context *fw_iso_context_create(struct fw_card *card,
 	ctx->callback.sc = callback;
 	ctx->callback_data = callback_data;
 
+	trace_isoc_outbound_allocate(ctx, channel, speed);
+	trace_isoc_inbound_single_allocate(ctx, channel, header_size);
+	trace_isoc_inbound_multiple_allocate(ctx);
+
 	return ctx;
 }
 EXPORT_SYMBOL(fw_iso_context_create);
 
 void fw_iso_context_destroy(struct fw_iso_context *ctx)
 {
+	trace_isoc_outbound_destroy(ctx);
+	trace_isoc_inbound_single_destroy(ctx);
+	trace_isoc_inbound_multiple_destroy(ctx);
+
 	ctx->card->driver->free_iso_context(ctx);
 }
 EXPORT_SYMBOL(fw_iso_context_destroy);
@@ -192,12 +171,18 @@ EXPORT_SYMBOL(fw_iso_context_destroy);
 int fw_iso_context_start(struct fw_iso_context *ctx,
 			 int cycle, int sync, int tags)
 {
+	trace_isoc_outbound_start(ctx, cycle);
+	trace_isoc_inbound_single_start(ctx, cycle, sync, tags);
+	trace_isoc_inbound_multiple_start(ctx, cycle, sync, tags);
+
 	return ctx->card->driver->start_iso(ctx, cycle, sync, tags);
 }
 EXPORT_SYMBOL(fw_iso_context_start);
 
 int fw_iso_context_set_channels(struct fw_iso_context *ctx, u64 *channels)
 {
+	trace_isoc_inbound_multiple_channels(ctx, *channels);
+
 	return ctx->card->driver->set_iso_channels(ctx, channels);
 }
 
@@ -206,25 +191,81 @@ int fw_iso_context_queue(struct fw_iso_context *ctx,
 			 struct fw_iso_buffer *buffer,
 			 unsigned long payload)
 {
+	trace_isoc_outbound_queue(ctx, payload, packet);
+	trace_isoc_inbound_single_queue(ctx, payload, packet);
+	trace_isoc_inbound_multiple_queue(ctx, payload, packet);
+
 	return ctx->card->driver->queue_iso(ctx, packet, buffer, payload);
 }
 EXPORT_SYMBOL(fw_iso_context_queue);
 
 void fw_iso_context_queue_flush(struct fw_iso_context *ctx)
 {
+	trace_isoc_outbound_flush(ctx);
+	trace_isoc_inbound_single_flush(ctx);
+	trace_isoc_inbound_multiple_flush(ctx);
+
 	ctx->card->driver->flush_queue_iso(ctx);
 }
 EXPORT_SYMBOL(fw_iso_context_queue_flush);
 
+/**
+ * fw_iso_context_flush_completions() - process isochronous context in current process context.
+ * @ctx: the isochronous context
+ *
+ * Process the isochronous context in the current process context. The registered callback function
+ * is called when a queued packet buffer with the interrupt flag is completed, either after
+ * transmission in the IT context or after being filled in the IR context. Additionally, the
+ * callback function is also called for the packet buffer completed at last. Furthermore, the
+ * callback function is called as well when the header buffer in the context becomes full. If it is
+ * required to process the context asynchronously, fw_iso_context_schedule_flush_completions() is
+ * available instead.
+ *
+ * Context: Process context. May sleep due to disable_work_sync().
+ */
 int fw_iso_context_flush_completions(struct fw_iso_context *ctx)
 {
-	return ctx->card->driver->flush_iso_completions(ctx);
+	int err;
+
+	trace_isoc_outbound_flush_completions(ctx);
+	trace_isoc_inbound_single_flush_completions(ctx);
+	trace_isoc_inbound_multiple_flush_completions(ctx);
+
+	might_sleep();
+
+	// Avoid dead lock due to programming mistake.
+	if (WARN_ON_ONCE(current_work() == &ctx->work))
+		return 0;
+
+	disable_work_sync(&ctx->work);
+
+	err = ctx->card->driver->flush_iso_completions(ctx);
+
+	enable_work(&ctx->work);
+
+	return err;
 }
 EXPORT_SYMBOL(fw_iso_context_flush_completions);
 
 int fw_iso_context_stop(struct fw_iso_context *ctx)
 {
-	return ctx->card->driver->stop_iso(ctx);
+	int err;
+
+	trace_isoc_outbound_stop(ctx);
+	trace_isoc_inbound_single_stop(ctx);
+	trace_isoc_inbound_multiple_stop(ctx);
+
+	might_sleep();
+
+	// Avoid dead lock due to programming mistake.
+	if (WARN_ON_ONCE(current_work() == &ctx->work))
+		return 0;
+
+	err = ctx->card->driver->stop_iso(ctx);
+
+	cancel_work_sync(&ctx->work);
+
+	return err;
 }
 EXPORT_SYMBOL(fw_iso_context_stop);
 
@@ -308,7 +349,7 @@ static int manage_channel(struct fw_card *card, int irm_id, int generation,
 			if ((data[0] & bit) == (data[1] & bit))
 				continue;
 
-			/* 1394-1995 IRM, fall through to retry. */
+			fallthrough;	/* It's a 1394-1995 IRM, retry */
 		default:
 			if (retry) {
 				retry--;
@@ -337,9 +378,16 @@ static void deallocate_channel(struct fw_card *card, int irm_id,
 
 /**
  * fw_iso_resource_manage() - Allocate or deallocate a channel and/or bandwidth
+ * @card: card interface for this action
+ * @generation: bus generation
+ * @channels_mask: bitmask for channel allocation
+ * @channel: pointer for returning channel allocation result
+ * @bandwidth: pointer for returning bandwidth allocation result
+ * @allocate: whether to allocate (true) or deallocate (false)
  *
  * In parameters: card, generation, channels_mask, bandwidth, allocate
  * Out parameters: channel, bandwidth
+ *
  * This function blocks (sleeps) during communication with the IRM.
  *
  * Allocates or deallocates at most one channel out of channels_mask.
@@ -367,9 +415,8 @@ void fw_iso_resource_manage(struct fw_card *card, int generation,
 	u32 channels_lo = channels_mask >> 32;	/* channels 63...32 */
 	int irm_id, ret, c = -EINVAL;
 
-	spin_lock_irq(&card->lock);
-	irm_id = card->irm_node->node_id;
-	spin_unlock_irq(&card->lock);
+	scoped_guard(spinlock_irq, &card->lock)
+		irm_id = card->irm_node->node_id;
 
 	if (channels_hi)
 		c = manage_channel(card, irm_id, generation, channels_hi,

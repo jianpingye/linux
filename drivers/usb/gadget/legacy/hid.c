@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * hid.c -- HID Composite driver
  *
  * Based on multi.c
  *
  * Copyright (C) 2010 Fabien Chouteau <fabien.chouteau@barco.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 
@@ -19,7 +15,6 @@
 #include <linux/usb/composite.h>
 #include <linux/usb/g_hid.h>
 
-#include "gadget_chips.h"
 #define DRIVER_DESC		"HID Gadget"
 #define DRIVER_VERSION		"2010/03/16"
 
@@ -48,7 +43,7 @@ static struct usb_device_descriptor device_desc = {
 	.bLength =		sizeof device_desc,
 	.bDescriptorType =	USB_DT_DEVICE,
 
-	.bcdUSB =		cpu_to_le16(0x0200),
+	/* .bcdUSB = DYNAMIC */
 
 	/* .bDeviceClass =		USB_CLASS_COMM, */
 	/* .bDeviceSubClass =	0, */
@@ -68,21 +63,7 @@ static struct usb_device_descriptor device_desc = {
 	.bNumConfigurations =	1,
 };
 
-static struct usb_otg_descriptor otg_descriptor = {
-	.bLength =		sizeof otg_descriptor,
-	.bDescriptorType =	USB_DT_OTG,
-
-	/* REVISIT SRP-only hardware is possible, although
-	 * it would not be called "OTG" ...
-	 */
-	.bmAttributes =		USB_OTG_SRP | USB_OTG_HNP,
-};
-
-static const struct usb_descriptor_header *otg_desc[] = {
-	(struct usb_descriptor_header *) &otg_descriptor,
-	NULL,
-};
-
+static const struct usb_descriptor_header *otg_desc[2];
 
 /* string IDs are assigned dynamically */
 static struct usb_string strings_dev[] = {
@@ -118,8 +99,10 @@ static int do_config(struct usb_configuration *c)
 
 	list_for_each_entry(e, &hidg_func_list, node) {
 		e->f = usb_get_function(e->fi);
-		if (IS_ERR(e->f))
+		if (IS_ERR(e->f)) {
+			status = PTR_ERR(e->f);
 			goto put;
+		}
 		status = usb_add_function(c, e->f);
 		if (status < 0) {
 			usb_put_function(e->f);
@@ -150,29 +133,27 @@ static struct usb_configuration config_driver = {
 static int hid_bind(struct usb_composite_dev *cdev)
 {
 	struct usb_gadget *gadget = cdev->gadget;
-	struct list_head *tmp;
-	struct hidg_func_node *n, *m;
+	struct hidg_func_node *n = NULL, *m, *iter_n;
 	struct f_hid_opts *hid_opts;
-	int status, funcs = 0;
+	int status, funcs;
 
-	list_for_each(tmp, &hidg_func_list)
-		funcs++;
-
+	funcs = list_count_nodes(&hidg_func_list);
 	if (!funcs)
 		return -ENODEV;
 
-	list_for_each_entry(n, &hidg_func_list, node) {
-		n->fi = usb_get_function_instance("hid");
-		if (IS_ERR(n->fi)) {
-			status = PTR_ERR(n->fi);
+	list_for_each_entry(iter_n, &hidg_func_list, node) {
+		iter_n->fi = usb_get_function_instance("hid");
+		if (IS_ERR(iter_n->fi)) {
+			status = PTR_ERR(iter_n->fi);
+			n = iter_n;
 			goto put;
 		}
-		hid_opts = container_of(n->fi, struct f_hid_opts, func_inst);
-		hid_opts->subclass = n->func->subclass;
-		hid_opts->protocol = n->func->protocol;
-		hid_opts->report_length = n->func->report_length;
-		hid_opts->report_desc_length = n->func->report_desc_length;
-		hid_opts->report_desc = n->func->report_desc;
+		hid_opts = container_of(iter_n->fi, struct f_hid_opts, func_inst);
+		hid_opts->subclass = iter_n->func->subclass;
+		hid_opts->protocol = iter_n->func->protocol;
+		hid_opts->report_length = iter_n->func->report_length;
+		hid_opts->report_desc_length = iter_n->func->report_desc_length;
+		hid_opts->report_desc = iter_n->func->report_desc;
 	}
 
 
@@ -186,16 +167,32 @@ static int hid_bind(struct usb_composite_dev *cdev)
 	device_desc.iManufacturer = strings_dev[USB_GADGET_MANUFACTURER_IDX].id;
 	device_desc.iProduct = strings_dev[USB_GADGET_PRODUCT_IDX].id;
 
+	if (gadget_is_otg(gadget) && !otg_desc[0]) {
+		struct usb_descriptor_header *usb_desc;
+
+		usb_desc = usb_otg_descriptor_alloc(gadget);
+		if (!usb_desc) {
+			status = -ENOMEM;
+			goto put;
+		}
+		usb_otg_descriptor_init(gadget, usb_desc);
+		otg_desc[0] = usb_desc;
+		otg_desc[1] = NULL;
+	}
+
 	/* register our configuration */
 	status = usb_add_config(cdev, &config_driver, do_config);
 	if (status < 0)
-		goto put;
+		goto free_otg_desc;
 
 	usb_composite_overwrite_options(cdev, &coverwrite);
 	dev_info(&gadget->dev, DRIVER_DESC ", version: " DRIVER_VERSION "\n");
 
 	return 0;
 
+free_otg_desc:
+	kfree(otg_desc[0]);
+	otg_desc[0] = NULL;
 put:
 	list_for_each_entry(m, &hidg_func_list, node) {
 		if (m == n)
@@ -213,6 +210,10 @@ static int hid_unbind(struct usb_composite_dev *cdev)
 		usb_put_function(n->f);
 		usb_put_function_instance(n->fi);
 	}
+
+	kfree(otg_desc[0]);
+	otg_desc[0] = NULL;
+
 	return 0;
 }
 
@@ -236,7 +237,7 @@ static int hidg_plat_driver_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int hidg_plat_driver_remove(struct platform_device *pdev)
+static void hidg_plat_driver_remove(struct platform_device *pdev)
 {
 	struct hidg_func_node *e, *n;
 
@@ -244,8 +245,6 @@ static int hidg_plat_driver_remove(struct platform_device *pdev)
 		list_del(&e->node);
 		kfree(e);
 	}
-
-	return 0;
 }
 
 
@@ -262,7 +261,7 @@ static struct usb_composite_driver hidg_driver = {
 };
 
 static struct platform_driver hidg_plat_driver = {
-	.remove		= hidg_plat_driver_remove,
+	.remove_new	= hidg_plat_driver_remove,
 	.driver		= {
 		.name	= "hidg",
 	},

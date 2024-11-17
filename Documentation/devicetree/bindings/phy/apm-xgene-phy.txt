@@ -36,7 +36,7 @@ Optional properties:
 			  3-tuple setting for each (up to 3) supported link
 			  speed on the host. Range is 0 to 273000 in unit of
 			  uV. Default is 0.
-- apm,tx-pre-cursor2	: 2st pre-cursor emphasis taps control. Two set of
+- apm,tx-pre-cursor2	: 2nd pre-cursor emphasis taps control. Two set of
 			  3-tuple setting for each (up to 3) supported link
 			  speed on the host. Range is 0 to 127400 in unit uV.
 			  Default is 0x0.
@@ -61,19 +61,16 @@ Example:
 			compatible = "apm,xgene-phy";
 			reg = <0x0 0x1f21a000 0x0 0x100>;
 			#phy-cells = <1>;
-			status = "disabled";
 		};
 
 		phy2: phy@1f22a000 {
 			compatible = "apm,xgene-phy";
 			reg = <0x0 0x1f22a000 0x0 0x100>;
 			#phy-cells = <1>;
-			status = "ok";
 		};
 
 		phy3: phy@1f23a000 {
 			compatible = "apm,xgene-phy";
 			reg = <0x0 0x1f23a000 0x0 0x100>;
 			#phy-cells = <1>;
-			status = "ok";
 		};

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * __get_user functions.
  *
@@ -25,6 +26,7 @@
  * as they get called from within inline assembly.
  */
 
+#include <linux/export.h>
 #include <linux/linkage.h>
 #include <asm/page_types.h>
 #include <asm/errno.h>
@@ -33,95 +35,133 @@
 #include <asm/asm.h>
 #include <asm/smap.h>
 
+#define ASM_BARRIER_NOSPEC ALTERNATIVE "", "lfence", X86_FEATURE_LFENCE_RDTSC
+
+.macro check_range size:req
+.if IS_ENABLED(CONFIG_X86_64)
+	movq $0x0123456789abcdef,%rdx
+  1:
+  .pushsection runtime_ptr_USER_PTR_MAX,"a"
+	.long 1b - 8 - .
+  .popsection
+	cmp %rax, %rdx
+	sbb %rdx, %rdx
+	or %rdx, %rax
+.else
+	cmp $TASK_SIZE_MAX-\size+1, %eax
+	jae .Lbad_get_user
+	sbb %edx, %edx		/* array_index_mask_nospec() */
+	and %edx, %eax
+.endif
+.endm
+
+.macro UACCESS op src dst
+1:	\op \src,\dst
+	_ASM_EXTABLE_UA(1b, __get_user_handle_exception)
+.endm
+
+
 	.text
-ENTRY(__get_user_1)
-	GET_THREAD_INFO(%_ASM_DX)
-	cmp TI_addr_limit(%_ASM_DX),%_ASM_AX
-	jae bad_get_user
+SYM_FUNC_START(__get_user_1)
+	check_range size=1
 	ASM_STAC
-1:	movzbl (%_ASM_AX),%edx
+	UACCESS movzbl (%_ASM_AX),%edx
 	xor %eax,%eax
 	ASM_CLAC
-	ret
-ENDPROC(__get_user_1)
+	RET
+SYM_FUNC_END(__get_user_1)
+EXPORT_SYMBOL(__get_user_1)
 
-ENTRY(__get_user_2)
-	add $1,%_ASM_AX
-	jc bad_get_user
-	GET_THREAD_INFO(%_ASM_DX)
-	cmp TI_addr_limit(%_ASM_DX),%_ASM_AX
-	jae bad_get_user
+SYM_FUNC_START(__get_user_2)
+	check_range size=2
 	ASM_STAC
-2:	movzwl -1(%_ASM_AX),%edx
+	UACCESS movzwl (%_ASM_AX),%edx
 	xor %eax,%eax
 	ASM_CLAC
-	ret
-ENDPROC(__get_user_2)
+	RET
+SYM_FUNC_END(__get_user_2)
+EXPORT_SYMBOL(__get_user_2)
 
-ENTRY(__get_user_4)
-	add $3,%_ASM_AX
-	jc bad_get_user
-	GET_THREAD_INFO(%_ASM_DX)
-	cmp TI_addr_limit(%_ASM_DX),%_ASM_AX
-	jae bad_get_user
+SYM_FUNC_START(__get_user_4)
+	check_range size=4
 	ASM_STAC
-3:	movl -3(%_ASM_AX),%edx
+	UACCESS movl (%_ASM_AX),%edx
 	xor %eax,%eax
 	ASM_CLAC
-	ret
-ENDPROC(__get_user_4)
+	RET
+SYM_FUNC_END(__get_user_4)
+EXPORT_SYMBOL(__get_user_4)
 
-ENTRY(__get_user_8)
-#ifdef CONFIG_X86_64
-	add $7,%_ASM_AX
-	jc bad_get_user
-	GET_THREAD_INFO(%_ASM_DX)
-	cmp TI_addr_limit(%_ASM_DX),%_ASM_AX
-	jae bad_get_user
-	ASM_STAC
-4:	movq -7(%_ASM_AX),%rdx
-	xor %eax,%eax
-	ASM_CLAC
-	ret
-#else
-	add $7,%_ASM_AX
-	jc bad_get_user_8
-	GET_THREAD_INFO(%_ASM_DX)
-	cmp TI_addr_limit(%_ASM_DX),%_ASM_AX
-	jae bad_get_user_8
-	ASM_STAC
-4:	movl -7(%_ASM_AX),%edx
-5:	movl -3(%_ASM_AX),%ecx
-	xor %eax,%eax
-	ASM_CLAC
-	ret
-#endif
-ENDPROC(__get_user_8)
-
-
-bad_get_user:
-	xor %edx,%edx
-	mov $(-EFAULT),%_ASM_AX
-	ASM_CLAC
-	ret
-END(bad_get_user)
-
-#ifdef CONFIG_X86_32
-bad_get_user_8:
-	xor %edx,%edx
+SYM_FUNC_START(__get_user_8)
+#ifndef CONFIG_X86_64
 	xor %ecx,%ecx
-	mov $(-EFAULT),%_ASM_AX
-	ASM_CLAC
-	ret
-END(bad_get_user_8)
 #endif
-
-	_ASM_EXTABLE(1b,bad_get_user)
-	_ASM_EXTABLE(2b,bad_get_user)
-	_ASM_EXTABLE(3b,bad_get_user)
+	check_range size=8
+	ASM_STAC
 #ifdef CONFIG_X86_64
-	_ASM_EXTABLE(4b,bad_get_user)
+	UACCESS movq (%_ASM_AX),%rdx
 #else
-	_ASM_EXTABLE(4b,bad_get_user_8)
-	_ASM_EXTABLE(5b,bad_get_user_8)
+	UACCESS movl (%_ASM_AX),%edx
+	UACCESS movl 4(%_ASM_AX),%ecx
 #endif
+	xor %eax,%eax
+	ASM_CLAC
+	RET
+SYM_FUNC_END(__get_user_8)
+EXPORT_SYMBOL(__get_user_8)
+
+/* .. and the same for __get_user, just without the range checks */
+SYM_FUNC_START(__get_user_nocheck_1)
+	ASM_STAC
+	ASM_BARRIER_NOSPEC
+	UACCESS movzbl (%_ASM_AX),%edx
+	xor %eax,%eax
+	ASM_CLAC
+	RET
+SYM_FUNC_END(__get_user_nocheck_1)
+EXPORT_SYMBOL(__get_user_nocheck_1)
+
+SYM_FUNC_START(__get_user_nocheck_2)
+	ASM_STAC
+	ASM_BARRIER_NOSPEC
+	UACCESS movzwl (%_ASM_AX),%edx
+	xor %eax,%eax
+	ASM_CLAC
+	RET
+SYM_FUNC_END(__get_user_nocheck_2)
+EXPORT_SYMBOL(__get_user_nocheck_2)
+
+SYM_FUNC_START(__get_user_nocheck_4)
+	ASM_STAC
+	ASM_BARRIER_NOSPEC
+	UACCESS movl (%_ASM_AX),%edx
+	xor %eax,%eax
+	ASM_CLAC
+	RET
+SYM_FUNC_END(__get_user_nocheck_4)
+EXPORT_SYMBOL(__get_user_nocheck_4)
+
+SYM_FUNC_START(__get_user_nocheck_8)
+	ASM_STAC
+	ASM_BARRIER_NOSPEC
+#ifdef CONFIG_X86_64
+	UACCESS movq (%_ASM_AX),%rdx
+#else
+	xor %ecx,%ecx
+	UACCESS movl (%_ASM_AX),%edx
+	UACCESS movl 4(%_ASM_AX),%ecx
+#endif
+	xor %eax,%eax
+	ASM_CLAC
+	RET
+SYM_FUNC_END(__get_user_nocheck_8)
+EXPORT_SYMBOL(__get_user_nocheck_8)
+
+
+SYM_CODE_START_LOCAL(__get_user_handle_exception)
+	ASM_CLAC
+.Lbad_get_user:
+	xor %edx,%edx
+	mov $(-EFAULT),%_ASM_AX
+	RET
+SYM_CODE_END(__get_user_handle_exception)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/security.h>
@@ -28,8 +29,8 @@ static void update_mmap_min_addr(void)
  * sysctl handler which just sets dac_mmap_min_addr = the new value and then
  * calls update_mmap_min_addr() so non MAP_FIXED hints get rounded properly
  */
-int mmap_min_addr_handler(struct ctl_table *table, int write,
-			  void __user *buffer, size_t *lenp, loff_t *ppos)
+int mmap_min_addr_handler(const struct ctl_table *table, int write,
+			  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int ret;
 

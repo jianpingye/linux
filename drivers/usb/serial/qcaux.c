@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Qualcomm USB Auxiliary Serial Port driver
  *
  * Copyright (C) 2008 Greg Kroah-Hartman <greg@kroah.com>
  * Copyright (C) 2010 Dan Williams <dcbw@redhat.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  *
  * Devices listed here usually provide a CDC ACM port on which normal modem
  * AT commands and PPP can be used.  But when that port is in-use by PPP it
@@ -75,7 +72,6 @@ MODULE_DEVICE_TABLE(usb, id_table);
 
 static struct usb_serial_driver qcaux_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"qcaux",
 	},
 	.id_table =		id_table,
@@ -87,4 +83,5 @@ static struct usb_serial_driver * const serial_drivers[] = {
 };
 
 module_usb_serial_driver(serial_drivers, id_table);
-MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Qualcomm USB Auxiliary Serial Port driver");
+MODULE_LICENSE("GPL v2");

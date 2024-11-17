@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ufs/util.c
  *
@@ -118,7 +119,7 @@ void ubh_sync_block(struct ufs_buffer_head *ubh)
 		unsigned i;
 
 		for (i = 0; i < ubh->count; i++)
-			write_dirty_buffer(ubh->bh[i], WRITE);
+			write_dirty_buffer(ubh->bh[i], 0);
 
 		for (i = 0; i < ubh->count; i++)
 			wait_on_buffer(ubh->bh[i]);
@@ -229,54 +230,40 @@ ufs_set_inode_dev(struct super_block *sb, struct ufs_inode_info *ufsi, dev_t dev
 }
 
 /**
- * ufs_get_locked_page() - locate, pin and lock a pagecache page, if not exist
+ * ufs_get_locked_folio() - locate, pin and lock a pagecache folio, if not exist
  * read it from disk.
  * @mapping: the address_space to search
  * @index: the page index
  *
- * Locates the desired pagecache page, if not exist we'll read it,
+ * Locates the desired pagecache folio, if not exist we'll read it,
  * locks it, increments its reference
  * count and returns its address.
  *
  */
-
-struct page *ufs_get_locked_page(struct address_space *mapping,
+struct folio *ufs_get_locked_folio(struct address_space *mapping,
 				 pgoff_t index)
 {
-	struct page *page;
+	struct inode *inode = mapping->host;
+	struct folio *folio = filemap_lock_folio(mapping, index);
+	if (IS_ERR(folio)) {
+		folio = read_mapping_folio(mapping, index, NULL);
 
-	page = find_lock_page(mapping, index);
-	if (!page) {
-		page = read_mapping_page(mapping, index, NULL);
-
-		if (IS_ERR(page)) {
-			printk(KERN_ERR "ufs_change_blocknr: "
-			       "read_mapping_page error: ino %lu, index: %lu\n",
+		if (IS_ERR(folio)) {
+			printk(KERN_ERR "ufs_change_blocknr: read_mapping_folio error: ino %lu, index: %lu\n",
 			       mapping->host->i_ino, index);
-			goto out;
+			return folio;
 		}
 
-		lock_page(page);
+		folio_lock(folio);
 
-		if (unlikely(page->mapping == NULL)) {
+		if (unlikely(folio->mapping == NULL)) {
 			/* Truncate got there first */
-			unlock_page(page);
-			page_cache_release(page);
-			page = NULL;
-			goto out;
-		}
-
-		if (!PageUptodate(page) || PageError(page)) {
-			unlock_page(page);
-			page_cache_release(page);
-
-			printk(KERN_ERR "ufs_change_blocknr: "
-			       "can not read page: ino %lu, index: %lu\n",
-			       mapping->host->i_ino, index);
-
-			page = ERR_PTR(-EIO);
+			folio_unlock(folio);
+			folio_put(folio);
+			return NULL;
 		}
 	}
-out:
-	return page;
+	if (!folio_buffers(folio))
+		create_empty_buffers(folio, 1 << inode->i_blkbits, 0);
+	return folio;
 }

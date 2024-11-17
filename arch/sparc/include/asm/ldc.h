@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SPARC64_LDC_H
 #define _SPARC64_LDC_H
 
@@ -12,7 +13,7 @@ void ldom_power_off(void);
  * or data becomes available on the receive side.
  *
  * For non-RAW links, if the LDC_EVENT_RESET event arrives the
- * driver should reset all of it's internal state and reinvoke
+ * driver should reset all of its internal state and reinvoke
  * ldc_connect() to try and bring the link up again.
  *
  * For RAW links, ldc_connect() is not used.  Instead the driver
@@ -48,6 +49,8 @@ struct ldc_channel_config {
 #define LDC_STATE_READY		0x03
 #define LDC_STATE_CONNECTED	0x04
 
+#define	LDC_PACKET_SIZE		64
+
 struct ldc_channel;
 
 /* Allocate state for a channel.  */
@@ -72,6 +75,12 @@ int ldc_connect(struct ldc_channel *lp);
 int ldc_disconnect(struct ldc_channel *lp);
 
 int ldc_state(struct ldc_channel *lp);
+void ldc_set_state(struct ldc_channel *lp, u8 state);
+int ldc_mode(struct ldc_channel *lp);
+void __ldc_print(struct ldc_channel *lp, const char *caller);
+int ldc_rx_reset(struct ldc_channel *lp);
+
+#define	ldc_print(chan)	__ldc_print(chan, __func__)
 
 /* Read and write operations.  Only valid when the link is up.  */
 int ldc_write(struct ldc_channel *lp, const void *buf,

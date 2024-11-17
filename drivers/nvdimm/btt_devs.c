@@ -1,18 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright(c) 2013-2015 Intel Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 #include <linux/blkdev.h>
 #include <linux/device.h>
-#include <linux/genhd.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
@@ -21,78 +12,17 @@
 #include "btt.h"
 #include "nd.h"
 
-static void __nd_btt_detach_ndns(struct nd_btt *nd_btt)
-{
-	struct nd_namespace_common *ndns = nd_btt->ndns;
-
-	dev_WARN_ONCE(&nd_btt->dev, !mutex_is_locked(&ndns->dev.mutex)
-			|| ndns->claim != &nd_btt->dev,
-			"%s: invalid claim\n", __func__);
-	ndns->claim = NULL;
-	nd_btt->ndns = NULL;
-	put_device(&ndns->dev);
-}
-
-static void nd_btt_detach_ndns(struct nd_btt *nd_btt)
-{
-	struct nd_namespace_common *ndns = nd_btt->ndns;
-
-	if (!ndns)
-		return;
-	get_device(&ndns->dev);
-	device_lock(&ndns->dev);
-	__nd_btt_detach_ndns(nd_btt);
-	device_unlock(&ndns->dev);
-	put_device(&ndns->dev);
-}
-
-static bool __nd_btt_attach_ndns(struct nd_btt *nd_btt,
-		struct nd_namespace_common *ndns)
-{
-	if (ndns->claim)
-		return false;
-	dev_WARN_ONCE(&nd_btt->dev, !mutex_is_locked(&ndns->dev.mutex)
-			|| nd_btt->ndns,
-			"%s: invalid claim\n", __func__);
-	ndns->claim = &nd_btt->dev;
-	nd_btt->ndns = ndns;
-	get_device(&ndns->dev);
-	return true;
-}
-
-static bool nd_btt_attach_ndns(struct nd_btt *nd_btt,
-		struct nd_namespace_common *ndns)
-{
-	bool claimed;
-
-	device_lock(&ndns->dev);
-	claimed = __nd_btt_attach_ndns(nd_btt, ndns);
-	device_unlock(&ndns->dev);
-	return claimed;
-}
-
 static void nd_btt_release(struct device *dev)
 {
 	struct nd_region *nd_region = to_nd_region(dev->parent);
 	struct nd_btt *nd_btt = to_nd_btt(dev);
 
-	dev_dbg(dev, "%s\n", __func__);
-	nd_btt_detach_ndns(nd_btt);
-	ida_simple_remove(&nd_region->btt_ida, nd_btt->id);
+	dev_dbg(dev, "trace\n");
+	nd_detach_ndns(&nd_btt->dev, &nd_btt->ndns);
+	ida_free(&nd_region->btt_ida, nd_btt->id);
 	kfree(nd_btt->uuid);
 	kfree(nd_btt);
 }
-
-static struct device_type nd_btt_device_type = {
-	.name = "nd_btt",
-	.release = nd_btt_release,
-};
-
-bool is_nd_btt(struct device *dev)
-{
-	return dev->type == &nd_btt_device_type;
-}
-EXPORT_SYMBOL(is_nd_btt);
 
 struct nd_btt *to_nd_btt(struct device *dev)
 {
@@ -111,7 +41,7 @@ static ssize_t sector_size_show(struct device *dev,
 {
 	struct nd_btt *nd_btt = to_nd_btt(dev);
 
-	return nd_sector_size_show(nd_btt->lbasize, btt_lbasize_supported, buf);
+	return nd_size_select_show(nd_btt->lbasize, btt_lbasize_supported, buf);
 }
 
 static ssize_t sector_size_store(struct device *dev,
@@ -122,10 +52,10 @@ static ssize_t sector_size_store(struct device *dev,
 
 	device_lock(dev);
 	nvdimm_bus_lock(dev);
-	rc = nd_sector_size_store(dev, buf, &nd_btt->lbasize,
+	rc = nd_size_select_store(dev, buf, &nd_btt->lbasize,
 			btt_lbasize_supported);
-	dev_dbg(dev, "%s: result: %zd wrote: %s%s", __func__,
-			rc, buf, buf[len - 1] == '\n' ? "" : "\n");
+	dev_dbg(dev, "result: %zd wrote: %s%s", rc, buf,
+			buf[len - 1] == '\n' ? "" : "\n");
 	nvdimm_bus_unlock(dev);
 	device_unlock(dev);
 
@@ -151,8 +81,8 @@ static ssize_t uuid_store(struct device *dev,
 
 	device_lock(dev);
 	rc = nd_uuid_store(dev, &nd_btt->uuid, buf, len);
-	dev_dbg(dev, "%s: result: %zd wrote: %s%s", __func__,
-			rc, buf, buf[len - 1] == '\n' ? "" : "\n");
+	dev_dbg(dev, "result: %zd wrote: %s%s", rc, buf,
+			buf[len - 1] == '\n' ? "" : "\n");
 	device_unlock(dev);
 
 	return rc ? rc : len;
@@ -172,117 +102,56 @@ static ssize_t namespace_show(struct device *dev,
 	return rc;
 }
 
-static int namespace_match(struct device *dev, void *data)
-{
-	char *name = data;
-
-	return strcmp(name, dev_name(dev)) == 0;
-}
-
-static bool is_nd_btt_idle(struct device *dev)
-{
-	struct nd_region *nd_region = to_nd_region(dev->parent);
-	struct nd_btt *nd_btt = to_nd_btt(dev);
-
-	if (nd_region->btt_seed == dev || nd_btt->ndns || dev->driver)
-		return false;
-	return true;
-}
-
-static ssize_t __namespace_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t len)
-{
-	struct nd_btt *nd_btt = to_nd_btt(dev);
-	struct nd_namespace_common *ndns;
-	struct device *found;
-	char *name;
-
-	if (dev->driver) {
-		dev_dbg(dev, "%s: -EBUSY\n", __func__);
-		return -EBUSY;
-	}
-
-	name = kstrndup(buf, len, GFP_KERNEL);
-	if (!name)
-		return -ENOMEM;
-	strim(name);
-
-	if (strncmp(name, "namespace", 9) == 0 || strcmp(name, "") == 0)
-		/* pass */;
-	else {
-		len = -EINVAL;
-		goto out;
-	}
-
-	ndns = nd_btt->ndns;
-	if (strcmp(name, "") == 0) {
-		/* detach the namespace and destroy / reset the btt device */
-		nd_btt_detach_ndns(nd_btt);
-		if (is_nd_btt_idle(dev))
-			nd_device_unregister(dev, ND_ASYNC);
-		else {
-			nd_btt->lbasize = 0;
-			kfree(nd_btt->uuid);
-			nd_btt->uuid = NULL;
-		}
-		goto out;
-	} else if (ndns) {
-		dev_dbg(dev, "namespace already set to: %s\n",
-				dev_name(&ndns->dev));
-		len = -EBUSY;
-		goto out;
-	}
-
-	found = device_find_child(dev->parent, name, namespace_match);
-	if (!found) {
-		dev_dbg(dev, "'%s' not found under %s\n", name,
-				dev_name(dev->parent));
-		len = -ENODEV;
-		goto out;
-	}
-
-	ndns = to_ndns(found);
-	if (__nvdimm_namespace_capacity(ndns) < SZ_16M) {
-		dev_dbg(dev, "%s too small to host btt\n", name);
-		len = -ENXIO;
-		goto out_attach;
-	}
-
-	WARN_ON_ONCE(!is_nvdimm_bus_locked(&nd_btt->dev));
-	if (!nd_btt_attach_ndns(nd_btt, ndns)) {
-		dev_dbg(dev, "%s already claimed\n",
-				dev_name(&ndns->dev));
-		len = -EBUSY;
-	}
-
- out_attach:
-	put_device(&ndns->dev); /* from device_find_child */
- out:
-	kfree(name);
-	return len;
-}
-
 static ssize_t namespace_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
+	struct nd_btt *nd_btt = to_nd_btt(dev);
 	ssize_t rc;
 
-	nvdimm_bus_lock(dev);
 	device_lock(dev);
-	rc = __namespace_store(dev, attr, buf, len);
-	dev_dbg(dev, "%s: result: %zd wrote: %s%s", __func__,
-			rc, buf, buf[len - 1] == '\n' ? "" : "\n");
-	device_unlock(dev);
+	nvdimm_bus_lock(dev);
+	rc = nd_namespace_store(dev, &nd_btt->ndns, buf, len);
+	dev_dbg(dev, "result: %zd wrote: %s%s", rc, buf,
+			buf[len - 1] == '\n' ? "" : "\n");
 	nvdimm_bus_unlock(dev);
+	device_unlock(dev);
 
 	return rc;
 }
 static DEVICE_ATTR_RW(namespace);
 
+static ssize_t size_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nd_btt *nd_btt = to_nd_btt(dev);
+	ssize_t rc;
+
+	device_lock(dev);
+	if (dev->driver)
+		rc = sprintf(buf, "%llu\n", nd_btt->size);
+	else {
+		/* no size to convey if the btt instance is disabled */
+		rc = -ENXIO;
+	}
+	device_unlock(dev);
+
+	return rc;
+}
+static DEVICE_ATTR_RO(size);
+
+static ssize_t log_zero_flags_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "Y\n");
+}
+static DEVICE_ATTR_RO(log_zero_flags);
+
 static struct attribute *nd_btt_attributes[] = {
 	&dev_attr_sector_size.attr,
 	&dev_attr_namespace.attr,
 	&dev_attr_uuid.attr,
+	&dev_attr_size.attr,
+	&dev_attr_log_zero_flags.attr,
 	NULL,
 };
 
@@ -297,9 +166,23 @@ static const struct attribute_group *nd_btt_attribute_groups[] = {
 	NULL,
 };
 
+static const struct device_type nd_btt_device_type = {
+	.name = "nd_btt",
+	.release = nd_btt_release,
+	.groups = nd_btt_attribute_groups,
+};
+
+bool is_nd_btt(struct device *dev)
+{
+	return dev->type == &nd_btt_device_type;
+}
+EXPORT_SYMBOL(is_nd_btt);
+
+static struct lock_class_key nvdimm_btt_key;
+
 static struct device *__nd_btt_create(struct nd_region *nd_region,
-		unsigned long lbasize, u8 *uuid,
-		struct nd_namespace_common *ndns)
+				      unsigned long lbasize, uuid_t *uuid,
+				      struct nd_namespace_common *ndns)
 {
 	struct nd_btt *nd_btt;
 	struct device *dev;
@@ -308,116 +191,179 @@ static struct device *__nd_btt_create(struct nd_region *nd_region,
 	if (!nd_btt)
 		return NULL;
 
-	nd_btt->id = ida_simple_get(&nd_region->btt_ida, 0, 0, GFP_KERNEL);
-	if (nd_btt->id < 0) {
-		kfree(nd_btt);
-		return NULL;
-	}
+	nd_btt->id = ida_alloc(&nd_region->btt_ida, GFP_KERNEL);
+	if (nd_btt->id < 0)
+		goto out_nd_btt;
 
 	nd_btt->lbasize = lbasize;
-	if (uuid)
+	if (uuid) {
 		uuid = kmemdup(uuid, 16, GFP_KERNEL);
+		if (!uuid)
+			goto out_put_id;
+	}
 	nd_btt->uuid = uuid;
 	dev = &nd_btt->dev;
 	dev_set_name(dev, "btt%d.%d", nd_region->id, nd_btt->id);
 	dev->parent = &nd_region->dev;
 	dev->type = &nd_btt_device_type;
-	dev->groups = nd_btt_attribute_groups;
 	device_initialize(&nd_btt->dev);
-	if (ndns && !__nd_btt_attach_ndns(nd_btt, ndns)) {
-		dev_dbg(&ndns->dev, "%s failed, already claimed by %s\n",
-				__func__, dev_name(ndns->claim));
+	lockdep_set_class(&nd_btt->dev.mutex, &nvdimm_btt_key);
+	if (ndns && !__nd_attach_ndns(&nd_btt->dev, ndns, &nd_btt->ndns)) {
+		dev_dbg(&ndns->dev, "failed, already claimed by %s\n",
+				dev_name(ndns->claim));
 		put_device(dev);
 		return NULL;
 	}
 	return dev;
+
+out_put_id:
+	ida_free(&nd_region->btt_ida, nd_btt->id);
+
+out_nd_btt:
+	kfree(nd_btt);
+	return NULL;
 }
 
 struct device *nd_btt_create(struct nd_region *nd_region)
 {
 	struct device *dev = __nd_btt_create(nd_region, 0, NULL, NULL);
 
-	if (dev)
-		__nd_device_register(dev);
+	nd_device_register(dev);
 	return dev;
 }
 
-/*
- * nd_btt_sb_checksum: compute checksum for btt info block
+/**
+ * nd_btt_arena_is_valid - check if the metadata layout is valid
+ * @nd_btt:	device with BTT geometry and backing device info
+ * @super:	pointer to the arena's info block being tested
  *
- * Returns a fletcher64 checksum of everything in the given info block
- * except the last field (since that's where the checksum lives).
+ * Check consistency of the btt info block with itself by validating
+ * the checksum, and with the parent namespace by verifying the
+ * parent_uuid contained in the info block with the one supplied in.
+ *
+ * Returns:
+ * false for an invalid info block, true for a valid one
  */
-u64 nd_btt_sb_checksum(struct btt_sb *btt_sb)
+bool nd_btt_arena_is_valid(struct nd_btt *nd_btt, struct btt_sb *super)
 {
-	u64 sum;
-	__le64 sum_save;
+	const uuid_t *ns_uuid = nd_dev_to_uuid(&nd_btt->ndns->dev);
+	uuid_t parent_uuid;
+	u64 checksum;
 
-	sum_save = btt_sb->checksum;
-	btt_sb->checksum = 0;
-	sum = nd_fletcher64(btt_sb, sizeof(*btt_sb), 1);
-	btt_sb->checksum = sum_save;
-	return sum;
+	if (memcmp(super->signature, BTT_SIG, BTT_SIG_LEN) != 0)
+		return false;
+
+	import_uuid(&parent_uuid, super->parent_uuid);
+	if (!uuid_is_null(&parent_uuid))
+		if (!uuid_equal(&parent_uuid, ns_uuid))
+			return false;
+
+	checksum = le64_to_cpu(super->checksum);
+	super->checksum = 0;
+	if (checksum != nd_sb_checksum((struct nd_gen_sb *) super))
+		return false;
+	super->checksum = cpu_to_le64(checksum);
+
+	/* TODO: figure out action for this */
+	if ((le32_to_cpu(super->flags) & IB_FLAG_ERROR_MASK) != 0)
+		dev_info(&nd_btt->dev, "Found arena with an error flag\n");
+
+	return true;
 }
-EXPORT_SYMBOL(nd_btt_sb_checksum);
+EXPORT_SYMBOL(nd_btt_arena_is_valid);
+
+int nd_btt_version(struct nd_btt *nd_btt, struct nd_namespace_common *ndns,
+		struct btt_sb *btt_sb)
+{
+	if (ndns->claim_class == NVDIMM_CCLASS_BTT2) {
+		/* Probe/setup for BTT v2.0 */
+		nd_btt->initial_offset = 0;
+		nd_btt->version_major = 2;
+		nd_btt->version_minor = 0;
+		if (nvdimm_read_bytes(ndns, 0, btt_sb, sizeof(*btt_sb), 0))
+			return -ENXIO;
+		if (!nd_btt_arena_is_valid(nd_btt, btt_sb))
+			return -ENODEV;
+		if ((le16_to_cpu(btt_sb->version_major) != 2) ||
+				(le16_to_cpu(btt_sb->version_minor) != 0))
+			return -ENODEV;
+	} else {
+		/*
+		 * Probe/setup for BTT v1.1 (NVDIMM_CCLASS_NONE or
+		 * NVDIMM_CCLASS_BTT)
+		 */
+		nd_btt->initial_offset = SZ_4K;
+		nd_btt->version_major = 1;
+		nd_btt->version_minor = 1;
+		if (nvdimm_read_bytes(ndns, SZ_4K, btt_sb, sizeof(*btt_sb), 0))
+			return -ENXIO;
+		if (!nd_btt_arena_is_valid(nd_btt, btt_sb))
+			return -ENODEV;
+		if ((le16_to_cpu(btt_sb->version_major) != 1) ||
+				(le16_to_cpu(btt_sb->version_minor) != 1))
+			return -ENODEV;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(nd_btt_version);
 
 static int __nd_btt_probe(struct nd_btt *nd_btt,
 		struct nd_namespace_common *ndns, struct btt_sb *btt_sb)
 {
-	u64 checksum;
+	int rc;
 
 	if (!btt_sb || !ndns || !nd_btt)
 		return -ENODEV;
 
-	if (nvdimm_read_bytes(ndns, SZ_4K, btt_sb, sizeof(*btt_sb)))
-		return -ENXIO;
-
 	if (nvdimm_namespace_capacity(ndns) < SZ_16M)
 		return -ENXIO;
 
-	if (memcmp(btt_sb->signature, BTT_SIG, BTT_SIG_LEN) != 0)
-		return -ENODEV;
-
-	checksum = le64_to_cpu(btt_sb->checksum);
-	btt_sb->checksum = 0;
-	if (checksum != nd_btt_sb_checksum(btt_sb))
-		return -ENODEV;
-	btt_sb->checksum = cpu_to_le64(checksum);
+	rc = nd_btt_version(nd_btt, ndns, btt_sb);
+	if (rc < 0)
+		return rc;
 
 	nd_btt->lbasize = le32_to_cpu(btt_sb->external_lbasize);
-	nd_btt->uuid = kmemdup(btt_sb->uuid, 16, GFP_KERNEL);
+	nd_btt->uuid = kmemdup(&btt_sb->uuid, sizeof(uuid_t), GFP_KERNEL);
 	if (!nd_btt->uuid)
 		return -ENOMEM;
 
-	__nd_device_register(&nd_btt->dev);
+	nd_device_register(&nd_btt->dev);
 
 	return 0;
 }
 
-int nd_btt_probe(struct nd_namespace_common *ndns, void *drvdata)
+int nd_btt_probe(struct device *dev, struct nd_namespace_common *ndns)
 {
 	int rc;
-	struct device *dev;
+	struct device *btt_dev;
 	struct btt_sb *btt_sb;
 	struct nd_region *nd_region = to_nd_region(ndns->dev.parent);
 
 	if (ndns->force_raw)
 		return -ENODEV;
 
+	switch (ndns->claim_class) {
+	case NVDIMM_CCLASS_NONE:
+	case NVDIMM_CCLASS_BTT:
+	case NVDIMM_CCLASS_BTT2:
+		break;
+	default:
+		return -ENODEV;
+	}
+
 	nvdimm_bus_lock(&ndns->dev);
-	dev = __nd_btt_create(nd_region, 0, NULL, ndns);
+	btt_dev = __nd_btt_create(nd_region, 0, NULL, ndns);
 	nvdimm_bus_unlock(&ndns->dev);
-	if (!dev)
+	if (!btt_dev)
 		return -ENOMEM;
-	dev_set_drvdata(dev, drvdata);
-	btt_sb = kzalloc(sizeof(*btt_sb), GFP_KERNEL);
-	rc = __nd_btt_probe(to_nd_btt(dev), ndns, btt_sb);
-	kfree(btt_sb);
-	dev_dbg(&ndns->dev, "%s: btt: %s\n", __func__,
-			rc == 0 ? dev_name(dev) : "<none>");
+	btt_sb = devm_kzalloc(dev, sizeof(*btt_sb), GFP_KERNEL);
+	rc = __nd_btt_probe(to_nd_btt(btt_dev), ndns, btt_sb);
+	dev_dbg(dev, "btt: %s\n", rc == 0 ? dev_name(btt_dev) : "<none>");
 	if (rc < 0) {
-		__nd_btt_detach_ndns(to_nd_btt(dev));
-		put_device(dev);
+		struct nd_btt *nd_btt = to_nd_btt(btt_dev);
+
+		nd_detach_ndns(btt_dev, &nd_btt->ndns);
+		put_device(btt_dev);
 	}
 
 	return rc;

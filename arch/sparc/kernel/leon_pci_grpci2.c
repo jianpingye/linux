@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * leon_pci_grpci2.c: GRPCI2 Host PCI driver
  *
@@ -5,12 +6,14 @@
  *
  */
 
-#include <linux/of_device.h>
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/export.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+
 #include <asm/io.h>
 #include <asm/leon.h>
 #include <asm/vaddrs.h>
@@ -498,7 +501,7 @@ static struct irq_chip grpci2_irq = {
 };
 
 /* Handle one or multiple IRQs from the PCI core */
-static void grpci2_pci_flow_irq(unsigned int irq, struct irq_desc *desc)
+static void grpci2_pci_flow_irq(struct irq_desc *desc)
 {
 	struct grpci2_priv *priv = grpci2priv;
 	int i, ack = 0;
@@ -583,7 +586,7 @@ static void grpci2_hw_init(struct grpci2_priv *priv)
 	REGSTORE(regs->io_map, REGLOAD(regs->io_map) & 0x0000ffff);
 
 	/* set 1:1 mapping between AHB -> PCI memory space, for all Masters
-	 * Each AHB master has it's own mapping registers. Max 16 AHB masters.
+	 * Each AHB master has its own mapping registers. Max 16 AHB masters.
 	 */
 	for (i = 0; i < 16; i++)
 		REGSTORE(regs->ahbmst_map[i], priv->pci_area);
@@ -886,7 +889,7 @@ err1:
 	return err;
 }
 
-static struct of_device_id grpci2_of_match[] = {
+static const struct of_device_id grpci2_of_match[] = {
 	{
 	 .name = "GAISLER_GRPCI2",
 	 },

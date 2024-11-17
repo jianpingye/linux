@@ -1,105 +1,55 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2013-2014 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
- * Copyright (c) 2014 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2014,2017 The Linux Foundation. All rights reserved.
  */
 
 #include "adreno_gpu.h"
-
-#if defined(DOWNSTREAM_CONFIG_MSM_BUS_SCALING) && !defined(CONFIG_OF)
-#  include <mach/kgsl.h>
-#endif
-
-#define ANY_ID 0xff
 
 bool hang_debug = false;
 MODULE_PARM_DESC(hang_debug, "Dump registers when hang is detected (can be slow!)");
 module_param_named(hang_debug, hang_debug, bool, 0600);
 
-struct msm_gpu *a3xx_gpu_init(struct drm_device *dev);
-struct msm_gpu *a4xx_gpu_init(struct drm_device *dev);
+bool snapshot_debugbus = false;
+MODULE_PARM_DESC(snapshot_debugbus, "Include debugbus sections in GPU devcoredump (if not fused off)");
+module_param_named(snapshot_debugbus, snapshot_debugbus, bool, 0600);
 
-static const struct adreno_info gpulist[] = {
-	{
-		.rev   = ADRENO_REV(3, 0, 5, ANY_ID),
-		.revn  = 305,
-		.name  = "A305",
-		.pm4fw = "a300_pm4.fw",
-		.pfpfw = "a300_pfp.fw",
-		.gmem  = SZ_256K,
-		.init  = a3xx_gpu_init,
-	}, {
-		.rev   = ADRENO_REV(3, 0, 6, 0),
-		.revn  = 307,        /* because a305c is revn==306 */
-		.name  = "A306",
-		.pm4fw = "a300_pm4.fw",
-		.pfpfw = "a300_pfp.fw",
-		.gmem  = SZ_128K,
-		.init  = a3xx_gpu_init,
-	}, {
-		.rev   = ADRENO_REV(3, 2, ANY_ID, ANY_ID),
-		.revn  = 320,
-		.name  = "A320",
-		.pm4fw = "a300_pm4.fw",
-		.pfpfw = "a300_pfp.fw",
-		.gmem  = SZ_512K,
-		.init  = a3xx_gpu_init,
-	}, {
-		.rev   = ADRENO_REV(3, 3, 0, ANY_ID),
-		.revn  = 330,
-		.name  = "A330",
-		.pm4fw = "a330_pm4.fw",
-		.pfpfw = "a330_pfp.fw",
-		.gmem  = SZ_1M,
-		.init  = a3xx_gpu_init,
-	}, {
-		.rev   = ADRENO_REV(4, 2, 0, ANY_ID),
-		.revn  = 420,
-		.name  = "A420",
-		.pm4fw = "a420_pm4.fw",
-		.pfpfw = "a420_pfp.fw",
-		.gmem  = (SZ_1M + SZ_512K),
-		.init  = a4xx_gpu_init,
-	},
+bool allow_vram_carveout = false;
+MODULE_PARM_DESC(allow_vram_carveout, "Allow using VRAM Carveout, in place of IOMMU");
+module_param_named(allow_vram_carveout, allow_vram_carveout, bool, 0600);
+
+extern const struct adreno_gpulist a2xx_gpulist;
+extern const struct adreno_gpulist a3xx_gpulist;
+extern const struct adreno_gpulist a4xx_gpulist;
+extern const struct adreno_gpulist a5xx_gpulist;
+extern const struct adreno_gpulist a6xx_gpulist;
+extern const struct adreno_gpulist a7xx_gpulist;
+
+static const struct adreno_gpulist *gpulists[] = {
+	&a2xx_gpulist,
+	&a3xx_gpulist,
+	&a4xx_gpulist,
+	&a5xx_gpulist,
+	&a6xx_gpulist,
+	&a7xx_gpulist,
 };
 
-MODULE_FIRMWARE("a300_pm4.fw");
-MODULE_FIRMWARE("a300_pfp.fw");
-MODULE_FIRMWARE("a330_pm4.fw");
-MODULE_FIRMWARE("a330_pfp.fw");
-MODULE_FIRMWARE("a420_pm4.fw");
-MODULE_FIRMWARE("a420_pfp.fw");
-
-static inline bool _rev_match(uint8_t entry, uint8_t id)
+static const struct adreno_info *adreno_info(uint32_t chip_id)
 {
-	return (entry == ANY_ID) || (entry == id);
-}
-
-const struct adreno_info *adreno_info(struct adreno_rev rev)
-{
-	int i;
-
 	/* identify gpu: */
-	for (i = 0; i < ARRAY_SIZE(gpulist); i++) {
-		const struct adreno_info *info = &gpulist[i];
-		if (_rev_match(info->rev.core, rev.core) &&
-				_rev_match(info->rev.major, rev.major) &&
-				_rev_match(info->rev.minor, rev.minor) &&
-				_rev_match(info->rev.patchid, rev.patchid))
-			return info;
+	for (int i = 0; i < ARRAY_SIZE(gpulists); i++) {
+		for (int j = 0; j < gpulists[i]->gpus_count; j++) {
+			const struct adreno_info *info = &gpulists[i]->gpus[j];
+
+			if (info->machine && !of_machine_is_compatible(info->machine))
+				continue;
+
+			for (int k = 0; info->chip_ids[k]; k++)
+				if (info->chip_ids[k] == chip_id)
+					return info;
+		}
 	}
 
 	return NULL;
@@ -109,189 +59,342 @@ struct msm_gpu *adreno_load_gpu(struct drm_device *dev)
 {
 	struct msm_drm_private *priv = dev->dev_private;
 	struct platform_device *pdev = priv->gpu_pdev;
-	struct adreno_platform_config *config;
-	struct adreno_rev rev;
-	const struct adreno_info *info;
 	struct msm_gpu *gpu = NULL;
+	struct adreno_gpu *adreno_gpu;
+	int ret;
 
-	if (!pdev) {
-		dev_err(dev->dev, "no adreno device\n");
+	if (pdev)
+		gpu = dev_to_gpu(&pdev->dev);
+
+	if (!gpu) {
+		dev_err_once(dev->dev, "no GPU device was found\n");
 		return NULL;
 	}
 
-	config = pdev->dev.platform_data;
-	rev = config->rev;
-	info = adreno_info(config->rev);
+	adreno_gpu = to_adreno_gpu(gpu);
 
-	if (!info) {
-		dev_warn(dev->dev, "Unknown GPU revision: %u.%u.%u.%u\n",
-				rev.core, rev.major, rev.minor, rev.patchid);
+	/*
+	 * The number one reason for HW init to fail is if the firmware isn't
+	 * loaded yet. Try that first and don't bother continuing on
+	 * otherwise
+	 */
+
+	ret = adreno_load_fw(adreno_gpu);
+	if (ret)
 		return NULL;
+
+	if (gpu->funcs->ucode_load) {
+		ret = gpu->funcs->ucode_load(gpu);
+		if (ret)
+			return NULL;
 	}
 
-	DBG("Found GPU: %u.%u.%u.%u",  rev.core, rev.major,
-			rev.minor, rev.patchid);
+	/*
+	 * Now that we have firmware loaded, and are ready to begin
+	 * booting the gpu, go ahead and enable runpm:
+	 */
+	pm_runtime_enable(&pdev->dev);
 
-	gpu = info->init(dev);
-	if (IS_ERR(gpu)) {
-		dev_warn(dev->dev, "failed to load adreno gpu\n");
-		gpu = NULL;
-		/* not fatal */
+	ret = pm_runtime_get_sync(&pdev->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(&pdev->dev);
+		DRM_DEV_ERROR(dev->dev, "Couldn't power up the GPU: %d\n", ret);
+		goto err_disable_rpm;
 	}
 
-	if (gpu) {
-		int ret;
-		mutex_lock(&dev->struct_mutex);
-		gpu->funcs->pm_resume(gpu);
-		mutex_unlock(&dev->struct_mutex);
-		ret = gpu->funcs->hw_init(gpu);
-		if (ret) {
-			dev_err(dev->dev, "gpu hw init failed: %d\n", ret);
-			gpu->funcs->destroy(gpu);
-			gpu = NULL;
-		} else {
-			/* give inactive pm a chance to kick in: */
-			msm_gpu_retire(gpu);
-		}
+	mutex_lock(&gpu->lock);
+	ret = msm_gpu_hw_init(gpu);
+	mutex_unlock(&gpu->lock);
+	if (ret) {
+		DRM_DEV_ERROR(dev->dev, "gpu hw init failed: %d\n", ret);
+		goto err_put_rpm;
 	}
+
+	pm_runtime_put_autosuspend(&pdev->dev);
+
+#ifdef CONFIG_DEBUG_FS
+	if (gpu->funcs->debugfs_init) {
+		gpu->funcs->debugfs_init(gpu, dev->primary);
+		gpu->funcs->debugfs_init(gpu, dev->render);
+	}
+#endif
 
 	return gpu;
+
+err_put_rpm:
+	pm_runtime_put_sync_suspend(&pdev->dev);
+err_disable_rpm:
+	pm_runtime_disable(&pdev->dev);
+
+	return NULL;
 }
 
-static void set_gpu_pdev(struct drm_device *dev,
-		struct platform_device *pdev)
+static int find_chipid(struct device *dev, uint32_t *chipid)
 {
-	struct msm_drm_private *priv = dev->dev_private;
-	priv->gpu_pdev = pdev;
+	struct device_node *node = dev->of_node;
+	const char *compat;
+	int ret;
+
+	/* first search the compat strings for qcom,adreno-XYZ.W: */
+	ret = of_property_read_string_index(node, "compatible", 0, &compat);
+	if (ret == 0) {
+		unsigned int r, patch;
+
+		if (sscanf(compat, "qcom,adreno-%u.%u", &r, &patch) == 2 ||
+		    sscanf(compat, "amd,imageon-%u.%u", &r, &patch) == 2) {
+			uint32_t core, major, minor;
+
+			core = r / 100;
+			r %= 100;
+			major = r / 10;
+			r %= 10;
+			minor = r;
+
+			*chipid = (core << 24) |
+				(major << 16) |
+				(minor << 8) |
+				patch;
+
+			return 0;
+		}
+
+		if (sscanf(compat, "qcom,adreno-%08x", chipid) == 1)
+			return 0;
+	}
+
+	/* and if that fails, fall back to legacy "qcom,chipid" property: */
+	ret = of_property_read_u32(node, "qcom,chipid", chipid);
+	if (ret) {
+		DRM_DEV_ERROR(dev, "could not parse qcom,chipid: %d\n", ret);
+		return ret;
+	}
+
+	dev_warn(dev, "Using legacy qcom,chipid binding!\n");
+
+	return 0;
 }
 
 static int adreno_bind(struct device *dev, struct device *master, void *data)
 {
 	static struct adreno_platform_config config = {};
-#ifdef CONFIG_OF
-	struct device_node *child, *node = dev->of_node;
-	u32 val;
+	const struct adreno_info *info;
+	struct msm_drm_private *priv = dev_get_drvdata(master);
+	struct drm_device *drm = priv->dev;
+	struct msm_gpu *gpu;
 	int ret;
 
-	ret = of_property_read_u32(node, "qcom,chipid", &val);
-	if (ret) {
-		dev_err(dev, "could not find chipid: %d\n", ret);
+	ret = find_chipid(dev, &config.chip_id);
+	if (ret)
 		return ret;
-	}
 
-	config.rev = ADRENO_REV((val >> 24) & 0xff,
-			(val >> 16) & 0xff, (val >> 8) & 0xff, val & 0xff);
+	dev->platform_data = &config;
+	priv->gpu_pdev = to_platform_device(dev);
 
-	/* find clock rates: */
-	config.fast_rate = 0;
-	config.slow_rate = ~0;
-	for_each_child_of_node(node, child) {
-		if (of_device_is_compatible(child, "qcom,gpu-pwrlevels")) {
-			struct device_node *pwrlvl;
-			for_each_child_of_node(child, pwrlvl) {
-				ret = of_property_read_u32(pwrlvl, "qcom,gpu-freq", &val);
-				if (ret) {
-					dev_err(dev, "could not find gpu-freq: %d\n", ret);
-					return ret;
-				}
-				config.fast_rate = max(config.fast_rate, val);
-				config.slow_rate = min(config.slow_rate, val);
-			}
-		}
-	}
-
-	if (!config.fast_rate) {
-		dev_err(dev, "could not find clk rates\n");
+	info = adreno_info(config.chip_id);
+	if (!info) {
+		dev_warn(drm->dev, "Unknown GPU revision: %"ADRENO_CHIPID_FMT"\n",
+			ADRENO_CHIPID_ARGS(config.chip_id));
 		return -ENXIO;
 	}
 
-#else
-	struct kgsl_device_platform_data *pdata = dev->platform_data;
-	uint32_t version = socinfo_get_version();
-	if (cpu_is_apq8064ab()) {
-		config.fast_rate = 450000000;
-		config.slow_rate = 27000000;
-		config.bus_freq  = 4;
-		config.rev = ADRENO_REV(3, 2, 1, 0);
-	} else if (cpu_is_apq8064()) {
-		config.fast_rate = 400000000;
-		config.slow_rate = 27000000;
-		config.bus_freq  = 4;
+	config.info = info;
 
-		if (SOCINFO_VERSION_MAJOR(version) == 2)
-			config.rev = ADRENO_REV(3, 2, 0, 2);
-		else if ((SOCINFO_VERSION_MAJOR(version) == 1) &&
-				(SOCINFO_VERSION_MINOR(version) == 1))
-			config.rev = ADRENO_REV(3, 2, 0, 1);
-		else
-			config.rev = ADRENO_REV(3, 2, 0, 0);
+	DBG("Found GPU: %"ADRENO_CHIPID_FMT, ADRENO_CHIPID_ARGS(config.chip_id));
 
-	} else if (cpu_is_msm8960ab()) {
-		config.fast_rate = 400000000;
-		config.slow_rate = 320000000;
-		config.bus_freq  = 4;
+	priv->is_a2xx = info->family < ADRENO_3XX;
+	priv->has_cached_coherent =
+		!!(info->quirks & ADRENO_QUIRK_HAS_CACHED_COHERENT);
 
-		if (SOCINFO_VERSION_MINOR(version) == 0)
-			config.rev = ADRENO_REV(3, 2, 1, 0);
-		else
-			config.rev = ADRENO_REV(3, 2, 1, 1);
-
-	} else if (cpu_is_msm8930()) {
-		config.fast_rate = 400000000;
-		config.slow_rate = 27000000;
-		config.bus_freq  = 3;
-
-		if ((SOCINFO_VERSION_MAJOR(version) == 1) &&
-			(SOCINFO_VERSION_MINOR(version) == 2))
-			config.rev = ADRENO_REV(3, 0, 5, 2);
-		else
-			config.rev = ADRENO_REV(3, 0, 5, 0);
-
+	gpu = info->init(drm);
+	if (IS_ERR(gpu)) {
+		dev_warn(drm->dev, "failed to load adreno gpu\n");
+		return PTR_ERR(gpu);
 	}
-#  ifdef DOWNSTREAM_CONFIG_MSM_BUS_SCALING
-	config.bus_scale_table = pdata->bus_scale_table;
-#  endif
-#endif
-	dev->platform_data = &config;
-	set_gpu_pdev(dev_get_drvdata(master), to_platform_device(dev));
+
+	ret = dev_pm_opp_of_find_icc_paths(dev, NULL);
+	if (ret)
+		return ret;
+
 	return 0;
 }
 
+static int adreno_system_suspend(struct device *dev);
 static void adreno_unbind(struct device *dev, struct device *master,
 		void *data)
 {
-	set_gpu_pdev(dev_get_drvdata(master), NULL);
+	struct msm_drm_private *priv = dev_get_drvdata(master);
+	struct msm_gpu *gpu = dev_to_gpu(dev);
+
+	if (pm_runtime_enabled(dev))
+		WARN_ON_ONCE(adreno_system_suspend(dev));
+	gpu->funcs->destroy(gpu);
+
+	priv->gpu_pdev = NULL;
 }
 
 static const struct component_ops a3xx_ops = {
-		.bind   = adreno_bind,
-		.unbind = adreno_unbind,
+	.bind   = adreno_bind,
+	.unbind = adreno_unbind,
 };
+
+static void adreno_device_register_headless(void)
+{
+	/* on imx5, we don't have a top-level mdp/dpu node
+	 * this creates a dummy node for the driver for that case
+	 */
+	struct platform_device_info dummy_info = {
+		.parent = NULL,
+		.name = "msm",
+		.id = -1,
+		.res = NULL,
+		.num_res = 0,
+		.data = NULL,
+		.size_data = 0,
+		.dma_mask = ~0,
+	};
+	platform_device_register_full(&dummy_info);
+}
 
 static int adreno_probe(struct platform_device *pdev)
 {
-	return component_add(&pdev->dev, &a3xx_ops);
-}
 
-static int adreno_remove(struct platform_device *pdev)
-{
-	component_del(&pdev->dev, &a3xx_ops);
+	int ret;
+
+	ret = component_add(&pdev->dev, &a3xx_ops);
+	if (ret)
+		return ret;
+
+	if (of_device_is_compatible(pdev->dev.of_node, "amd,imageon"))
+		adreno_device_register_headless();
+
 	return 0;
 }
 
+static void adreno_remove(struct platform_device *pdev)
+{
+	component_del(&pdev->dev, &a3xx_ops);
+}
+
+static void adreno_shutdown(struct platform_device *pdev)
+{
+	WARN_ON_ONCE(adreno_system_suspend(&pdev->dev));
+}
+
 static const struct of_device_id dt_match[] = {
+	{ .compatible = "qcom,adreno" },
 	{ .compatible = "qcom,adreno-3xx" },
+	/* for compatibility with imx5 gpu: */
+	{ .compatible = "amd,imageon" },
 	/* for backwards compat w/ downstream kgsl DT files: */
 	{ .compatible = "qcom,kgsl-3d0" },
 	{}
 };
 
+static int adreno_runtime_resume(struct device *dev)
+{
+	struct msm_gpu *gpu = dev_to_gpu(dev);
+
+	return gpu->funcs->pm_resume(gpu);
+}
+
+static int adreno_runtime_suspend(struct device *dev)
+{
+	struct msm_gpu *gpu = dev_to_gpu(dev);
+
+	/*
+	 * We should be holding a runpm ref, which will prevent
+	 * runtime suspend.  In the system suspend path, we've
+	 * already waited for active jobs to complete.
+	 */
+	WARN_ON_ONCE(gpu->active_submits);
+
+	return gpu->funcs->pm_suspend(gpu);
+}
+
+static void suspend_scheduler(struct msm_gpu *gpu)
+{
+	int i;
+
+	/*
+	 * Shut down the scheduler before we force suspend, so that
+	 * suspend isn't racing with scheduler kthread feeding us
+	 * more work.
+	 *
+	 * Note, we just want to park the thread, and let any jobs
+	 * that are already on the hw queue complete normally, as
+	 * opposed to the drm_sched_stop() path used for handling
+	 * faulting/timed-out jobs.  We can't really cancel any jobs
+	 * already on the hw queue without racing with the GPU.
+	 */
+	for (i = 0; i < gpu->nr_rings; i++) {
+		struct drm_gpu_scheduler *sched = &gpu->rb[i]->sched;
+
+		drm_sched_wqueue_stop(sched);
+	}
+}
+
+static void resume_scheduler(struct msm_gpu *gpu)
+{
+	int i;
+
+	for (i = 0; i < gpu->nr_rings; i++) {
+		struct drm_gpu_scheduler *sched = &gpu->rb[i]->sched;
+
+		drm_sched_wqueue_start(sched);
+	}
+}
+
+static int adreno_system_suspend(struct device *dev)
+{
+	struct msm_gpu *gpu = dev_to_gpu(dev);
+	int remaining, ret;
+
+	if (!gpu)
+		return 0;
+
+	suspend_scheduler(gpu);
+
+	remaining = wait_event_timeout(gpu->retire_event,
+				       gpu->active_submits == 0,
+				       msecs_to_jiffies(1000));
+	if (remaining == 0) {
+		dev_err(dev, "Timeout waiting for GPU to suspend\n");
+		ret = -EBUSY;
+		goto out;
+	}
+
+	ret = pm_runtime_force_suspend(dev);
+out:
+	if (ret)
+		resume_scheduler(gpu);
+
+	return ret;
+}
+
+static int adreno_system_resume(struct device *dev)
+{
+	struct msm_gpu *gpu = dev_to_gpu(dev);
+
+	if (!gpu)
+		return 0;
+
+	resume_scheduler(gpu);
+	return pm_runtime_force_resume(dev);
+}
+
+static const struct dev_pm_ops adreno_pm_ops = {
+	SYSTEM_SLEEP_PM_OPS(adreno_system_suspend, adreno_system_resume)
+	RUNTIME_PM_OPS(adreno_runtime_suspend, adreno_runtime_resume, NULL)
+};
+
 static struct platform_driver adreno_driver = {
 	.probe = adreno_probe,
-	.remove = adreno_remove,
+	.remove_new = adreno_remove,
+	.shutdown = adreno_shutdown,
 	.driver = {
 		.name = "adreno",
 		.of_match_table = dt_match,
+		.pm = &adreno_pm_ops,
 	},
 };
 

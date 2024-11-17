@@ -153,9 +153,6 @@
 #define _ECHOAUDIO_H_
 
 
-#define TRUE 1
-#define FALSE 0
-
 #include "echoaudio_dsp.h"
 
 
@@ -297,11 +294,16 @@
 
 
 struct audiopipe {
-	volatile u32 *dma_counter;	/* Commpage register that contains
+	volatile __le32 *dma_counter;	/* Commpage register that contains
 					 * the current dma position
 					 * (lower 32 bits only)
 					 */
-	u32 last_counter;		/* The last position, which is used
+	u32 last_period;                /* Counter position last time a
+					 * period elapsed
+					 */
+	u32 last_counter;		/* Used exclusively by pcm_pointer
+					 * under PCM core locks.
+					 * The last position, which is used
 					 * to compute...
 					 */
 	u32 position;			/* ...the number of bytes tranferred
@@ -335,11 +337,10 @@ struct audioformat {
 struct echoaudio {
 	spinlock_t lock;
 	struct snd_pcm_substream *substream[DSP_MAXPIPES];
-	int last_period[DSP_MAXPIPES];
 	struct mutex mode_mutex;
 	u16 num_digital_modes, digital_mode_list[6];
 	u16 num_clock_sources, clock_source_list[10];
-	atomic_t opencount;
+	unsigned int opencount;  /* protected by mode_mutex */
 	struct snd_kcontrol *clock_src_ctl;
 	struct snd_pcm *analog_pcm, *digital_pcm;
 	struct snd_card *card;
@@ -347,7 +348,7 @@ struct echoaudio {
 	struct pci_dev *pci;
 	unsigned long dsp_registers_phys;
 	struct resource *iores;
-	struct snd_dma_buffer commpage_dma_buf;
+	struct snd_dma_buffer *commpage_dma_buf;
 	int irq;
 #ifdef ECHOCARD_HAS_MIDI
 	struct snd_rawmidi *rmidi;
@@ -356,8 +357,8 @@ struct echoaudio {
 	struct timer_list timer;
 	char tinuse;				/* Timer in use */
 	char midi_full;				/* MIDI output buffer is full */
-	char can_set_rate;
-	char rate_set;
+	char can_set_rate;                      /* protected by mode_mutex */
+	char rate_set;                          /* protected by mode_mutex */
 
 	/* This stuff is used mainly by the lowlevel code */
 	struct comm_page *comm_page;	/* Virtual address of the memory
@@ -378,8 +379,8 @@ struct echoaudio {
 					 */
 	u8 output_clock;		/* Layla20 only */
 	char meters_enabled;		/* VU-meters status */
-	char asic_loaded;		/* Set TRUE when ASIC loaded */
-	char bad_board;			/* Set TRUE if DSP won't load */
+	char asic_loaded;		/* Set true when ASIC loaded */
+	char bad_board;			/* Set true if DSP won't load */
 	char professional_spdif;	/* 0 = consumer; 1 = professional */
 	char non_audio_spdif;		/* 3G - only */
 	char digital_in_automute;	/* Gina24, Layla24, Mona - only */
@@ -418,12 +419,10 @@ struct echoaudio {
 	short asic_code;		/* Current ASIC code */
 	u32 comm_page_phys;			/* Physical address of the
 						 * memory seen by DSP */
-	volatile u32 __iomem *dsp_registers;	/* DSP's register base */
+	u32 __iomem *dsp_registers;		/* DSP's register base */
 	u32 active_mask;			/* Chs. active mask or
 						 * punks out */
-#ifdef CONFIG_PM_SLEEP
 	const struct firmware *fw_cache[8];	/* Cached firmwares */
-#endif
 
 #ifdef ECHOCARD_HAS_MIDI
 	u16 mtc_state;				/* State for MIDI input parsing state machine */
@@ -561,11 +560,5 @@ static inline int monitor_index(const struct echoaudio *chip, int out, int in)
 {
 	return out * num_busses_in(chip) + in;
 }
-
-
-#ifndef pci_device
-#define pci_device(chip) (&chip->pci->dev)
-#endif
-
 
 #endif /* _ECHOAUDIO_H_ */

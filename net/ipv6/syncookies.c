@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  IPv6 Syncookies implementation for the Linux kernel
  *
@@ -6,25 +7,20 @@
  *
  *  Based on IPv4 implementation by Andi Kleen
  *  linux/net/ipv4/syncookies.c
- *
- *	This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
- *
  */
 
 #include <linux/tcp.h>
 #include <linux/random.h>
-#include <linux/cryptohash.h>
+#include <linux/siphash.h>
 #include <linux/kernel.h>
+#include <net/secure_seq.h>
 #include <net/ipv6.h>
 #include <net/tcp.h>
 
 #define COOKIEBITS 24	/* Upper bits store count */
 #define COOKIEMASK (((__u32)1 << COOKIEBITS) - 1)
 
-static u32 syncookie6_secret[2][16-4+SHA_DIGEST_WORDS] __read_mostly;
+static siphash_aligned_key_t syncookie6_secret[2];
 
 /* RFC 2460, Section 8.3:
  * [ipv6 tcp] MSS must be computed as the maximum packet size minus 60 [..]
@@ -41,31 +37,27 @@ static __u16 const msstab[] = {
 	9000 - 60,
 };
 
-static DEFINE_PER_CPU(__u32 [16 + 5 + SHA_WORKSPACE_WORDS],
-		      ipv6_cookie_scratch);
-
-static u32 cookie_hash(const struct in6_addr *saddr, const struct in6_addr *daddr,
+static u32 cookie_hash(const struct in6_addr *saddr,
+		       const struct in6_addr *daddr,
 		       __be16 sport, __be16 dport, u32 count, int c)
 {
-	__u32 *tmp;
+	const struct {
+		struct in6_addr saddr;
+		struct in6_addr daddr;
+		u32 count;
+		__be16 sport;
+		__be16 dport;
+	} __aligned(SIPHASH_ALIGNMENT) combined = {
+		.saddr = *saddr,
+		.daddr = *daddr,
+		.count = count,
+		.sport = sport,
+		.dport = dport
+	};
 
 	net_get_random_once(syncookie6_secret, sizeof(syncookie6_secret));
-
-	tmp  = this_cpu_ptr(ipv6_cookie_scratch);
-
-	/*
-	 * we have 320 bits of information to hash, copy in the remaining
-	 * 192 bits required for sha_transform, from the syncookie6_secret
-	 * and overwrite the digest with the secret
-	 */
-	memcpy(tmp + 10, syncookie6_secret[c], 44);
-	memcpy(tmp, saddr, 16);
-	memcpy(tmp + 4, daddr, 16);
-	tmp[8] = ((__force u32)sport << 16) + (__force u32)dport;
-	tmp[9] = count;
-	sha_transform(tmp + 16, (__u8 *)tmp, tmp + 16 + 5);
-
-	return tmp[17];
+	return siphash(&combined, offsetofend(typeof(combined), dport),
+		       &syncookie6_secret[c]);
 }
 
 static __u32 secure_tcp_syn_cookie(const struct in6_addr *saddr,
@@ -114,105 +106,118 @@ u32 __cookie_v6_init_sequence(const struct ipv6hdr *iph,
 }
 EXPORT_SYMBOL_GPL(__cookie_v6_init_sequence);
 
-__u32 cookie_v6_init_sequence(struct sock *sk, const struct sk_buff *skb, __u16 *mssp)
+__u32 cookie_v6_init_sequence(const struct sk_buff *skb, __u16 *mssp)
 {
 	const struct ipv6hdr *iph = ipv6_hdr(skb);
 	const struct tcphdr *th = tcp_hdr(skb);
 
-	tcp_synq_overflow(sk);
-	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_SYNCOOKIESSENT);
-
 	return __cookie_v6_init_sequence(iph, th, mssp);
 }
 
-int __cookie_v6_check(const struct ipv6hdr *iph, const struct tcphdr *th,
-		      __u32 cookie)
+int __cookie_v6_check(const struct ipv6hdr *iph, const struct tcphdr *th)
 {
+	__u32 cookie = ntohl(th->ack_seq) - 1;
 	__u32 seq = ntohl(th->seq) - 1;
-	__u32 mssind = check_tcp_syn_cookie(cookie, &iph->saddr, &iph->daddr,
-					    th->source, th->dest, seq);
+	__u32 mssind;
+
+	mssind = check_tcp_syn_cookie(cookie, &iph->saddr, &iph->daddr,
+				      th->source, th->dest, seq);
 
 	return mssind < ARRAY_SIZE(msstab) ? msstab[mssind] : 0;
 }
 EXPORT_SYMBOL_GPL(__cookie_v6_check);
 
-struct sock *cookie_v6_check(struct sock *sk, struct sk_buff *skb)
+static struct request_sock *cookie_tcp_check(struct net *net, struct sock *sk,
+					     struct sk_buff *skb)
 {
 	struct tcp_options_received tcp_opt;
-	struct inet_request_sock *ireq;
-	struct tcp_request_sock *treq;
-	struct ipv6_pinfo *np = inet6_sk(sk);
-	struct tcp_sock *tp = tcp_sk(sk);
-	const struct tcphdr *th = tcp_hdr(skb);
-	__u32 cookie = ntohl(th->ack_seq) - 1;
-	struct sock *ret = sk;
-	struct request_sock *req;
+	u32 tsoff = 0;
 	int mss;
-	struct dst_entry *dst;
-	__u8 rcv_wscale;
-
-	if (!sysctl_tcp_syncookies || !th->ack || th->rst)
-		goto out;
 
 	if (tcp_synq_no_recent_overflow(sk))
 		goto out;
 
-	mss = __cookie_v6_check(ipv6_hdr(skb), th, cookie);
-	if (mss == 0) {
-		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_SYNCOOKIESFAILED);
+	mss = __cookie_v6_check(ipv6_hdr(skb), tcp_hdr(skb));
+	if (!mss) {
+		__NET_INC_STATS(net, LINUX_MIB_SYNCOOKIESFAILED);
 		goto out;
 	}
 
-	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_SYNCOOKIESRECV);
+	__NET_INC_STATS(net, LINUX_MIB_SYNCOOKIESRECV);
 
 	/* check for timestamp cookie support */
 	memset(&tcp_opt, 0, sizeof(tcp_opt));
-	tcp_parse_options(skb, &tcp_opt, 0, NULL);
+	tcp_parse_options(net, skb, &tcp_opt, 0, NULL);
 
-	if (!cookie_timestamp_decode(&tcp_opt))
+	if (tcp_opt.saw_tstamp && tcp_opt.rcv_tsecr) {
+		tsoff = secure_tcpv6_ts_off(net,
+					    ipv6_hdr(skb)->daddr.s6_addr32,
+					    ipv6_hdr(skb)->saddr.s6_addr32);
+		tcp_opt.rcv_tsecr -= tsoff;
+	}
+
+	if (!cookie_timestamp_decode(net, &tcp_opt))
 		goto out;
 
-	ret = NULL;
-	req = inet_reqsk_alloc(&tcp6_request_sock_ops, sk);
-	if (!req)
+	return cookie_tcp_reqsk_alloc(&tcp6_request_sock_ops, sk, skb,
+				      &tcp_opt, mss, tsoff);
+out:
+	return ERR_PTR(-EINVAL);
+}
+
+struct sock *cookie_v6_check(struct sock *sk, struct sk_buff *skb)
+{
+	const struct tcphdr *th = tcp_hdr(skb);
+	struct ipv6_pinfo *np = inet6_sk(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct inet_request_sock *ireq;
+	struct net *net = sock_net(sk);
+	struct request_sock *req;
+	struct dst_entry *dst;
+	struct sock *ret = sk;
+	__u8 rcv_wscale;
+	int full_space;
+	SKB_DR(reason);
+
+	if (!READ_ONCE(net->ipv4.sysctl_tcp_syncookies) ||
+	    !th->ack || th->rst)
 		goto out;
+
+	if (cookie_bpf_ok(skb)) {
+		req = cookie_bpf_check(sk, skb);
+	} else {
+		req = cookie_tcp_check(net, sk, skb);
+		if (IS_ERR(req))
+			goto out;
+	}
+	if (!req) {
+		SKB_DR_SET(reason, NO_SOCKET);
+		goto out_drop;
+	}
 
 	ireq = inet_rsk(req);
-	treq = tcp_rsk(req);
-	treq->tfo_listener = false;
 
-	if (security_inet_conn_request(sk, skb, req))
-		goto out_free;
-
-	req->mss = mss;
-	ireq->ir_rmt_port = th->source;
-	ireq->ir_num = ntohs(th->dest);
 	ireq->ir_v6_rmt_addr = ipv6_hdr(skb)->saddr;
 	ireq->ir_v6_loc_addr = ipv6_hdr(skb)->daddr;
+
+	if (security_inet_conn_request(sk, skb, req)) {
+		SKB_DR_SET(reason, SECURITY_HOOK);
+		goto out_free;
+	}
+
 	if (ipv6_opt_accepted(sk, skb, &TCP_SKB_CB(skb)->header.h6) ||
 	    np->rxopt.bits.rxinfo || np->rxopt.bits.rxoinfo ||
 	    np->rxopt.bits.rxhlim || np->rxopt.bits.rxohlim) {
-		atomic_inc(&skb->users);
+		refcount_inc(&skb->users);
 		ireq->pktopts = skb;
 	}
 
-	ireq->ir_iif = sk->sk_bound_dev_if;
 	/* So that link locals have meaning */
 	if (!sk->sk_bound_dev_if &&
 	    ipv6_addr_type(&ireq->ir_v6_rmt_addr) & IPV6_ADDR_LINKLOCAL)
 		ireq->ir_iif = tcp_v6_iif(skb);
 
-	ireq->ir_mark = inet_request_mark(sk, skb);
-
-	req->num_retrans = 0;
-	ireq->snd_wscale	= tcp_opt.snd_wscale;
-	ireq->sack_ok		= tcp_opt.sack_ok;
-	ireq->wscale_ok		= tcp_opt.wscale_ok;
-	ireq->tstamp_ok		= tcp_opt.saw_tstamp;
-	req->ts_recent		= tcp_opt.saw_tstamp ? tcp_opt.rcv_tsval : 0;
-	treq->snt_synack	= tcp_opt.saw_tstamp ? tcp_opt.rcv_tsecr : 0;
-	treq->rcv_isn = ntohl(th->seq) - 1;
-	treq->snt_isn = cookie;
+	tcp_ao_syncookie(sk, skb, req, AF_INET6);
 
 	/*
 	 * We need to lookup the dst_entry to get the correct window size.
@@ -225,32 +230,51 @@ struct sock *cookie_v6_check(struct sock *sk, struct sk_buff *skb)
 		memset(&fl6, 0, sizeof(fl6));
 		fl6.flowi6_proto = IPPROTO_TCP;
 		fl6.daddr = ireq->ir_v6_rmt_addr;
-		final_p = fl6_update_dst(&fl6, np->opt, &final);
+		final_p = fl6_update_dst(&fl6, rcu_dereference(np->opt), &final);
 		fl6.saddr = ireq->ir_v6_loc_addr;
-		fl6.flowi6_oif = sk->sk_bound_dev_if;
+		fl6.flowi6_oif = ireq->ir_iif;
 		fl6.flowi6_mark = ireq->ir_mark;
 		fl6.fl6_dport = ireq->ir_rmt_port;
 		fl6.fl6_sport = inet_sk(sk)->inet_sport;
-		security_req_classify_flow(req, flowi6_to_flowi(&fl6));
+		fl6.flowi6_uid = sk->sk_uid;
+		security_req_classify_flow(req, flowi6_to_flowi_common(&fl6));
 
-		dst = ip6_dst_lookup_flow(sk, &fl6, final_p);
-		if (IS_ERR(dst))
+		dst = ip6_dst_lookup_flow(net, sk, &fl6, final_p);
+		if (IS_ERR(dst)) {
+			SKB_DR_SET(reason, IP_OUTNOROUTES);
 			goto out_free;
+		}
 	}
 
-	req->window_clamp = tp->window_clamp ? :dst_metric(dst, RTAX_WINDOW);
-	tcp_select_initial_window(tcp_full_space(sk), req->mss,
-				  &req->rcv_wnd, &req->window_clamp,
+	req->rsk_window_clamp = READ_ONCE(tp->window_clamp) ? :dst_metric(dst, RTAX_WINDOW);
+	/* limit the window selection if the user enforce a smaller rx buffer */
+	full_space = tcp_full_space(sk);
+	if (sk->sk_userlocks & SOCK_RCVBUF_LOCK &&
+	    (req->rsk_window_clamp > full_space || req->rsk_window_clamp == 0))
+		req->rsk_window_clamp = full_space;
+
+	tcp_select_initial_window(sk, full_space, req->mss,
+				  &req->rsk_rcv_wnd, &req->rsk_window_clamp,
 				  ireq->wscale_ok, &rcv_wscale,
 				  dst_metric(dst, RTAX_INITRWND));
 
-	ireq->rcv_wscale = rcv_wscale;
-	ireq->ecn_ok = cookie_ecn_ok(&tcp_opt, sock_net(sk), dst);
+	/* req->syncookie is set true only if ACK is validated
+	 * by BPF kfunc, then, rcv_wscale is already configured.
+	 */
+	if (!req->syncookie)
+		ireq->rcv_wscale = rcv_wscale;
+	ireq->ecn_ok &= cookie_ecn_ok(net, dst);
 
 	ret = tcp_get_cookie_sock(sk, skb, req, dst);
+	if (!ret) {
+		SKB_DR_SET(reason, NO_SOCKET);
+		goto out_drop;
+	}
 out:
 	return ret;
 out_free:
 	reqsk_free(req);
+out_drop:
+	sk_skb_reason_drop(sk, skb, reason);
 	return NULL;
 }

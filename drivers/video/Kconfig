@@ -1,18 +1,36 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Video configuration
 #
 
 menu "Graphics support"
-	depends on HAS_IOMEM
+
+config APERTURE_HELPERS
+	bool
+	help
+	  Support tracking and hand-over of aperture ownership. Required
+	  by graphics drivers for firmware-provided framebuffers.
+
+config SCREEN_INFO
+	bool
+	default n
+
+config STI_CORE
+	bool
+	depends on PARISC
+	help
+	  STI refers to the HP "Standard Text Interface" which is a set of
+	  BIOS routines contained in a ROM chip in HP PA-RISC based machines.
+
+config VIDEO
+	bool
+	default n
+
+source "drivers/auxdisplay/Kconfig"
+
+if HAS_IOMEM
 
 config HAVE_FB_ATMEL
-	bool
-
-config SH_MIPI_DSI
-	tristate
-	depends on (SUPERH || ARCH_SHMOBILE) && HAVE_CLK
-
-config SH_LCD_MIPI_DSI
 	bool
 
 source "drivers/char/agp/Kconfig"
@@ -22,9 +40,7 @@ source "drivers/gpu/vga/Kconfig"
 source "drivers/gpu/host1x/Kconfig"
 source "drivers/gpu/ipu-v3/Kconfig"
 
-menu "Direct Rendering Manager"
 source "drivers/gpu/drm/Kconfig"
-endmenu
 
 menu "Frame buffer Devices"
 source "drivers/video/fbdev/Kconfig"
@@ -42,11 +58,13 @@ config VIDEOMODE_HELPERS
 config HDMI
 	bool
 
+endif # HAS_IOMEM
+
 if VT
 	source "drivers/video/console/Kconfig"
 endif
 
-if FB || SGI_NEWPORT_CONSOLE
+if FB_CORE || SGI_NEWPORT_CONSOLE
 	source "drivers/video/logo/Kconfig"
 
 endif

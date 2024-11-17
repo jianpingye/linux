@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of UBIFS.
  *
  * Copyright (C) 2006-2008 Nokia Corporation.
  * Copyright (C) 2006, 2007 University of Szeged, Hungary
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 51
- * Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  *
  * Authors: Adrian Hunter
  *          Artem Bityutskiy (Битюцкий Артём)
@@ -71,11 +59,30 @@ static struct ubifs_compressor zlib_compr = {
 };
 #endif
 
+#ifdef CONFIG_UBIFS_FS_ZSTD
+static DEFINE_MUTEX(zstd_enc_mutex);
+static DEFINE_MUTEX(zstd_dec_mutex);
+
+static struct ubifs_compressor zstd_compr = {
+	.compr_type = UBIFS_COMPR_ZSTD,
+	.comp_mutex = &zstd_enc_mutex,
+	.decomp_mutex = &zstd_dec_mutex,
+	.name = "zstd",
+	.capi_name = "zstd",
+};
+#else
+static struct ubifs_compressor zstd_compr = {
+	.compr_type = UBIFS_COMPR_ZSTD,
+	.name = "zstd",
+};
+#endif
+
 /* All UBIFS compressors */
 struct ubifs_compressor *ubifs_compressors[UBIFS_COMPR_TYPES_CNT];
 
 /**
  * ubifs_compress - compress data.
+ * @c: UBIFS file-system description object
  * @in_buf: data to compress
  * @in_len: length of the data to compress
  * @out_buf: output buffer where compressed data should be stored
@@ -134,6 +141,7 @@ no_compr:
 
 /**
  * ubifs_decompress - decompress data.
+ * @c: UBIFS file-system description object
  * @in_buf: data to decompress
  * @in_len: length of the data to decompress
  * @out_buf: output buffer where decompressed data should
@@ -211,7 +219,6 @@ static void compr_exit(struct ubifs_compressor *compr)
 {
 	if (compr->capi_name)
 		crypto_free_comp(compr->cc);
-	return;
 }
 
 /**
@@ -228,13 +235,19 @@ int __init ubifs_compressors_init(void)
 	if (err)
 		return err;
 
-	err = compr_init(&zlib_compr);
+	err = compr_init(&zstd_compr);
 	if (err)
 		goto out_lzo;
+
+	err = compr_init(&zlib_compr);
+	if (err)
+		goto out_zstd;
 
 	ubifs_compressors[UBIFS_COMPR_NONE] = &none_compr;
 	return 0;
 
+out_zstd:
+	compr_exit(&zstd_compr);
 out_lzo:
 	compr_exit(&lzo_compr);
 	return err;
@@ -247,4 +260,5 @@ void ubifs_compressors_exit(void)
 {
 	compr_exit(&lzo_compr);
 	compr_exit(&zlib_compr);
+	compr_exit(&zstd_compr);
 }

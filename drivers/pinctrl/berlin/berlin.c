@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Marvell Berlin SoC pinctrl core driver
  *
  * Copyright (C) 2014 Marvell Technology Group Ltd.
  *
- * Antoine TÃ©nart <antoine.tenart@free-electrons.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
+ * Antoine Ténart <antoine.tenart@free-electrons.com>
  */
 
 #include <linux/io.h>
@@ -30,7 +27,7 @@ struct berlin_pinctrl {
 	struct regmap *regmap;
 	struct device *dev;
 	const struct berlin_pinctrl_desc *desc;
-	struct berlin_pinctrl_function *functions;
+	struct pinfunction *functions;
 	unsigned nfunctions;
 	struct pinctrl_dev *pctrl_dev;
 };
@@ -67,16 +64,14 @@ static int berlin_pinctrl_dt_node_to_map(struct pinctrl_dev *pctrl_dev,
 	ret = of_property_read_string(node, "function", &function_name);
 	if (ret) {
 		dev_err(pctrl->dev,
-			"missing function property in node %s\n",
-			node->name);
+			"missing function property in node %pOFn\n", node);
 		return -EINVAL;
 	}
 
 	ngroups = of_property_count_strings(node, "groups");
 	if (ngroups < 0) {
 		dev_err(pctrl->dev,
-			"missing groups property in node %s\n",
-			node->name);
+			"missing groups property in node %pOFn\n", node);
 		return -EINVAL;
 	}
 
@@ -101,10 +96,10 @@ static int berlin_pinctrl_dt_node_to_map(struct pinctrl_dev *pctrl_dev,
 }
 
 static const struct pinctrl_ops berlin_pinctrl_ops = {
-	.get_groups_count	= &berlin_pinctrl_get_group_count,
-	.get_group_name		= &berlin_pinctrl_get_group_name,
-	.dt_node_to_map		= &berlin_pinctrl_dt_node_to_map,
-	.dt_free_map		= &pinctrl_utils_dt_free_map,
+	.get_groups_count	= berlin_pinctrl_get_group_count,
+	.get_group_name		= berlin_pinctrl_get_group_name,
+	.dt_node_to_map		= berlin_pinctrl_dt_node_to_map,
+	.dt_free_map		= pinctrl_utils_free_map,
 };
 
 static int berlin_pinmux_get_functions_count(struct pinctrl_dev *pctrl_dev)
@@ -125,12 +120,12 @@ static const char *berlin_pinmux_get_function_name(struct pinctrl_dev *pctrl_dev
 static int berlin_pinmux_get_function_groups(struct pinctrl_dev *pctrl_dev,
 					     unsigned function,
 					     const char * const **groups,
-					     unsigned * const num_groups)
+					     unsigned * const ngroups)
 {
 	struct berlin_pinctrl *pctrl = pinctrl_dev_get_drvdata(pctrl_dev);
 
 	*groups = pctrl->functions[function].groups;
-	*num_groups = pctrl->functions[function].ngroups;
+	*ngroups = pctrl->functions[function].ngroups;
 
 	return 0;
 }
@@ -158,7 +153,7 @@ static int berlin_pinmux_set(struct pinctrl_dev *pctrl_dev,
 {
 	struct berlin_pinctrl *pctrl = pinctrl_dev_get_drvdata(pctrl_dev);
 	const struct berlin_desc_group *group_desc = pctrl->desc->groups + group;
-	struct berlin_pinctrl_function *func = pctrl->functions + function;
+	struct pinfunction *func = pctrl->functions + function;
 	struct berlin_desc_function *function_desc =
 		berlin_pinctrl_find_function_by_name(pctrl, group_desc,
 						     func->name);
@@ -185,7 +180,7 @@ static const struct pinmux_ops berlin_pinmux_ops = {
 static int berlin_pinctrl_add_function(struct berlin_pinctrl *pctrl,
 				       const char *name)
 {
-	struct berlin_pinctrl_function *function = pctrl->functions;
+	struct pinfunction *function = pctrl->functions;
 
 	while (function->name) {
 		if (!strcmp(function->name, name)) {
@@ -206,22 +201,20 @@ static int berlin_pinctrl_add_function(struct berlin_pinctrl *pctrl,
 static int berlin_pinctrl_build_state(struct platform_device *pdev)
 {
 	struct berlin_pinctrl *pctrl = platform_get_drvdata(pdev);
-	struct berlin_desc_group const *desc_group;
-	struct berlin_desc_function const *desc_function;
+	const struct berlin_desc_group *desc_group;
+	const struct berlin_desc_function *desc_function;
 	int i, max_functions = 0;
 
 	pctrl->nfunctions = 0;
 
 	for (i = 0; i < pctrl->desc->ngroups; i++) {
 		desc_group = pctrl->desc->groups + i;
-		/* compute the maxiumum number of functions a group can have */
+		/* compute the maximum number of functions a group can have */
 		max_functions += 1 << (desc_group->bit_width + 1);
 	}
 
 	/* we will reallocate later */
-	pctrl->functions = devm_kzalloc(&pdev->dev,
-					max_functions * sizeof(*pctrl->functions),
-					GFP_KERNEL);
+	pctrl->functions = kcalloc(max_functions, sizeof(*pctrl->functions), GFP_KERNEL);
 	if (!pctrl->functions)
 		return -ENOMEM;
 
@@ -239,6 +232,8 @@ static int berlin_pinctrl_build_state(struct platform_device *pdev)
 	pctrl->functions = krealloc(pctrl->functions,
 				    pctrl->nfunctions * sizeof(*pctrl->functions),
 				    GFP_KERNEL);
+	if (!pctrl->functions)
+		return -ENOMEM;
 
 	/* map functions to theirs groups */
 	for (i = 0; i < pctrl->desc->ngroups; i++) {
@@ -246,8 +241,7 @@ static int berlin_pinctrl_build_state(struct platform_device *pdev)
 		desc_function = desc_group->functions;
 
 		while (desc_function->name) {
-			struct berlin_pinctrl_function
-				*function = pctrl->functions;
+			struct pinfunction *function = pctrl->functions;
 			const char **groups;
 			bool found = false;
 
@@ -259,20 +253,24 @@ static int berlin_pinctrl_build_state(struct platform_device *pdev)
 				function++;
 			}
 
-			if (!found)
+			if (!found) {
+				kfree(pctrl->functions);
 				return -EINVAL;
+			}
 
 			if (!function->groups) {
 				function->groups =
-					devm_kzalloc(&pdev->dev,
-						     function->ngroups * sizeof(char *),
+					devm_kcalloc(&pdev->dev,
+						     function->ngroups,
+						     sizeof(*function->groups),
 						     GFP_KERNEL);
-
-				if (!function->groups)
+				if (!function->groups) {
+					kfree(pctrl->functions);
 					return -ENOMEM;
+				}
 			}
 
-			groups = function->groups;
+			groups = (const char **)function->groups;
 			while (*groups)
 				groups++;
 
@@ -292,19 +290,13 @@ static struct pinctrl_desc berlin_pctrl_desc = {
 	.owner		= THIS_MODULE,
 };
 
-int berlin_pinctrl_probe(struct platform_device *pdev,
-			 const struct berlin_pinctrl_desc *desc)
+int berlin_pinctrl_probe_regmap(struct platform_device *pdev,
+				const struct berlin_pinctrl_desc *desc,
+				struct regmap *regmap)
 {
 	struct device *dev = &pdev->dev;
-	struct device_node *parent_np = of_get_parent(dev->of_node);
 	struct berlin_pinctrl *pctrl;
-	struct regmap *regmap;
 	int ret;
-
-	regmap = syscon_node_to_regmap(parent_np);
-	of_node_put(parent_np);
-	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
 
 	pctrl = devm_kzalloc(dev, sizeof(*pctrl), GFP_KERNEL);
 	if (!pctrl)
@@ -322,11 +314,26 @@ int berlin_pinctrl_probe(struct platform_device *pdev,
 		return ret;
 	}
 
-	pctrl->pctrl_dev = pinctrl_register(&berlin_pctrl_desc, dev, pctrl);
+	pctrl->pctrl_dev = devm_pinctrl_register(dev, &berlin_pctrl_desc,
+						 pctrl);
 	if (IS_ERR(pctrl->pctrl_dev)) {
 		dev_err(dev, "failed to register pinctrl driver\n");
 		return PTR_ERR(pctrl->pctrl_dev);
 	}
 
 	return 0;
+}
+
+int berlin_pinctrl_probe(struct platform_device *pdev,
+			 const struct berlin_pinctrl_desc *desc)
+{
+	struct device *dev = &pdev->dev;
+	struct device_node *parent_np = of_get_parent(dev->of_node);
+	struct regmap *regmap = syscon_node_to_regmap(parent_np);
+
+	of_node_put(parent_np);
+	if (IS_ERR(regmap))
+		return PTR_ERR(regmap);
+
+	return berlin_pinctrl_probe_regmap(pdev, desc, regmap);
 }

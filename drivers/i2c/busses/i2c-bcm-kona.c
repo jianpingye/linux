@@ -1,15 +1,5 @@
-/*
- * Copyright (C) 2013 Broadcom Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation version 2.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2013 Broadcom Corporation
 
 #include <linux/device.h>
 #include <linux/kernel.h>
@@ -95,7 +85,7 @@
 #define STD_EXT_CLK_FREQ		13000000UL
 #define HS_EXT_CLK_FREQ			104000000UL
 
-#define MASTERCODE			0x08 /* Mastercodes are 0000_1xxxb */
+#define CONTROLLER_CODE			0x08 /* Controller codes are 0000_1xxxb */
 
 #define I2C_TIMEOUT			100 /* msecs */
 
@@ -229,7 +219,7 @@ static irqreturn_t bcm_kona_i2c_isr(int irq, void *devid)
 		       dev->base + TXFCR_OFFSET);
 
 	writel(status & ~ISR_RESERVED_MASK, dev->base + ISR_OFFSET);
-	complete_all(&dev->done);
+	complete(&dev->done);
 
 	return IRQ_HANDLED;
 }
@@ -501,10 +491,7 @@ static int bcm_kona_i2c_do_addr(struct bcm_kona_i2c_dev *dev,
 				return -EREMOTEIO;
 		}
 	} else {
-		addr = msg->addr << 1;
-
-		if (msg->flags & I2C_M_RD)
-			addr |= 1;
+		addr = i2c_8bit_addr_from_msg(msg);
 
 		if (bcm_kona_i2c_write_byte(dev, addr, 0) < 0)
 			return -EREMOTEIO;
@@ -557,8 +544,8 @@ static int bcm_kona_i2c_switch_to_hs(struct bcm_kona_i2c_dev *dev)
 {
 	int rc;
 
-	/* Send mastercode at standard speed */
-	rc = bcm_kona_i2c_write_byte(dev, MASTERCODE, 1);
+	/* Send controller code at standard speed */
+	rc = bcm_kona_i2c_write_byte(dev, CONTROLLER_CODE, 1);
 	if (rc < 0) {
 		pr_err("High speed handshake failed\n");
 		return rc;
@@ -600,7 +587,6 @@ static int bcm_kona_i2c_switch_to_std(struct bcm_kona_i2c_dev *dev)
 	return rc;
 }
 
-/* Master transfer function */
 static int bcm_kona_i2c_xfer(struct i2c_adapter *adapter,
 			     struct i2c_msg msgs[], int num)
 {
@@ -646,11 +632,11 @@ static int bcm_kona_i2c_xfer(struct i2c_adapter *adapter,
 			if (rc < 0) {
 				dev_err(dev->device,
 					"restart cmd failed rc = %d\n", rc);
-					goto xfer_send_stop;
+				goto xfer_send_stop;
 			}
 		}
 
-		/* Send slave address */
+		/* Send target address */
 		if (!(pmsg->flags & I2C_M_NOSTART)) {
 			rc = bcm_kona_i2c_do_addr(dev, pmsg);
 			if (rc < 0) {
@@ -710,7 +696,7 @@ static uint32_t bcm_kona_i2c_functionality(struct i2c_adapter *adap)
 }
 
 static const struct i2c_algorithm bcm_algo = {
-	.master_xfer = bcm_kona_i2c_xfer,
+	.xfer = bcm_kona_i2c_xfer,
 	.functionality = bcm_kona_i2c_functionality,
 };
 
@@ -725,17 +711,17 @@ static int bcm_kona_i2c_assign_bus_speed(struct bcm_kona_i2c_dev *dev)
 	}
 
 	switch (bus_speed) {
-	case 100000:
+	case I2C_MAX_STANDARD_MODE_FREQ:
 		dev->std_cfg = &std_cfg_table[BCM_SPD_100K];
 		break;
-	case 400000:
+	case I2C_MAX_FAST_MODE_FREQ:
 		dev->std_cfg = &std_cfg_table[BCM_SPD_400K];
 		break;
-	case 1000000:
+	case I2C_MAX_FAST_MODE_PLUS_FREQ:
 		dev->std_cfg = &std_cfg_table[BCM_SPD_1MHZ];
 		break;
-	case 3400000:
-		/* Send mastercode at 100k */
+	case I2C_MAX_HIGH_SPEED_MODE_FREQ:
+		/* Send controller code at 100k */
 		dev->std_cfg = &std_cfg_table[BCM_SPD_100K];
 		dev->hs_cfg = &hs_cfg_table[BCM_SPD_3P4MHZ];
 		break;
@@ -753,7 +739,6 @@ static int bcm_kona_i2c_probe(struct platform_device *pdev)
 	int rc = 0;
 	struct bcm_kona_i2c_dev *dev;
 	struct i2c_adapter *adap;
-	struct resource *iomem;
 
 	/* Allocate memory for private data structure */
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
@@ -765,10 +750,9 @@ static int bcm_kona_i2c_probe(struct platform_device *pdev)
 	init_completion(&dev->done);
 
 	/* Map hardware registers */
-	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dev->base = devm_ioremap_resource(dev->device, iomem);
+	dev->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(dev->base))
-		return -ENOMEM;
+		return PTR_ERR(dev->base);
 
 	/* Get and enable external clock */
 	dev->external_clk = devm_clk_get(dev->device, NULL);
@@ -826,8 +810,7 @@ static int bcm_kona_i2c_probe(struct platform_device *pdev)
 	/* Get the interrupt number */
 	dev->irq = platform_get_irq(pdev, 0);
 	if (dev->irq < 0) {
-		dev_err(dev->device, "no irq resource\n");
-		rc = -ENODEV;
+		rc = dev->irq;
 		goto probe_disable_clk;
 	}
 
@@ -855,16 +838,14 @@ static int bcm_kona_i2c_probe(struct platform_device *pdev)
 	adap = &dev->adapter;
 	i2c_set_adapdata(adap, dev);
 	adap->owner = THIS_MODULE;
-	strlcpy(adap->name, "Broadcom I2C adapter", sizeof(adap->name));
+	strscpy(adap->name, "Broadcom I2C adapter", sizeof(adap->name));
 	adap->algo = &bcm_algo;
 	adap->dev.parent = &pdev->dev;
 	adap->dev.of_node = pdev->dev.of_node;
 
 	rc = i2c_add_adapter(adap);
-	if (rc) {
-		dev_err(dev->device, "failed to add adapter\n");
+	if (rc)
 		return rc;
-	}
 
 	dev_info(dev->device, "device registered successfully\n");
 
@@ -877,13 +858,11 @@ probe_disable_clk:
 	return rc;
 }
 
-static int bcm_kona_i2c_remove(struct platform_device *pdev)
+static void bcm_kona_i2c_remove(struct platform_device *pdev)
 {
 	struct bcm_kona_i2c_dev *dev = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&dev->adapter);
-
-	return 0;
 }
 
 static const struct of_device_id bcm_kona_i2c_of_match[] = {
@@ -898,7 +877,7 @@ static struct platform_driver bcm_kona_i2c_driver = {
 		   .of_match_table = bcm_kona_i2c_of_match,
 		   },
 	.probe = bcm_kona_i2c_probe,
-	.remove = bcm_kona_i2c_remove,
+	.remove_new = bcm_kona_i2c_remove,
 };
 module_platform_driver(bcm_kona_i2c_driver);
 

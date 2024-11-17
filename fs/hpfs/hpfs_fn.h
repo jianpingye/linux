@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  linux/fs/hpfs/hpfs_fn.h
  *
@@ -18,15 +19,14 @@
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/blkdev.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "hpfs.h"
 
 #define EIOERROR  EIO
-#define EFSERROR  EPERM
-#define EMEMERROR ENOMEM
+#define EFSERROR  EUCLEAN
 
 #define ANODE_ALLOC_FWD	512
 #define FNODE_ALLOC_FWD	0
@@ -88,6 +88,10 @@ struct hpfs_sb_info {
 	unsigned sb_max_fwd_alloc;	/* max forwad allocation */
 	int sb_timeshift;
 	struct rcu_head rcu;
+
+	unsigned n_hotfixes;
+	secno hotfix_from[256];
+	secno hotfix_to[256];
 };
 
 /* Four 512-byte buffers and the 2k block obtained by concatenating them */
@@ -217,6 +221,8 @@ void hpfs_remove_fnode(struct super_block *, fnode_secno fno);
 
 /* buffer.c */
 
+secno hpfs_search_hotfix_map(struct super_block *s, secno sec);
+unsigned hpfs_search_hotfix_map_for_range(struct super_block *s, secno sec, unsigned n);
 void hpfs_prefetch_sectors(struct super_block *, unsigned, int);
 void *hpfs_map_sector(struct super_block *, unsigned, struct buffer_head **, int);
 void *hpfs_get_sector(struct super_block *, unsigned, struct buffer_head **);
@@ -236,7 +242,7 @@ extern const struct file_operations hpfs_dir_ops;
 
 /* dnode.c */
 
-void hpfs_add_pos(struct inode *, loff_t *);
+int hpfs_add_pos(struct inode *, loff_t *);
 void hpfs_del_pos(struct inode *, loff_t *);
 struct hpfs_dirent *hpfs_add_de(struct super_block *, struct dnode *,
 				const unsigned char *, unsigned, secno);
@@ -274,7 +280,7 @@ void hpfs_init_inode(struct inode *);
 void hpfs_read_inode(struct inode *);
 void hpfs_write_inode(struct inode *);
 void hpfs_write_inode_nolock(struct inode *);
-int hpfs_setattr(struct dentry *, struct iattr *);
+int hpfs_setattr(struct mnt_idmap *, struct dentry *, struct iattr *);
 void hpfs_write_if_changed(struct inode *);
 void hpfs_evict_inode(struct inode *);
 
@@ -285,6 +291,7 @@ __le32 *hpfs_map_bitmap(struct super_block *, unsigned, struct quad_buffer_head 
 void hpfs_prefetch_bitmap(struct super_block *, unsigned);
 unsigned char *hpfs_load_code_page(struct super_block *, secno);
 __le32 *hpfs_load_bitmap_directory(struct super_block *, secno bmp);
+void hpfs_load_hotfix_map(struct super_block *s, struct hpfs_spare_block *spareblock);
 struct fnode *hpfs_map_fnode(struct super_block *s, ino_t, struct buffer_head **);
 struct anode *hpfs_map_anode(struct super_block *s, anode_secno, struct buffer_head **);
 struct dnode *hpfs_map_dnode(struct super_block *s, dnode_secno, struct quad_buffer_head *);
@@ -327,16 +334,21 @@ long hpfs_ioctl(struct file *file, unsigned cmd, unsigned long arg);
  * local time (HPFS) to GMT (Unix)
  */
 
-static inline time_t local_to_gmt(struct super_block *s, time32_t t)
+static inline time64_t local_to_gmt(struct super_block *s, time64_t t)
 {
 	extern struct timezone sys_tz;
 	return t + sys_tz.tz_minuteswest * 60 + hpfs_sb(s)->sb_timeshift;
 }
 
-static inline time32_t gmt_to_local(struct super_block *s, time_t t)
+static inline time32_t gmt_to_local(struct super_block *s, time64_t t)
 {
 	extern struct timezone sys_tz;
 	return t - sys_tz.tz_minuteswest * 60 - hpfs_sb(s)->sb_timeshift;
+}
+
+static inline time32_t local_get_seconds(struct super_block *s)
+{
+	return gmt_to_local(s, ktime_get_real_seconds());
 }
 
 /*

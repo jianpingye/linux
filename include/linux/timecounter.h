@@ -1,18 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * linux/include/linux/timecounter.h
  *
  * based on code that migrated away from
  * linux/include/linux/clocksource.h
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 #ifndef _LINUX_TIMECOUNTER_H
 #define _LINUX_TIMECOUNTER_H
@@ -20,7 +11,7 @@
 #include <linux/types.h>
 
 /* simplify initialization of mask field */
-#define CYCLECOUNTER_MASK(bits) (cycle_t)((bits) < 64 ? ((1ULL<<(bits))-1) : -1)
+#define CYCLECOUNTER_MASK(bits) (u64)((bits) < 64 ? ((1ULL<<(bits))-1) : -1)
 
 /**
  * struct cyclecounter - hardware abstraction for a free running counter
@@ -31,20 +22,20 @@
  *
  * @read:		returns the current cycle value
  * @mask:		bitmask for two's complement
- *			subtraction of non 64 bit counters,
+ *			subtraction of non-64-bit counters,
  *			see CYCLECOUNTER_MASK() helper macro
  * @mult:		cycle to nanosecond multiplier
  * @shift:		cycle to nanosecond divisor (power of two)
  */
 struct cyclecounter {
-	cycle_t (*read)(const struct cyclecounter *cc);
-	cycle_t mask;
+	u64 (*read)(const struct cyclecounter *cc);
+	u64 mask;
 	u32 mult;
 	u32 shift;
 };
 
 /**
- * struct timecounter - layer above a %struct cyclecounter which counts nanoseconds
+ * struct timecounter - layer above a &struct cyclecounter which counts nanoseconds
  *	Contains the state needed by timecounter_read() to detect
  *	cycle counter wrap around. Initialize with
  *	timecounter_init(). Also used to convert cycle counts into the
@@ -63,7 +54,7 @@ struct cyclecounter {
  */
 struct timecounter {
 	const struct cyclecounter *cc;
-	cycle_t cycle_last;
+	u64 cycle_last;
 	u64 nsec;
 	u64 mask;
 	u64 frac;
@@ -75,9 +66,11 @@ struct timecounter {
  * @cycles:	Cycles
  * @mask:	bit mask for maintaining the 'frac' field
  * @frac:	pointer to storage for the fractional nanoseconds.
+ *
+ * Returns: cycle counter cycles converted to nanoseconds
  */
 static inline u64 cyclecounter_cyc2ns(const struct cyclecounter *cc,
-				      cycle_t cycles, u64 mask, u64 *frac)
+				      u64 cycles, u64 mask, u64 *frac)
 {
 	u64 ns = (u64) cycles;
 
@@ -88,6 +81,7 @@ static inline u64 cyclecounter_cyc2ns(const struct cyclecounter *cc,
 
 /**
  * timecounter_adjtime - Shifts the time of the clock.
+ * @tc:		The &struct timecounter to adjust
  * @delta:	Desired change in nanoseconds.
  */
 static inline void timecounter_adjtime(struct timecounter *tc, s64 delta)
@@ -116,6 +110,8 @@ extern void timecounter_init(struct timecounter *tc,
  *
  * In other words, keeps track of time since the same epoch as
  * the function which generated the initial time stamp.
+ *
+ * Returns: nanoseconds since the initial time stamp
  */
 extern u64 timecounter_read(struct timecounter *tc);
 
@@ -132,8 +128,10 @@ extern u64 timecounter_read(struct timecounter *tc);
  *
  * This allows conversion of cycle counter values which were generated
  * in the past.
+ *
+ * Returns: cycle counter converted to nanoseconds since the initial time stamp
  */
-extern u64 timecounter_cyc2time(struct timecounter *tc,
-				cycle_t cycle_tstamp);
+extern u64 timecounter_cyc2time(const struct timecounter *tc,
+				u64 cycle_tstamp);
 
 #endif

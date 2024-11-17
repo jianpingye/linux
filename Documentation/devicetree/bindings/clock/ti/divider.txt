@@ -1,7 +1,5 @@
 Binding for TI divider clock
 
-Binding status: Unstable - ABI compatibility may be broken in the future
-
 This binding uses the common clock binding[1].  It assumes a
 register-mapped adjustable clock rate divider that does not gate and has
 only one input clock or parent.  By default the value programmed into
@@ -75,6 +73,9 @@ Optional properties:
 - ti,invert-autoidle-bit : autoidle is enabled by setting the bit to 0,
   see [2]
 - ti,set-rate-parent : clk_set_rate is propagated to parent
+- ti,latch-bit : latch the divider value to HW, only needed if the register
+  access requires this. As an example dra76x DPLL_GMAC H14 divider implements
+  such behavior.
 
 Examples:
 dpll_usb_m2_ck: dpll_usb_m2_ck@4a008190 {

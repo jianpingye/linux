@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Interrupt request handling routines. On the
  * Sparc the IRQs are basically 'cast in stone'
@@ -165,7 +166,7 @@ void irq_link(unsigned int irq)
 
 	p = &irq_table[irq];
 	pil = p->pil;
-	BUG_ON(pil > SUN4D_MAX_IRQ);
+	BUG_ON(pil >= SUN4D_MAX_IRQ);
 	p->next = irq_map[pil];
 	irq_map[pil] = p;
 
@@ -182,7 +183,7 @@ void irq_unlink(unsigned int irq)
 	spin_lock_irqsave(&irq_map_lock, flags);
 
 	p = &irq_table[irq];
-	BUG_ON(p->pil > SUN4D_MAX_IRQ);
+	BUG_ON(p->pil >= SUN4D_MAX_IRQ);
 	pnext = &irq_map[p->pil];
 	while (*pnext != p)
 		pnext = &(*pnext)->next;
@@ -267,11 +268,11 @@ int sparc_floppy_request_irq(unsigned int irq, irq_handler_t irq_handler)
 	if (sparc_cpu_model != sparc_leon) {
 		struct tt_entry *trap_table;
 
-		trap_table = &trapbase_cpu1;
+		trap_table = &trapbase_cpu1[0];
 		INSTANTIATE(trap_table)
-		trap_table = &trapbase_cpu2;
+		trap_table = &trapbase_cpu2[0];
 		INSTANTIATE(trap_table)
-		trap_table = &trapbase_cpu3;
+		trap_table = &trapbase_cpu3[0];
 		INSTANTIATE(trap_table)
 	}
 #endif

@@ -33,30 +33,22 @@ static int sd_is_left_mergeable(struct reiserfs_key *key, unsigned long bsize)
 	return 0;
 }
 
-static char *print_time(time_t t)
-{
-	static char timebuf[256];
-
-	sprintf(timebuf, "%ld", t);
-	return timebuf;
-}
-
 static void sd_print_item(struct item_head *ih, char *item)
 {
 	printk("\tmode | size | nlinks | first direct | mtime\n");
 	if (stat_data_v1(ih)) {
 		struct stat_data_v1 *sd = (struct stat_data_v1 *)item;
 
-		printk("\t0%-6o | %6u | %2u | %d | %s\n", sd_v1_mode(sd),
+		printk("\t0%-6o | %6u | %2u | %d | %u\n", sd_v1_mode(sd),
 		       sd_v1_size(sd), sd_v1_nlink(sd),
 		       sd_v1_first_direct_byte(sd),
-		       print_time(sd_v1_mtime(sd)));
+		       sd_v1_mtime(sd));
 	} else {
 		struct stat_data *sd = (struct stat_data *)item;
 
-		printk("\t0%-6o | %6llu | %2u | %d | %s\n", sd_v2_mode(sd),
+		printk("\t0%-6o | %6llu | %2u | %d | %u\n", sd_v2_mode(sd),
 		       (unsigned long long)sd_v2_size(sd), sd_v2_nlink(sd),
-		       sd_v2_rdev(sd), print_time(sd_v2_mtime(sd)));
+		       sd_v2_rdev(sd), sd_v2_mtime(sd));
 	}
 }
 
@@ -397,16 +389,9 @@ static void direntry_print_item(struct item_head *ih, char *item)
 		name = item + deh_location(deh);
 		if (name[namelen - 1] == 0)
 			namelen = strlen(name);
-		namebuf[0] = '"';
-		if (namelen > sizeof(namebuf) - 3) {
-			strncpy(namebuf + 1, name, sizeof(namebuf) - 3);
-			namebuf[sizeof(namebuf) - 2] = '"';
-			namebuf[sizeof(namebuf) - 1] = 0;
-		} else {
-			memcpy(namebuf + 1, name, namelen);
-			namebuf[namelen + 1] = '"';
-			namebuf[namelen + 2] = 0;
-		}
+
+		scnprintf(namebuf, sizeof(namebuf), "\"%.*s\"",
+			  (int)sizeof(namebuf)-3, name);
 
 		printk("%d:  %-15s%-15d%-15d%-15lld%-15lld(%s)\n",
 		       i, namebuf,
@@ -724,18 +709,18 @@ static void errcatch_print_vi(struct virtual_item *vi)
 }
 
 static struct item_operations errcatch_ops = {
-	errcatch_bytes_number,
-	errcatch_decrement_key,
-	errcatch_is_left_mergeable,
-	errcatch_print_item,
-	errcatch_check_item,
+	.bytes_number = errcatch_bytes_number,
+	.decrement_key = errcatch_decrement_key,
+	.is_left_mergeable = errcatch_is_left_mergeable,
+	.print_item = errcatch_print_item,
+	.check_item = errcatch_check_item,
 
-	errcatch_create_vi,
-	errcatch_check_left,
-	errcatch_check_right,
-	errcatch_part_size,
-	errcatch_unit_num,
-	errcatch_print_vi
+	.create_vi = errcatch_create_vi,
+	.check_left = errcatch_check_left,
+	.check_right = errcatch_check_right,
+	.part_size = errcatch_part_size,
+	.unit_num = errcatch_unit_num,
+	.print_vi = errcatch_print_vi
 };
 
 #if ! (TYPE_STAT_DATA == 0 && TYPE_INDIRECT == 1 && TYPE_DIRECT == 2 && TYPE_DIRENTRY == 3)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Penmount serial touchscreen driver
  *
@@ -8,11 +9,6 @@
  * Copyright (c) 2004 Vojtech Pavlik
  */
 
-/*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
- */
 
 #include <linux/errno.h>
 #include <linux/kernel.h>
@@ -203,7 +199,7 @@ static int pm_connect(struct serio *serio, struct serio_driver *drv)
 	int max_x, max_y;
 	int err;
 
-	pm = kzalloc(sizeof(struct pm), GFP_KERNEL);
+	pm = kzalloc(sizeof(*pm), GFP_KERNEL);
 	input_dev = input_allocate_device();
 	if (!pm || !input_dev) {
 		err = -ENOMEM;
@@ -293,7 +289,7 @@ static int pm_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static struct serio_device_id pm_serio_ids[] = {
+static const struct serio_device_id pm_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_PENMOUNT,

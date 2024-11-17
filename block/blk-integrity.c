@@ -1,26 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * blk-integrity.c - Block layer data integrity extensions
  *
  * Copyright (C) 2007, 2008 Oracle Corporation
  * Written by: Martin K. Petersen <martin.petersen@oracle.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; see the file COPYING.  If not, write to
- * the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139,
- * USA.
- *
  */
 
-#include <linux/blkdev.h>
+#include <linux/blk-integrity.h>
 #include <linux/backing-dev.h>
 #include <linux/mempool.h>
 #include <linux/bio.h>
@@ -29,10 +15,6 @@
 #include <linux/slab.h>
 
 #include "blk.h"
-
-static struct kmem_cache *integrity_cachep;
-
-static const char *bi_unsupported_name = "unsupported";
 
 /**
  * blk_rq_count_integrity_sg - Count number of integrity scatterlist elements
@@ -53,12 +35,8 @@ int blk_rq_count_integrity_sg(struct request_queue *q, struct bio *bio)
 	bio_for_each_integrity_vec(iv, bio, iter) {
 
 		if (prev) {
-			if (!BIOVEC_PHYS_MERGEABLE(&ivprv, &iv))
+			if (!biovec_phys_mergeable(q, &ivprv, &iv))
 				goto new_segment;
-
-			if (!BIOVEC_SEG_BOUNDARY(q, &ivprv, &iv))
-				goto new_segment;
-
 			if (seg_size + iv.bv_len > queue_max_segment_size(q))
 				goto new_segment;
 
@@ -75,36 +53,31 @@ new_segment:
 
 	return segments;
 }
-EXPORT_SYMBOL(blk_rq_count_integrity_sg);
 
 /**
  * blk_rq_map_integrity_sg - Map integrity metadata into a scatterlist
- * @q:		request queue
- * @bio:	bio with integrity metadata attached
+ * @rq:		request to map
  * @sglist:	target scatterlist
  *
  * Description: Map the integrity vectors in request into a
  * scatterlist.  The scatterlist must be big enough to hold all
- * elements.  I.e. sized using blk_rq_count_integrity_sg().
+ * elements.  I.e. sized using blk_rq_count_integrity_sg() or
+ * rq->nr_integrity_segments.
  */
-int blk_rq_map_integrity_sg(struct request_queue *q, struct bio *bio,
-			    struct scatterlist *sglist)
+int blk_rq_map_integrity_sg(struct request *rq, struct scatterlist *sglist)
 {
 	struct bio_vec iv, ivprv = { NULL };
+	struct request_queue *q = rq->q;
 	struct scatterlist *sg = NULL;
+	struct bio *bio = rq->bio;
 	unsigned int segments = 0;
 	struct bvec_iter iter;
 	int prev = 0;
 
 	bio_for_each_integrity_vec(iv, bio, iter) {
-
 		if (prev) {
-			if (!BIOVEC_PHYS_MERGEABLE(&ivprv, &iv))
+			if (!biovec_phys_mergeable(q, &ivprv, &iv))
 				goto new_segment;
-
-			if (!BIOVEC_SEG_BOUNDARY(q, &ivprv, &iv))
-				goto new_segment;
-
 			if (sg->length + iv.bv_len > queue_max_segment_size(q))
 				goto new_segment;
 
@@ -129,63 +102,29 @@ new_segment:
 	if (sg)
 		sg_mark_end(sg);
 
+	/*
+	 * Something must have been wrong if the figured number of segment
+	 * is bigger than number of req's physical integrity segments
+	 */
+	BUG_ON(segments > rq->nr_integrity_segments);
+	BUG_ON(segments > queue_max_integrity_segments(q));
 	return segments;
 }
 EXPORT_SYMBOL(blk_rq_map_integrity_sg);
 
-/**
- * blk_integrity_compare - Compare integrity profile of two disks
- * @gd1:	Disk to compare
- * @gd2:	Disk to compare
- *
- * Description: Meta-devices like DM and MD need to verify that all
- * sub-devices use the same integrity format before advertising to
- * upper layers that they can send/receive integrity metadata.  This
- * function can be used to check whether two gendisk devices have
- * compatible integrity formats.
- */
-int blk_integrity_compare(struct gendisk *gd1, struct gendisk *gd2)
+int blk_rq_integrity_map_user(struct request *rq, void __user *ubuf,
+			      ssize_t bytes, u32 seed)
 {
-	struct blk_integrity *b1 = gd1->integrity;
-	struct blk_integrity *b2 = gd2->integrity;
+	int ret = bio_integrity_map_user(rq->bio, ubuf, bytes, seed);
 
-	if (!b1 && !b2)
-		return 0;
+	if (ret)
+		return ret;
 
-	if (!b1 || !b2)
-		return -1;
-
-	if (b1->interval != b2->interval) {
-		pr_err("%s: %s/%s protection interval %u != %u\n",
-		       __func__, gd1->disk_name, gd2->disk_name,
-		       b1->interval, b2->interval);
-		return -1;
-	}
-
-	if (b1->tuple_size != b2->tuple_size) {
-		printk(KERN_ERR "%s: %s/%s tuple sz %u != %u\n", __func__,
-		       gd1->disk_name, gd2->disk_name,
-		       b1->tuple_size, b2->tuple_size);
-		return -1;
-	}
-
-	if (b1->tag_size && b2->tag_size && (b1->tag_size != b2->tag_size)) {
-		printk(KERN_ERR "%s: %s/%s tag sz %u != %u\n", __func__,
-		       gd1->disk_name, gd2->disk_name,
-		       b1->tag_size, b2->tag_size);
-		return -1;
-	}
-
-	if (strcmp(b1->name, b2->name)) {
-		printk(KERN_ERR "%s: %s/%s type %s != %s\n", __func__,
-		       gd1->disk_name, gd2->disk_name,
-		       b1->name, b2->name);
-		return -1;
-	}
-
+	rq->nr_integrity_segments = blk_rq_count_integrity_sg(rq->q, rq->bio);
+	rq->cmd_flags |= REQ_INTEGRITY;
 	return 0;
 }
-EXPORT_SYMBOL(blk_integrity_compare);
+EXPORT_SYMBOL_GPL(blk_rq_integrity_map_user);
 
 bool blk_integrity_merge_rq(struct request_queue *q, struct request *req,
 			    struct request *next)
@@ -204,15 +143,16 @@ bool blk_integrity_merge_rq(struct request_queue *q, struct request *req,
 	    q->limits.max_integrity_segments)
 		return false;
 
+	if (integrity_req_gap_back_merge(req, next->bio))
+		return false;
+
 	return true;
 }
-EXPORT_SYMBOL(blk_integrity_merge_rq);
 
 bool blk_integrity_merge_bio(struct request_queue *q, struct request *req,
 			     struct bio *bio)
 {
 	int nr_integrity_segs;
-	struct bio *next = bio->bi_next;
 
 	if (blk_integrity_rq(req) == 0 && bio_integrity(bio) == NULL)
 		return true;
@@ -223,262 +163,158 @@ bool blk_integrity_merge_bio(struct request_queue *q, struct request *req,
 	if (bio_integrity(req->bio)->bip_flags != bio_integrity(bio)->bip_flags)
 		return false;
 
-	bio->bi_next = NULL;
 	nr_integrity_segs = blk_rq_count_integrity_sg(q, bio);
-	bio->bi_next = next;
-
 	if (req->nr_integrity_segments + nr_integrity_segs >
 	    q->limits.max_integrity_segments)
 		return false;
 
-	req->nr_integrity_segments += nr_integrity_segs;
-
 	return true;
 }
-EXPORT_SYMBOL(blk_integrity_merge_bio);
 
-struct integrity_sysfs_entry {
-	struct attribute attr;
-	ssize_t (*show)(struct blk_integrity *, char *);
-	ssize_t (*store)(struct blk_integrity *, const char *, size_t);
-};
-
-static ssize_t integrity_attr_show(struct kobject *kobj, struct attribute *attr,
-				   char *page)
+static inline struct blk_integrity *dev_to_bi(struct device *dev)
 {
-	struct blk_integrity *bi =
-		container_of(kobj, struct blk_integrity, kobj);
-	struct integrity_sysfs_entry *entry =
-		container_of(attr, struct integrity_sysfs_entry, attr);
-
-	return entry->show(bi, page);
+	return &dev_to_disk(dev)->queue->limits.integrity;
 }
 
-static ssize_t integrity_attr_store(struct kobject *kobj,
-				    struct attribute *attr, const char *page,
-				    size_t count)
+const char *blk_integrity_profile_name(struct blk_integrity *bi)
 {
-	struct blk_integrity *bi =
-		container_of(kobj, struct blk_integrity, kobj);
-	struct integrity_sysfs_entry *entry =
-		container_of(attr, struct integrity_sysfs_entry, attr);
-	ssize_t ret = 0;
+	switch (bi->csum_type) {
+	case BLK_INTEGRITY_CSUM_IP:
+		if (bi->flags & BLK_INTEGRITY_REF_TAG)
+			return "T10-DIF-TYPE1-IP";
+		return "T10-DIF-TYPE3-IP";
+	case BLK_INTEGRITY_CSUM_CRC:
+		if (bi->flags & BLK_INTEGRITY_REF_TAG)
+			return "T10-DIF-TYPE1-CRC";
+		return "T10-DIF-TYPE3-CRC";
+	case BLK_INTEGRITY_CSUM_CRC64:
+		if (bi->flags & BLK_INTEGRITY_REF_TAG)
+			return "EXT-DIF-TYPE1-CRC64";
+		return "EXT-DIF-TYPE3-CRC64";
+	case BLK_INTEGRITY_CSUM_NONE:
+		break;
+	}
 
-	if (entry->store)
-		ret = entry->store(bi, page, count);
-
-	return ret;
+	return "nop";
 }
+EXPORT_SYMBOL_GPL(blk_integrity_profile_name);
 
-static ssize_t integrity_format_show(struct blk_integrity *bi, char *page)
+static ssize_t flag_store(struct device *dev, const char *page, size_t count,
+		unsigned char flag)
 {
-	if (bi != NULL && bi->name != NULL)
-		return sprintf(page, "%s\n", bi->name);
-	else
-		return sprintf(page, "none\n");
-}
+	struct request_queue *q = dev_to_disk(dev)->queue;
+	struct queue_limits lim;
+	unsigned long val;
+	int err;
 
-static ssize_t integrity_tag_size_show(struct blk_integrity *bi, char *page)
-{
-	if (bi != NULL)
-		return sprintf(page, "%u\n", bi->tag_size);
-	else
-		return sprintf(page, "0\n");
-}
+	err = kstrtoul(page, 10, &val);
+	if (err)
+		return err;
 
-static ssize_t integrity_verify_store(struct blk_integrity *bi,
-				      const char *page, size_t count)
-{
-	char *p = (char *) page;
-	unsigned long val = simple_strtoul(p, &p, 10);
-
+	/* note that the flags are inverted vs the values in the sysfs files */
+	lim = queue_limits_start_update(q);
 	if (val)
-		bi->flags |= BLK_INTEGRITY_VERIFY;
+		lim.integrity.flags &= ~flag;
 	else
-		bi->flags &= ~BLK_INTEGRITY_VERIFY;
+		lim.integrity.flags |= flag;
 
+	blk_mq_freeze_queue(q);
+	err = queue_limits_commit_update(q, &lim);
+	blk_mq_unfreeze_queue(q);
+	if (err)
+		return err;
 	return count;
 }
 
-static ssize_t integrity_verify_show(struct blk_integrity *bi, char *page)
+static ssize_t flag_show(struct device *dev, char *page, unsigned char flag)
 {
-	return sprintf(page, "%d\n", (bi->flags & BLK_INTEGRITY_VERIFY) != 0);
+	struct blk_integrity *bi = dev_to_bi(dev);
+
+	return sysfs_emit(page, "%d\n", !(bi->flags & flag));
 }
 
-static ssize_t integrity_generate_store(struct blk_integrity *bi,
-					const char *page, size_t count)
+static ssize_t format_show(struct device *dev, struct device_attribute *attr,
+			   char *page)
 {
-	char *p = (char *) page;
-	unsigned long val = simple_strtoul(p, &p, 10);
+	struct blk_integrity *bi = dev_to_bi(dev);
 
-	if (val)
-		bi->flags |= BLK_INTEGRITY_GENERATE;
-	else
-		bi->flags &= ~BLK_INTEGRITY_GENERATE;
-
-	return count;
+	if (!bi->tuple_size)
+		return sysfs_emit(page, "none\n");
+	return sysfs_emit(page, "%s\n", blk_integrity_profile_name(bi));
 }
 
-static ssize_t integrity_generate_show(struct blk_integrity *bi, char *page)
+static ssize_t tag_size_show(struct device *dev, struct device_attribute *attr,
+			     char *page)
 {
-	return sprintf(page, "%d\n", (bi->flags & BLK_INTEGRITY_GENERATE) != 0);
+	struct blk_integrity *bi = dev_to_bi(dev);
+
+	return sysfs_emit(page, "%u\n", bi->tag_size);
 }
 
-static ssize_t integrity_device_show(struct blk_integrity *bi, char *page)
+static ssize_t protection_interval_bytes_show(struct device *dev,
+					      struct device_attribute *attr,
+					      char *page)
 {
-	return sprintf(page, "%u\n",
-		       (bi->flags & BLK_INTEGRITY_DEVICE_CAPABLE) != 0);
+	struct blk_integrity *bi = dev_to_bi(dev);
+
+	return sysfs_emit(page, "%u\n",
+			  bi->interval_exp ? 1 << bi->interval_exp : 0);
 }
 
-static struct integrity_sysfs_entry integrity_format_entry = {
-	.attr = { .name = "format", .mode = S_IRUGO },
-	.show = integrity_format_show,
-};
+static ssize_t read_verify_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *page, size_t count)
+{
+	return flag_store(dev, page, count, BLK_INTEGRITY_NOVERIFY);
+}
 
-static struct integrity_sysfs_entry integrity_tag_size_entry = {
-	.attr = { .name = "tag_size", .mode = S_IRUGO },
-	.show = integrity_tag_size_show,
-};
+static ssize_t read_verify_show(struct device *dev,
+				struct device_attribute *attr, char *page)
+{
+	return flag_show(dev, page, BLK_INTEGRITY_NOVERIFY);
+}
 
-static struct integrity_sysfs_entry integrity_verify_entry = {
-	.attr = { .name = "read_verify", .mode = S_IRUGO | S_IWUSR },
-	.show = integrity_verify_show,
-	.store = integrity_verify_store,
-};
+static ssize_t write_generate_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *page, size_t count)
+{
+	return flag_store(dev, page, count, BLK_INTEGRITY_NOGENERATE);
+}
 
-static struct integrity_sysfs_entry integrity_generate_entry = {
-	.attr = { .name = "write_generate", .mode = S_IRUGO | S_IWUSR },
-	.show = integrity_generate_show,
-	.store = integrity_generate_store,
-};
+static ssize_t write_generate_show(struct device *dev,
+				   struct device_attribute *attr, char *page)
+{
+	return flag_show(dev, page, BLK_INTEGRITY_NOGENERATE);
+}
 
-static struct integrity_sysfs_entry integrity_device_entry = {
-	.attr = { .name = "device_is_integrity_capable", .mode = S_IRUGO },
-	.show = integrity_device_show,
-};
+static ssize_t device_is_integrity_capable_show(struct device *dev,
+						struct device_attribute *attr,
+						char *page)
+{
+	struct blk_integrity *bi = dev_to_bi(dev);
+
+	return sysfs_emit(page, "%u\n",
+			  !!(bi->flags & BLK_INTEGRITY_DEVICE_CAPABLE));
+}
+
+static DEVICE_ATTR_RO(format);
+static DEVICE_ATTR_RO(tag_size);
+static DEVICE_ATTR_RO(protection_interval_bytes);
+static DEVICE_ATTR_RW(read_verify);
+static DEVICE_ATTR_RW(write_generate);
+static DEVICE_ATTR_RO(device_is_integrity_capable);
 
 static struct attribute *integrity_attrs[] = {
-	&integrity_format_entry.attr,
-	&integrity_tag_size_entry.attr,
-	&integrity_verify_entry.attr,
-	&integrity_generate_entry.attr,
-	&integrity_device_entry.attr,
-	NULL,
+	&dev_attr_format.attr,
+	&dev_attr_tag_size.attr,
+	&dev_attr_protection_interval_bytes.attr,
+	&dev_attr_read_verify.attr,
+	&dev_attr_write_generate.attr,
+	&dev_attr_device_is_integrity_capable.attr,
+	NULL
 };
 
-static const struct sysfs_ops integrity_ops = {
-	.show	= &integrity_attr_show,
-	.store	= &integrity_attr_store,
+const struct attribute_group blk_integrity_attr_group = {
+	.name = "integrity",
+	.attrs = integrity_attrs,
 };
-
-static int __init blk_dev_integrity_init(void)
-{
-	integrity_cachep = kmem_cache_create("blkdev_integrity",
-					     sizeof(struct blk_integrity),
-					     0, SLAB_PANIC, NULL);
-	return 0;
-}
-subsys_initcall(blk_dev_integrity_init);
-
-static void blk_integrity_release(struct kobject *kobj)
-{
-	struct blk_integrity *bi =
-		container_of(kobj, struct blk_integrity, kobj);
-
-	kmem_cache_free(integrity_cachep, bi);
-}
-
-static struct kobj_type integrity_ktype = {
-	.default_attrs	= integrity_attrs,
-	.sysfs_ops	= &integrity_ops,
-	.release	= blk_integrity_release,
-};
-
-bool blk_integrity_is_initialized(struct gendisk *disk)
-{
-	struct blk_integrity *bi = blk_get_integrity(disk);
-
-	return (bi && bi->name && strcmp(bi->name, bi_unsupported_name) != 0);
-}
-EXPORT_SYMBOL(blk_integrity_is_initialized);
-
-/**
- * blk_integrity_register - Register a gendisk as being integrity-capable
- * @disk:	struct gendisk pointer to make integrity-aware
- * @template:	optional integrity profile to register
- *
- * Description: When a device needs to advertise itself as being able
- * to send/receive integrity metadata it must use this function to
- * register the capability with the block layer.  The template is a
- * blk_integrity struct with values appropriate for the underlying
- * hardware.  If template is NULL the new profile is allocated but
- * not filled out. See Documentation/block/data-integrity.txt.
- */
-int blk_integrity_register(struct gendisk *disk, struct blk_integrity *template)
-{
-	struct blk_integrity *bi;
-
-	BUG_ON(disk == NULL);
-
-	if (disk->integrity == NULL) {
-		bi = kmem_cache_alloc(integrity_cachep,
-				      GFP_KERNEL | __GFP_ZERO);
-		if (!bi)
-			return -1;
-
-		if (kobject_init_and_add(&bi->kobj, &integrity_ktype,
-					 &disk_to_dev(disk)->kobj,
-					 "%s", "integrity")) {
-			kmem_cache_free(integrity_cachep, bi);
-			return -1;
-		}
-
-		kobject_uevent(&bi->kobj, KOBJ_ADD);
-
-		bi->flags |= BLK_INTEGRITY_VERIFY | BLK_INTEGRITY_GENERATE;
-		bi->interval = queue_logical_block_size(disk->queue);
-		disk->integrity = bi;
-	} else
-		bi = disk->integrity;
-
-	/* Use the provided profile as template */
-	if (template != NULL) {
-		bi->name = template->name;
-		bi->generate_fn = template->generate_fn;
-		bi->verify_fn = template->verify_fn;
-		bi->tuple_size = template->tuple_size;
-		bi->tag_size = template->tag_size;
-		bi->flags |= template->flags;
-	} else
-		bi->name = bi_unsupported_name;
-
-	disk->queue->backing_dev_info.capabilities |= BDI_CAP_STABLE_WRITES;
-
-	return 0;
-}
-EXPORT_SYMBOL(blk_integrity_register);
-
-/**
- * blk_integrity_unregister - Remove block integrity profile
- * @disk:	disk whose integrity profile to deallocate
- *
- * Description: This function frees all memory used by the block
- * integrity profile.  To be called at device teardown.
- */
-void blk_integrity_unregister(struct gendisk *disk)
-{
-	struct blk_integrity *bi;
-
-	if (!disk || !disk->integrity)
-		return;
-
-	disk->queue->backing_dev_info.capabilities &= ~BDI_CAP_STABLE_WRITES;
-
-	bi = disk->integrity;
-
-	kobject_uevent(&bi->kobj, KOBJ_REMOVE);
-	kobject_del(&bi->kobj);
-	kobject_put(&bi->kobj);
-	disk->integrity = NULL;
-}
-EXPORT_SYMBOL(blk_integrity_unregister);

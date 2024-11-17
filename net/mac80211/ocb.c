@@ -1,14 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OCB mode implementation
  *
  * Copyright: (c) 2014 Czech Technical University in Prague
  *            (c) 2014 Volkswagen Group Research
+ * Copyright (C) 2022 - 2023 Intel Corporation
  * Author:    Rostislav Lisovy <rostislav.lisovy@fel.cvut.cz>
  * Funded by: Volkswagen Group Research
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/delay.h>
@@ -18,7 +16,7 @@
 #include <linux/etherdevice.h>
 #include <linux/rtnetlink.h>
 #include <net/mac80211.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "ieee80211_i.h"
 #include "driver-ops.h"
@@ -46,7 +44,6 @@ void ieee80211_ocb_rx_no_sta(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_chanctx_conf *chanctx_conf;
 	struct ieee80211_supported_band *sband;
-	enum nl80211_bss_scan_width scan_width;
 	struct sta_info *sta;
 	int band;
 
@@ -62,30 +59,26 @@ void ieee80211_ocb_rx_no_sta(struct ieee80211_sub_if_data *sdata,
 	ocb_dbg(sdata, "Adding new OCB station %pM\n", addr);
 
 	rcu_read_lock();
-	chanctx_conf = rcu_dereference(sdata->vif.chanctx_conf);
+	chanctx_conf = rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
 	if (WARN_ON_ONCE(!chanctx_conf)) {
 		rcu_read_unlock();
 		return;
 	}
 	band = chanctx_conf->def.chan->band;
-	scan_width = cfg80211_chandef_to_scan_width(&chanctx_conf->def);
 	rcu_read_unlock();
 
 	sta = sta_info_alloc(sdata, addr, GFP_ATOMIC);
 	if (!sta)
 		return;
 
-	sta->last_rx = jiffies;
-
 	/* Add only mandatory rates for now */
 	sband = local->hw.wiphy->bands[band];
-	sta->sta.supp_rates[band] =
-		ieee80211_mandatory_rates(sband, scan_width);
+	sta->sta.deflink.supp_rates[band] = ieee80211_mandatory_rates(sband);
 
 	spin_lock(&ifocb->incomplete_lock);
 	list_add(&sta->list, &ifocb->incomplete_stations);
 	spin_unlock(&ifocb->incomplete_lock);
-	ieee80211_queue_work(&local->hw, &sdata->work);
+	wiphy_work_queue(local->hw.wiphy, &sdata->work);
 }
 
 static struct sta_info *ieee80211_ocb_finish_sta(struct sta_info *sta)
@@ -128,10 +121,10 @@ void ieee80211_ocb_work(struct ieee80211_sub_if_data *sdata)
 	struct ieee80211_if_ocb *ifocb = &sdata->u.ocb;
 	struct sta_info *sta;
 
+	lockdep_assert_wiphy(sdata->local->hw.wiphy);
+
 	if (ifocb->joined != true)
 		return;
-
-	sdata_lock(sdata);
 
 	spin_lock_bh(&ifocb->incomplete_lock);
 	while (!list_empty(&ifocb->incomplete_stations)) {
@@ -148,28 +141,26 @@ void ieee80211_ocb_work(struct ieee80211_sub_if_data *sdata)
 
 	if (test_and_clear_bit(OCB_WORK_HOUSEKEEPING, &ifocb->wrkq_flags))
 		ieee80211_ocb_housekeeping(sdata);
-
-	sdata_unlock(sdata);
 }
 
-static void ieee80211_ocb_housekeeping_timer(unsigned long data)
+static void ieee80211_ocb_housekeeping_timer(struct timer_list *t)
 {
-	struct ieee80211_sub_if_data *sdata = (void *)data;
+	struct ieee80211_sub_if_data *sdata =
+		from_timer(sdata, t, u.ocb.housekeeping_timer);
 	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_if_ocb *ifocb = &sdata->u.ocb;
 
 	set_bit(OCB_WORK_HOUSEKEEPING, &ifocb->wrkq_flags);
 
-	ieee80211_queue_work(&local->hw, &sdata->work);
+	wiphy_work_queue(local->hw.wiphy, &sdata->work);
 }
 
 void ieee80211_ocb_setup_sdata(struct ieee80211_sub_if_data *sdata)
 {
 	struct ieee80211_if_ocb *ifocb = &sdata->u.ocb;
 
-	setup_timer(&ifocb->housekeeping_timer,
-		    ieee80211_ocb_housekeeping_timer,
-		    (unsigned long)sdata);
+	timer_setup(&ifocb->housekeeping_timer,
+		    ieee80211_ocb_housekeeping_timer, 0);
 	INIT_LIST_HEAD(&ifocb->incomplete_stations);
 	spin_lock_init(&ifocb->incomplete_lock);
 }
@@ -177,22 +168,23 @@ void ieee80211_ocb_setup_sdata(struct ieee80211_sub_if_data *sdata)
 int ieee80211_ocb_join(struct ieee80211_sub_if_data *sdata,
 		       struct ocb_setup *setup)
 {
+	struct ieee80211_chan_req chanreq = { .oper = setup->chandef };
 	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_if_ocb *ifocb = &sdata->u.ocb;
-	u32 changed = BSS_CHANGED_OCB;
+	u64 changed = BSS_CHANGED_OCB | BSS_CHANGED_BSSID;
 	int err;
+
+	lockdep_assert_wiphy(sdata->local->hw.wiphy);
 
 	if (ifocb->joined == true)
 		return -EINVAL;
 
-	sdata->flags |= IEEE80211_SDATA_OPERATING_GMODE;
-	sdata->smps_mode = IEEE80211_SMPS_OFF;
-	sdata->needed_rx_chains = sdata->local->rx_chains;
+	sdata->deflink.operating_11g_mode = true;
+	sdata->deflink.smps_mode = IEEE80211_SMPS_OFF;
+	sdata->deflink.needed_rx_chains = sdata->local->rx_chains;
 
-	mutex_lock(&sdata->local->mtx);
-	err = ieee80211_vif_use_channel(sdata, &setup->chandef,
-					IEEE80211_CHANCTX_SHARED);
-	mutex_unlock(&sdata->local->mtx);
+	err = ieee80211_link_use_channel(&sdata->deflink, &chanreq,
+					 IEEE80211_CHANCTX_SHARED);
 	if (err)
 		return err;
 
@@ -201,7 +193,7 @@ int ieee80211_ocb_join(struct ieee80211_sub_if_data *sdata,
 	ifocb->joined = true;
 
 	set_bit(OCB_WORK_HOUSEKEEPING, &ifocb->wrkq_flags);
-	ieee80211_queue_work(&local->hw, &sdata->work);
+	wiphy_work_queue(local->hw.wiphy, &sdata->work);
 
 	netif_carrier_on(sdata->dev);
 	return 0;
@@ -213,8 +205,10 @@ int ieee80211_ocb_leave(struct ieee80211_sub_if_data *sdata)
 	struct ieee80211_local *local = sdata->local;
 	struct sta_info *sta;
 
+	lockdep_assert_wiphy(sdata->local->hw.wiphy);
+
 	ifocb->joined = false;
-	sta_info_flush(sdata);
+	sta_info_flush(sdata, -1);
 
 	spin_lock_bh(&ifocb->incomplete_lock);
 	while (!list_empty(&ifocb->incomplete_stations)) {
@@ -232,9 +226,7 @@ int ieee80211_ocb_leave(struct ieee80211_sub_if_data *sdata)
 	clear_bit(SDATA_STATE_OFFCHANNEL, &sdata->state);
 	ieee80211_bss_info_change_notify(sdata, BSS_CHANGED_OCB);
 
-	mutex_lock(&sdata->local->mtx);
-	ieee80211_vif_release_channel(sdata);
-	mutex_unlock(&sdata->local->mtx);
+	ieee80211_link_release_channel(&sdata->deflink);
 
 	skb_queue_purge(&sdata->skb_queue);
 

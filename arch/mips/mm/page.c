@@ -12,7 +12,6 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/mm.h>
-#include <linux/module.h>
 #include <linux/proc_fs.h>
 
 #include <asm/bugs.h>
@@ -21,13 +20,12 @@
 #include <asm/inst.h>
 #include <asm/io.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/prefetch.h>
 #include <asm/bootinfo.h>
 #include <asm/mipsregs.h>
 #include <asm/mmu_context.h>
+#include <asm/regdef.h>
 #include <asm/cpu.h>
-#include <asm/war.h>
 
 #ifdef CONFIG_SIBYTE_DMA_PAGEOPS
 #include <asm/sibyte/sb1250.h>
@@ -36,19 +34,6 @@
 #endif
 
 #include <asm/uasm.h>
-
-/* Registers used in the assembled routines. */
-#define ZERO 0
-#define AT 2
-#define A0 4
-#define A1 5
-#define A2 6
-#define T0 8
-#define T1 9
-#define T2 10
-#define T3 11
-#define T9 25
-#define RA 31
 
 /* Handle labels (which must be positive integers). */
 enum label_id {
@@ -105,18 +90,20 @@ static int cache_line_size;
 static inline void
 pg_addiu(u32 **buf, unsigned int reg1, unsigned int reg2, unsigned int off)
 {
-	if (cpu_has_64bit_gp_regs && DADDI_WAR && r4k_daddiu_bug()) {
+	if (cpu_has_64bit_gp_regs &&
+	    IS_ENABLED(CONFIG_CPU_DADDI_WORKAROUNDS) &&
+	    r4k_daddiu_bug()) {
 		if (off > 0x7fff) {
-			uasm_i_lui(buf, T9, uasm_rel_hi(off));
-			uasm_i_addiu(buf, T9, T9, uasm_rel_lo(off));
+			uasm_i_lui(buf, GPR_T9, uasm_rel_hi(off));
+			uasm_i_addiu(buf, GPR_T9, GPR_T9, uasm_rel_lo(off));
 		} else
-			uasm_i_addiu(buf, T9, ZERO, off);
-		uasm_i_daddu(buf, reg1, reg2, T9);
+			uasm_i_addiu(buf, GPR_T9, GPR_ZERO, off);
+		uasm_i_daddu(buf, reg1, reg2, GPR_T9);
 	} else {
 		if (off > 0x7fff) {
-			uasm_i_lui(buf, T9, uasm_rel_hi(off));
-			uasm_i_addiu(buf, T9, T9, uasm_rel_lo(off));
-			UASM_i_ADDU(buf, reg1, reg2, T9);
+			uasm_i_lui(buf, GPR_T9, uasm_rel_hi(off));
+			uasm_i_addiu(buf, GPR_T9, GPR_T9, uasm_rel_lo(off));
+			UASM_i_ADDU(buf, reg1, reg2, GPR_T9);
 		} else
 			UASM_i_ADDIU(buf, reg1, reg2, off);
 	}
@@ -188,6 +175,15 @@ static void set_prefetch_parameters(void)
 			}
 			break;
 
+		case CPU_LOONGSON64:
+			/* Loongson-3 only support the Pref_Load/Pref_Store. */
+			pref_bias_clear_store = 128;
+			pref_bias_copy_load = 128;
+			pref_bias_copy_store = 128;
+			pref_src_mode = Pref_Load;
+			pref_dst_mode = Pref_Store;
+			break;
+
 		default:
 			pref_bias_clear_store = 128;
 			pref_bias_copy_load = 256;
@@ -225,9 +221,9 @@ static void set_prefetch_parameters(void)
 static void build_clear_store(u32 **buf, int off)
 {
 	if (cpu_has_64bit_gp_regs || cpu_has_64bit_zero_reg) {
-		uasm_i_sd(buf, ZERO, off, A0);
+		uasm_i_sd(buf, GPR_ZERO, off, GPR_A0);
 	} else {
-		uasm_i_sw(buf, ZERO, off, A0);
+		uasm_i_sw(buf, GPR_ZERO, off, GPR_A0);
 	}
 }
 
@@ -238,22 +234,24 @@ static inline void build_clear_pref(u32 **buf, int off)
 
 	if (pref_bias_clear_store) {
 		_uasm_i_pref(buf, pref_dst_mode, pref_bias_clear_store + off,
-			    A0);
+			    GPR_A0);
 	} else if (cache_line_size == (half_clear_loop_size << 1)) {
 		if (cpu_has_cache_cdex_s) {
-			uasm_i_cache(buf, Create_Dirty_Excl_SD, off, A0);
+			uasm_i_cache(buf, Create_Dirty_Excl_SD, off, GPR_A0);
 		} else if (cpu_has_cache_cdex_p) {
-			if (R4600_V1_HIT_CACHEOP_WAR && cpu_is_r4600_v1_x()) {
+			if (IS_ENABLED(CONFIG_WAR_R4600_V1_HIT_CACHEOP) &&
+			    cpu_is_r4600_v1_x()) {
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 			}
 
-			if (R4600_V2_HIT_CACHEOP_WAR && cpu_is_r4600_v2_x())
-				uasm_i_lw(buf, ZERO, ZERO, AT);
+			if (IS_ENABLED(CONFIG_WAR_R4600_V2_HIT_CACHEOP) &&
+			    cpu_is_r4600_v2_x())
+				uasm_i_lw(buf, GPR_ZERO, GPR_ZERO, GPR_AT);
 
-			uasm_i_cache(buf, Create_Dirty_Excl_D, off, A0);
+			uasm_i_cache(buf, Create_Dirty_Excl_D, off, GPR_A0);
 		}
 	}
 }
@@ -291,12 +289,12 @@ void build_clear_page(void)
 
 	off = PAGE_SIZE - pref_bias_clear_store;
 	if (off > 0xffff || !pref_bias_clear_store)
-		pg_addiu(&buf, A2, A0, off);
+		pg_addiu(&buf, GPR_A2, GPR_A0, off);
 	else
-		uasm_i_ori(&buf, A2, A0, off);
+		uasm_i_ori(&buf, GPR_A2, GPR_A0, off);
 
-	if (R4600_V2_HIT_CACHEOP_WAR && cpu_is_r4600_v2_x())
-		uasm_i_lui(&buf, AT, uasm_rel_hi(0xa0000000));
+	if (IS_ENABLED(CONFIG_WAR_R4600_V2_HIT_CACHEOP) && cpu_is_r4600_v2_x())
+		uasm_i_lui(&buf, GPR_AT, uasm_rel_hi(0xa0000000));
 
 	off = cache_line_size ? min(8, pref_bias_clear_store / cache_line_size)
 				* cache_line_size : 0;
@@ -310,36 +308,36 @@ void build_clear_page(void)
 		build_clear_store(&buf, off);
 		off += clear_word_size;
 	} while (off < half_clear_loop_size);
-	pg_addiu(&buf, A0, A0, 2 * off);
+	pg_addiu(&buf, GPR_A0, GPR_A0, 2 * off);
 	off = -off;
 	do {
 		build_clear_pref(&buf, off);
 		if (off == -clear_word_size)
-			uasm_il_bne(&buf, &r, A0, A2, label_clear_pref);
+			uasm_il_bne(&buf, &r, GPR_A0, GPR_A2, label_clear_pref);
 		build_clear_store(&buf, off);
 		off += clear_word_size;
 	} while (off < 0);
 
 	if (pref_bias_clear_store) {
-		pg_addiu(&buf, A2, A0, pref_bias_clear_store);
+		pg_addiu(&buf, GPR_A2, GPR_A0, pref_bias_clear_store);
 		uasm_l_clear_nopref(&l, buf);
 		off = 0;
 		do {
 			build_clear_store(&buf, off);
 			off += clear_word_size;
 		} while (off < half_clear_loop_size);
-		pg_addiu(&buf, A0, A0, 2 * off);
+		pg_addiu(&buf, GPR_A0, GPR_A0, 2 * off);
 		off = -off;
 		do {
 			if (off == -clear_word_size)
-				uasm_il_bne(&buf, &r, A0, A2,
+				uasm_il_bne(&buf, &r, GPR_A0, GPR_A2,
 					    label_clear_nopref);
 			build_clear_store(&buf, off);
 			off += clear_word_size;
 		} while (off < 0);
 	}
 
-	uasm_i_jr(&buf, RA);
+	uasm_i_jr(&buf, GPR_RA);
 	uasm_i_nop(&buf);
 
 	BUG_ON(buf > &__clear_page_end);
@@ -359,18 +357,18 @@ void build_clear_page(void)
 static void build_copy_load(u32 **buf, int reg, int off)
 {
 	if (cpu_has_64bit_gp_regs) {
-		uasm_i_ld(buf, reg, off, A1);
+		uasm_i_ld(buf, reg, off, GPR_A1);
 	} else {
-		uasm_i_lw(buf, reg, off, A1);
+		uasm_i_lw(buf, reg, off, GPR_A1);
 	}
 }
 
 static void build_copy_store(u32 **buf, int reg, int off)
 {
 	if (cpu_has_64bit_gp_regs) {
-		uasm_i_sd(buf, reg, off, A0);
+		uasm_i_sd(buf, reg, off, GPR_A0);
 	} else {
-		uasm_i_sw(buf, reg, off, A0);
+		uasm_i_sw(buf, reg, off, GPR_A0);
 	}
 }
 
@@ -380,7 +378,7 @@ static inline void build_copy_load_pref(u32 **buf, int off)
 		return;
 
 	if (pref_bias_copy_load)
-		_uasm_i_pref(buf, pref_src_mode, pref_bias_copy_load + off, A1);
+		_uasm_i_pref(buf, pref_src_mode, pref_bias_copy_load + off, GPR_A1);
 }
 
 static inline void build_copy_store_pref(u32 **buf, int off)
@@ -390,22 +388,24 @@ static inline void build_copy_store_pref(u32 **buf, int off)
 
 	if (pref_bias_copy_store) {
 		_uasm_i_pref(buf, pref_dst_mode, pref_bias_copy_store + off,
-			    A0);
+			    GPR_A0);
 	} else if (cache_line_size == (half_copy_loop_size << 1)) {
 		if (cpu_has_cache_cdex_s) {
-			uasm_i_cache(buf, Create_Dirty_Excl_SD, off, A0);
+			uasm_i_cache(buf, Create_Dirty_Excl_SD, off, GPR_A0);
 		} else if (cpu_has_cache_cdex_p) {
-			if (R4600_V1_HIT_CACHEOP_WAR && cpu_is_r4600_v1_x()) {
+			if (IS_ENABLED(CONFIG_WAR_R4600_V1_HIT_CACHEOP) &&
+			    cpu_is_r4600_v1_x()) {
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 				uasm_i_nop(buf);
 			}
 
-			if (R4600_V2_HIT_CACHEOP_WAR && cpu_is_r4600_v2_x())
-				uasm_i_lw(buf, ZERO, ZERO, AT);
+			if (IS_ENABLED(CONFIG_WAR_R4600_V2_HIT_CACHEOP) &&
+			    cpu_is_r4600_v2_x())
+				uasm_i_lw(buf, GPR_ZERO, GPR_ZERO, GPR_AT);
 
-			uasm_i_cache(buf, Create_Dirty_Excl_D, off, A0);
+			uasm_i_cache(buf, Create_Dirty_Excl_D, off, GPR_A0);
 		}
 	}
 }
@@ -442,12 +442,12 @@ void build_copy_page(void)
 
 	off = PAGE_SIZE - pref_bias_copy_load;
 	if (off > 0xffff || !pref_bias_copy_load)
-		pg_addiu(&buf, A2, A0, off);
+		pg_addiu(&buf, GPR_A2, GPR_A0, off);
 	else
-		uasm_i_ori(&buf, A2, A0, off);
+		uasm_i_ori(&buf, GPR_A2, GPR_A0, off);
 
-	if (R4600_V2_HIT_CACHEOP_WAR && cpu_is_r4600_v2_x())
-		uasm_i_lui(&buf, AT, uasm_rel_hi(0xa0000000));
+	if (IS_ENABLED(CONFIG_WAR_R4600_V2_HIT_CACHEOP) && cpu_is_r4600_v2_x())
+		uasm_i_lui(&buf, GPR_AT, uasm_rel_hi(0xa0000000));
 
 	off = cache_line_size ? min(8, pref_bias_copy_load / cache_line_size) *
 				cache_line_size : 0;
@@ -464,126 +464,126 @@ void build_copy_page(void)
 	uasm_l_copy_pref_both(&l, buf);
 	do {
 		build_copy_load_pref(&buf, off);
-		build_copy_load(&buf, T0, off);
+		build_copy_load(&buf, GPR_T0, off);
 		build_copy_load_pref(&buf, off + copy_word_size);
-		build_copy_load(&buf, T1, off + copy_word_size);
+		build_copy_load(&buf, GPR_T1, off + copy_word_size);
 		build_copy_load_pref(&buf, off + 2 * copy_word_size);
-		build_copy_load(&buf, T2, off + 2 * copy_word_size);
+		build_copy_load(&buf, GPR_T2, off + 2 * copy_word_size);
 		build_copy_load_pref(&buf, off + 3 * copy_word_size);
-		build_copy_load(&buf, T3, off + 3 * copy_word_size);
+		build_copy_load(&buf, GPR_T3, off + 3 * copy_word_size);
 		build_copy_store_pref(&buf, off);
-		build_copy_store(&buf, T0, off);
+		build_copy_store(&buf, GPR_T0, off);
 		build_copy_store_pref(&buf, off + copy_word_size);
-		build_copy_store(&buf, T1, off + copy_word_size);
+		build_copy_store(&buf, GPR_T1, off + copy_word_size);
 		build_copy_store_pref(&buf, off + 2 * copy_word_size);
-		build_copy_store(&buf, T2, off + 2 * copy_word_size);
+		build_copy_store(&buf, GPR_T2, off + 2 * copy_word_size);
 		build_copy_store_pref(&buf, off + 3 * copy_word_size);
-		build_copy_store(&buf, T3, off + 3 * copy_word_size);
+		build_copy_store(&buf, GPR_T3, off + 3 * copy_word_size);
 		off += 4 * copy_word_size;
 	} while (off < half_copy_loop_size);
-	pg_addiu(&buf, A1, A1, 2 * off);
-	pg_addiu(&buf, A0, A0, 2 * off);
+	pg_addiu(&buf, GPR_A1, GPR_A1, 2 * off);
+	pg_addiu(&buf, GPR_A0, GPR_A0, 2 * off);
 	off = -off;
 	do {
 		build_copy_load_pref(&buf, off);
-		build_copy_load(&buf, T0, off);
+		build_copy_load(&buf, GPR_T0, off);
 		build_copy_load_pref(&buf, off + copy_word_size);
-		build_copy_load(&buf, T1, off + copy_word_size);
+		build_copy_load(&buf, GPR_T1, off + copy_word_size);
 		build_copy_load_pref(&buf, off + 2 * copy_word_size);
-		build_copy_load(&buf, T2, off + 2 * copy_word_size);
+		build_copy_load(&buf, GPR_T2, off + 2 * copy_word_size);
 		build_copy_load_pref(&buf, off + 3 * copy_word_size);
-		build_copy_load(&buf, T3, off + 3 * copy_word_size);
+		build_copy_load(&buf, GPR_T3, off + 3 * copy_word_size);
 		build_copy_store_pref(&buf, off);
-		build_copy_store(&buf, T0, off);
+		build_copy_store(&buf, GPR_T0, off);
 		build_copy_store_pref(&buf, off + copy_word_size);
-		build_copy_store(&buf, T1, off + copy_word_size);
+		build_copy_store(&buf, GPR_T1, off + copy_word_size);
 		build_copy_store_pref(&buf, off + 2 * copy_word_size);
-		build_copy_store(&buf, T2, off + 2 * copy_word_size);
+		build_copy_store(&buf, GPR_T2, off + 2 * copy_word_size);
 		build_copy_store_pref(&buf, off + 3 * copy_word_size);
 		if (off == -(4 * copy_word_size))
-			uasm_il_bne(&buf, &r, A2, A0, label_copy_pref_both);
-		build_copy_store(&buf, T3, off + 3 * copy_word_size);
+			uasm_il_bne(&buf, &r, GPR_A2, GPR_A0, label_copy_pref_both);
+		build_copy_store(&buf, GPR_T3, off + 3 * copy_word_size);
 		off += 4 * copy_word_size;
 	} while (off < 0);
 
 	if (pref_bias_copy_load - pref_bias_copy_store) {
-		pg_addiu(&buf, A2, A0,
+		pg_addiu(&buf, GPR_A2, GPR_A0,
 			 pref_bias_copy_load - pref_bias_copy_store);
 		uasm_l_copy_pref_store(&l, buf);
 		off = 0;
 		do {
-			build_copy_load(&buf, T0, off);
-			build_copy_load(&buf, T1, off + copy_word_size);
-			build_copy_load(&buf, T2, off + 2 * copy_word_size);
-			build_copy_load(&buf, T3, off + 3 * copy_word_size);
+			build_copy_load(&buf, GPR_T0, off);
+			build_copy_load(&buf, GPR_T1, off + copy_word_size);
+			build_copy_load(&buf, GPR_T2, off + 2 * copy_word_size);
+			build_copy_load(&buf, GPR_T3, off + 3 * copy_word_size);
 			build_copy_store_pref(&buf, off);
-			build_copy_store(&buf, T0, off);
+			build_copy_store(&buf, GPR_T0, off);
 			build_copy_store_pref(&buf, off + copy_word_size);
-			build_copy_store(&buf, T1, off + copy_word_size);
+			build_copy_store(&buf, GPR_T1, off + copy_word_size);
 			build_copy_store_pref(&buf, off + 2 * copy_word_size);
-			build_copy_store(&buf, T2, off + 2 * copy_word_size);
+			build_copy_store(&buf, GPR_T2, off + 2 * copy_word_size);
 			build_copy_store_pref(&buf, off + 3 * copy_word_size);
-			build_copy_store(&buf, T3, off + 3 * copy_word_size);
+			build_copy_store(&buf, GPR_T3, off + 3 * copy_word_size);
 			off += 4 * copy_word_size;
 		} while (off < half_copy_loop_size);
-		pg_addiu(&buf, A1, A1, 2 * off);
-		pg_addiu(&buf, A0, A0, 2 * off);
+		pg_addiu(&buf, GPR_A1, GPR_A1, 2 * off);
+		pg_addiu(&buf, GPR_A0, GPR_A0, 2 * off);
 		off = -off;
 		do {
-			build_copy_load(&buf, T0, off);
-			build_copy_load(&buf, T1, off + copy_word_size);
-			build_copy_load(&buf, T2, off + 2 * copy_word_size);
-			build_copy_load(&buf, T3, off + 3 * copy_word_size);
+			build_copy_load(&buf, GPR_T0, off);
+			build_copy_load(&buf, GPR_T1, off + copy_word_size);
+			build_copy_load(&buf, GPR_T2, off + 2 * copy_word_size);
+			build_copy_load(&buf, GPR_T3, off + 3 * copy_word_size);
 			build_copy_store_pref(&buf, off);
-			build_copy_store(&buf, T0, off);
+			build_copy_store(&buf, GPR_T0, off);
 			build_copy_store_pref(&buf, off + copy_word_size);
-			build_copy_store(&buf, T1, off + copy_word_size);
+			build_copy_store(&buf, GPR_T1, off + copy_word_size);
 			build_copy_store_pref(&buf, off + 2 * copy_word_size);
-			build_copy_store(&buf, T2, off + 2 * copy_word_size);
+			build_copy_store(&buf, GPR_T2, off + 2 * copy_word_size);
 			build_copy_store_pref(&buf, off + 3 * copy_word_size);
 			if (off == -(4 * copy_word_size))
-				uasm_il_bne(&buf, &r, A2, A0,
+				uasm_il_bne(&buf, &r, GPR_A2, GPR_A0,
 					    label_copy_pref_store);
-			build_copy_store(&buf, T3, off + 3 * copy_word_size);
+			build_copy_store(&buf, GPR_T3, off + 3 * copy_word_size);
 			off += 4 * copy_word_size;
 		} while (off < 0);
 	}
 
 	if (pref_bias_copy_store) {
-		pg_addiu(&buf, A2, A0, pref_bias_copy_store);
+		pg_addiu(&buf, GPR_A2, GPR_A0, pref_bias_copy_store);
 		uasm_l_copy_nopref(&l, buf);
 		off = 0;
 		do {
-			build_copy_load(&buf, T0, off);
-			build_copy_load(&buf, T1, off + copy_word_size);
-			build_copy_load(&buf, T2, off + 2 * copy_word_size);
-			build_copy_load(&buf, T3, off + 3 * copy_word_size);
-			build_copy_store(&buf, T0, off);
-			build_copy_store(&buf, T1, off + copy_word_size);
-			build_copy_store(&buf, T2, off + 2 * copy_word_size);
-			build_copy_store(&buf, T3, off + 3 * copy_word_size);
+			build_copy_load(&buf, GPR_T0, off);
+			build_copy_load(&buf, GPR_T1, off + copy_word_size);
+			build_copy_load(&buf, GPR_T2, off + 2 * copy_word_size);
+			build_copy_load(&buf, GPR_T3, off + 3 * copy_word_size);
+			build_copy_store(&buf, GPR_T0, off);
+			build_copy_store(&buf, GPR_T1, off + copy_word_size);
+			build_copy_store(&buf, GPR_T2, off + 2 * copy_word_size);
+			build_copy_store(&buf, GPR_T3, off + 3 * copy_word_size);
 			off += 4 * copy_word_size;
 		} while (off < half_copy_loop_size);
-		pg_addiu(&buf, A1, A1, 2 * off);
-		pg_addiu(&buf, A0, A0, 2 * off);
+		pg_addiu(&buf, GPR_A1, GPR_A1, 2 * off);
+		pg_addiu(&buf, GPR_A0, GPR_A0, 2 * off);
 		off = -off;
 		do {
-			build_copy_load(&buf, T0, off);
-			build_copy_load(&buf, T1, off + copy_word_size);
-			build_copy_load(&buf, T2, off + 2 * copy_word_size);
-			build_copy_load(&buf, T3, off + 3 * copy_word_size);
-			build_copy_store(&buf, T0, off);
-			build_copy_store(&buf, T1, off + copy_word_size);
-			build_copy_store(&buf, T2, off + 2 * copy_word_size);
+			build_copy_load(&buf, GPR_T0, off);
+			build_copy_load(&buf, GPR_T1, off + copy_word_size);
+			build_copy_load(&buf, GPR_T2, off + 2 * copy_word_size);
+			build_copy_load(&buf, GPR_T3, off + 3 * copy_word_size);
+			build_copy_store(&buf, GPR_T0, off);
+			build_copy_store(&buf, GPR_T1, off + copy_word_size);
+			build_copy_store(&buf, GPR_T2, off + 2 * copy_word_size);
 			if (off == -(4 * copy_word_size))
-				uasm_il_bne(&buf, &r, A2, A0,
+				uasm_il_bne(&buf, &r, GPR_A2, GPR_A0,
 					    label_copy_nopref);
-			build_copy_store(&buf, T3, off + 3 * copy_word_size);
+			build_copy_store(&buf, GPR_T3, off + 3 * copy_word_size);
 			off += 4 * copy_word_size;
 		} while (off < 0);
 	}
 
-	uasm_i_jr(&buf, RA);
+	uasm_i_jr(&buf, GPR_RA);
 	uasm_i_nop(&buf);
 
 	BUG_ON(buf > &__copy_page_end);
@@ -615,21 +615,6 @@ struct dmadscr {
 	u64 pad_b;
 } ____cacheline_aligned_in_smp page_descr[DM_NUM_CHANNELS];
 
-void sb1_dma_init(void)
-{
-	int i;
-
-	for (i = 0; i < DM_NUM_CHANNELS; i++) {
-		const u64 base_val = CPHYSADDR((unsigned long)&page_descr[i]) |
-				     V_DM_DSCR_BASE_RINGSZ(1);
-		void *base_reg = IOADDR(A_DM_REGISTER(i, R_DM_DSCR_BASE));
-
-		__raw_writeq(base_val, base_reg);
-		__raw_writeq(base_val | M_DM_DSCR_BASE_RESET, base_reg);
-		__raw_writeq(base_val | M_DM_DSCR_BASE_ENABL, base_reg);
-	}
-}
-
 void clear_page(void *page)
 {
 	u64 to_phys = CPHYSADDR((unsigned long)page);
@@ -653,6 +638,7 @@ void clear_page(void *page)
 		;
 	__raw_readq(IOADDR(A_DM_REGISTER(cpu, R_DM_DSCR_BASE)));
 }
+EXPORT_SYMBOL(clear_page);
 
 void copy_page(void *to, void *from)
 {
@@ -679,5 +665,6 @@ void copy_page(void *to, void *from)
 		;
 	__raw_readq(IOADDR(A_DM_REGISTER(cpu, R_DM_DSCR_BASE)));
 }
+EXPORT_SYMBOL(copy_page);
 
 #endif /* CONFIG_SIBYTE_DMA_PAGEOPS */

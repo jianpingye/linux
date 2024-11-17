@@ -1,25 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * LCD driver for MIPI DBI-C / DCS compatible LCDs
  *
  * Copyright (C) 2006 Nokia Corporation
  * Author: Imre Deak <imre.deak@nokia.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include <linux/device.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/spi/spi.h>
@@ -54,13 +42,13 @@ struct mipid_device {
 						   when we can issue the
 						   next sleep in/out command */
 	unsigned long	hw_guard_wait;		/* max guard time in jiffies */
+	struct gpio_desc	*reset;
 
 	struct omapfb_device	*fbdev;
 	struct spi_device	*spi;
 	struct mutex		mutex;
 	struct lcd_panel	panel;
 
-	struct workqueue_struct	*esd_wq;
 	struct delayed_work	esd_work;
 	void			(*esd_check)(struct mipid_device *m);
 };
@@ -175,7 +163,7 @@ static void hw_guard_wait(struct mipid_device *md)
 {
 	unsigned long wait = md->hw_guard_end - jiffies;
 
-	if ((long)wait > 0 && wait <= md->hw_guard_wait) {
+	if ((long)wait > 0 && time_before_eq(wait,  md->hw_guard_wait)) {
 		set_current_state(TASK_UNINTERRUPTIBLE);
 		schedule_timeout(wait);
 	}
@@ -390,7 +378,7 @@ static void ls041y3_esd_check(struct mipid_device *md)
 static void mipid_esd_start_check(struct mipid_device *md)
 {
 	if (md->esd_check != NULL)
-		queue_delayed_work(md->esd_wq, &md->esd_work,
+		schedule_delayed_work(&md->esd_work,
 				   MIPID_ESD_CHECK_PERIOD);
 }
 
@@ -476,11 +464,6 @@ static int mipid_init(struct lcd_panel *panel,
 	struct mipid_device *md = to_mipid_device(panel);
 
 	md->fbdev = fbdev;
-	md->esd_wq = create_singlethread_workqueue("mipid_esd");
-	if (md->esd_wq == NULL) {
-		dev_err(&md->spi->dev, "can't create ESD workqueue\n");
-		return -ENOMEM;
-	}
 	INIT_DELAYED_WORK(&md->esd_work, mipid_esd_work);
 	mutex_init(&md->mutex);
 
@@ -500,10 +483,9 @@ static void mipid_cleanup(struct lcd_panel *panel)
 
 	if (md->enabled)
 		mipid_esd_stop_check(md);
-	destroy_workqueue(md->esd_wq);
 }
 
-static struct lcd_panel mipid_panel = {
+static const struct lcd_panel mipid_panel = {
 	.config		= OMAP_LCDC_PANEL_TFT,
 
 	.bpp		= 16,
@@ -576,6 +558,12 @@ static int mipid_spi_probe(struct spi_device *spi)
 		return -ENOMEM;
 	}
 
+	/* This will de-assert RESET if active */
+	md->reset = gpiod_get(&spi->dev, "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(md->reset))
+		return dev_err_probe(&spi->dev, PTR_ERR(md->reset),
+				     "no reset GPIO line\n");
+
 	spi->mode = SPI_MODE_0;
 	md->spi = spi;
 	dev_set_drvdata(&spi->dev, md);
@@ -583,27 +571,30 @@ static int mipid_spi_probe(struct spi_device *spi)
 
 	r = mipid_detect(md);
 	if (r < 0)
-		return r;
+		goto free_md;
 
 	omapfb_register_panel(&md->panel);
 
 	return 0;
+
+free_md:
+	kfree(md);
+	return r;
 }
 
-static int mipid_spi_remove(struct spi_device *spi)
+static void mipid_spi_remove(struct spi_device *spi)
 {
 	struct mipid_device *md = dev_get_drvdata(&spi->dev);
 
+	/* Asserts RESET */
+	gpiod_set_value(md->reset, 1);
 	mipid_disable(&md->panel);
 	kfree(md);
-
-	return 0;
 }
 
 static struct spi_driver mipid_spi_driver = {
 	.driver = {
 		.name	= MIPID_MODULE_NAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe	= mipid_spi_probe,
 	.remove	= mipid_spi_remove,

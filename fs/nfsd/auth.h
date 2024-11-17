@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * nfsd-specific authentication stuff.
  *
@@ -11,6 +12,6 @@
  * Set the current process's fsuid/fsgid etc to those of the NFS
  * client user
  */
-int nfsd_setuser(struct svc_rqst *, struct svc_export *);
+int nfsd_setuser(struct svc_cred *cred, struct svc_export *exp);
 
 #endif /* LINUX_NFSD_AUTH_H */

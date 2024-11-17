@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2001 Lennert Buytenhek (buytenh@gnu.org) and
  * James Leu (jleu@mindspring.net).
  * Copyright (C) 2001 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  * Copyright (C) 2001 by various other people who didn't put their name here.
- * Licensed under the GPL.
  */
 
 #include <linux/init.h>
@@ -63,7 +63,7 @@ const struct net_kern_info ethertap_kern_info = {
 	.write 			= etap_write,
 };
 
-int ethertap_setup(char *str, char **mac_out, void *data)
+static int ethertap_setup(char *str, char **mac_out, void *data)
 {
 	struct ethertap_init *init = data;
 

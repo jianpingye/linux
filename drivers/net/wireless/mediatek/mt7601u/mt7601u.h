@@ -1,20 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2014 Felix Fietkau <nbd@openwrt.org>
  * Copyright (C) 2015 Jakub Kicinski <kubakici@wp.pl>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef MT7601U_H
 #define MT7601U_H
 
+#include <linux/bitfield.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/mutex.h>
@@ -22,9 +15,9 @@
 #include <linux/completion.h>
 #include <net/mac80211.h>
 #include <linux/debugfs.h>
+#include <linux/average.h>
 
 #include "regs.h"
-#include "util.h"
 
 #define MT_CALIBRATE_INTERVAL		(4 * HZ)
 
@@ -138,15 +131,19 @@ enum {
 	MT7601U_STATE_MORE_STATS,
 };
 
+DECLARE_EWMA(rssi, 10, 4);
+
 /**
  * struct mt7601u_dev - adapter structure
  * @lock:		protects @wcid->tx_rate.
+ * @mac_lock:		locks out mac80211's tx status and rx paths.
  * @tx_lock:		protects @tx_q and changes of MT7601U_STATE_*_STATS
-			flags in @state.
+ *			flags in @state.
  * @rx_lock:		protects @rx_q.
  * @con_mon_lock:	protects @ap_bssid, @bcn_*, @avg_rssi.
  * @mutex:		ensures exclusive access from mac80211 callbacks.
- * @vendor_req_mutex:	ensures atomicity of vendor requests.
+ * @vendor_req_mutex:	protects @vend_buf, ensures atomicity of read/write
+ *			accesses
  * @reg_atomic_mutex:	ensures atomicity of indirect register accesses
  *			(accesses to RF and BBP).
  * @hw_atomic_mutex:	ensures exclusive access to HW during critical
@@ -177,6 +174,7 @@ struct mt7601u_dev {
 	struct mt76_wcid __rcu *wcid[N_WCIDS];
 
 	spinlock_t lock;
+	spinlock_t mac_lock;
 
 	const u16 *beacon_offsets;
 
@@ -184,6 +182,8 @@ struct mt7601u_dev {
 	struct mt7601u_eeprom_params *ee;
 
 	struct mutex vendor_req_mutex;
+	void *vend_buf;
+
 	struct mutex reg_atomic_mutex;
 	struct mutex hw_atomic_mutex;
 
@@ -197,7 +197,9 @@ struct mt7601u_dev {
 
 	/* TX */
 	spinlock_t tx_lock;
+	struct tasklet_struct tx_tasklet;
 	struct mt7601u_tx_queue *tx_q;
+	struct sk_buff_head tx_skb_done;
 
 	atomic_t avg_ampdu_len;
 
@@ -213,7 +215,7 @@ struct mt7601u_dev {
 	s8 bcn_freq_off;
 	u8 bcn_phy_mode;
 
-	int avg_rssi; /* starts at 0 and converges */
+	struct ewma_rssi avg_rssi;
 
 	u8 agc_save;
 
@@ -293,7 +295,7 @@ bool mt76_poll_msec(struct mt7601u_dev *dev, u32 offset, u32 mask, u32 val,
 
 /* Compatibility with mt76 */
 #define mt76_rmw_field(_dev, _reg, _field, _val)	\
-	mt76_rmw(_dev, _reg, _field, MT76_SET(_field, _val))
+	mt76_rmw(_dev, _reg, _field, FIELD_PREP(_field, _val))
 
 static inline u32 mt76_rr(struct mt7601u_dev *dev, u32 offset)
 {
@@ -366,7 +368,8 @@ void mt7601u_mac_set_ampdu_factor(struct mt7601u_dev *dev);
 void mt7601u_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
 		struct sk_buff *skb);
 int mt7601u_conf_tx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-		    u16 queue, const struct ieee80211_tx_queue_params *params);
+		    unsigned int link_id, u16 queue,
+		    const struct ieee80211_tx_queue_params *params);
 void mt7601u_tx_status(struct mt7601u_dev *dev, struct sk_buff *skb);
 void mt7601u_tx_stat(struct work_struct *work);
 

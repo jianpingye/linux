@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Probe for 8250/16550-type ISAPNP serial ports.
  *
@@ -6,16 +7,14 @@
  *  Copyright (C) 2001 Russell King, All Rights Reserved.
  *
  *  Ported to the Linux PnP Layer - (C) Adam Belay.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License.
  */
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/pm.h>
 #include <linux/pnp.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
+#include <linux/property.h>
 #include <linux/serial_core.h>
 #include <linux/bitops.h>
 
@@ -41,6 +40,12 @@ static const struct pnp_device_id pnp_dev_table[] = {
 	{	"AEI1240",		0	},
 	/* Rockwell 56K ACF II Fax+Data+Voice Modem */
 	{	"AKY1021",		0 /*SPCI_FL_NO_SHIRQ*/	},
+	/*
+	 * ALi Fast Infrared Controller
+	 * Native driver (ali-ircc) is broken so at least
+	 * it can be used with irtty-sir.
+	 */
+	{	"ALI5123",		0	},
 	/* AZT3005 PnP SOUND DEVICE */
 	{	"AZT4001",		0	},
 	/* Best Data Products Inc. Smart One 336F PnP Modem */
@@ -52,10 +57,6 @@ static const struct pnp_device_id pnp_dev_table[] = {
 	{	"BRI1400",		0	},
 	/* Boca 33.6 Kbps Internal FD34FSVD */
 	{	"BRI3400",		0	},
-	/* Boca 33.6 Kbps Internal FD34FSVD */
-	{	"BRI0A49",		0	},
-	/* Best Data Products Inc. Smart One 336F PnP Modem */
-	{	"BDP3336",		0	},
 	/* Computer Peripherals Inc */
 	/* EuroViVa CommCenter-33.6 SP PnP */
 	{	"CPI4050",		0	},
@@ -351,8 +352,8 @@ static const struct pnp_device_id pnp_dev_table[] = {
 	/* Fujitsu Wacom 1FGT Tablet PC device */
 	{	"FUJ02E9",		0	},
 	/*
-	 * LG C1 EXPRESS DUAL (C1-PB11A3) touch screen (actually a FUJ02E6 in
-	 * disguise)
+	 * LG C1 EXPRESS DUAL (C1-PB11A3) touch screen (actually a FUJ02E6
+	 * in disguise).
 	 */
 	{	"LTS0001",		0       },
 	/* Rockwell's (PORALiNK) 33600 INT PNP */
@@ -361,43 +362,50 @@ static const struct pnp_device_id pnp_dev_table[] = {
 	{	"PNPCXXX",		UNKNOWN_DEV	},
 	/* More unknown PnP modems */
 	{	"PNPDXXX",		UNKNOWN_DEV	},
-	/* Winbond CIR port, should not be probed. We should keep track
-	   of it to prevent the legacy serial driver from probing it */
+	/*
+	 * Winbond CIR port, should not be probed. We should keep track of
+	 * it to prevent the legacy serial driver from probing it.
+	 */
 	{	"WEC1022",		CIR_PORT	},
+	/*
+	 * SMSC IrCC SIR/FIR port, should not be probed by serial driver as
+	 * well so its own driver can bind to it.
+	 */
+	{	"SMCF010",		CIR_PORT	},
 	{	"",			0	}
 };
 
 MODULE_DEVICE_TABLE(pnp, pnp_dev_table);
 
-static char *modem_names[] = {
+static const char *modem_names[] = {
 	"MODEM", "Modem", "modem", "FAX", "Fax", "fax",
 	"56K", "56k", "K56", "33.6", "28.8", "14.4",
 	"33,600", "28,800", "14,400", "33.600", "28.800", "14.400",
 	"33600", "28800", "14400", "V.90", "V.34", "V.32", NULL
 };
 
-static int check_name(char *name)
+static bool check_name(const char *name)
 {
-	char **tmp;
+	const char **tmp;
 
 	for (tmp = modem_names; *tmp; tmp++)
 		if (strstr(name, *tmp))
-			return 1;
+			return true;
 
-	return 0;
+	return false;
 }
 
-static int check_resources(struct pnp_dev *dev)
+static bool check_resources(struct pnp_dev *dev)
 {
-	resource_size_t base[] = {0x2f8, 0x3f8, 0x2e8, 0x3e8};
-	int i;
+	static const resource_size_t base[] = {0x2f8, 0x3f8, 0x2e8, 0x3e8};
+	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(base); i++) {
 		if (pnp_possible_config(dev, IORESOURCE_IO, base[i], 8))
-			return 1;
+			return true;
 	}
 
-	return 0;
+	return false;
 }
 
 /*
@@ -414,8 +422,8 @@ static int check_resources(struct pnp_dev *dev)
 static int serial_pnp_guess_board(struct pnp_dev *dev)
 {
 	if (!(check_name(pnp_dev_name(dev)) ||
-		(dev->card && check_name(dev->card->name))))
-			return -ENODEV;
+	    (dev->card && check_name(dev->card->name))))
+		return -ENODEV;
 
 	if (check_resources(dev))
 		return 0;
@@ -427,7 +435,9 @@ static int
 serial_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id *dev_id)
 {
 	struct uart_8250_port uart, *port;
-	int ret, line, flags = dev_id->driver_data;
+	int ret, flags = dev_id->driver_data;
+	unsigned char iotype;
+	long line;
 
 	if (flags & UNKNOWN_DEV) {
 		ret = serial_pnp_guess_board(dev);
@@ -436,36 +446,46 @@ serial_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id *dev_id)
 	}
 
 	memset(&uart, 0, sizeof(uart));
-	if (pnp_irq_valid(dev, 0))
-		uart.port.irq = pnp_irq(dev, 0);
 	if ((flags & CIR_PORT) && pnp_port_valid(dev, 2)) {
 		uart.port.iobase = pnp_port_start(dev, 2);
-		uart.port.iotype = UPIO_PORT;
+		iotype = UPIO_PORT;
 	} else if (pnp_port_valid(dev, 0)) {
 		uart.port.iobase = pnp_port_start(dev, 0);
-		uart.port.iotype = UPIO_PORT;
+		iotype = UPIO_PORT;
 	} else if (pnp_mem_valid(dev, 0)) {
 		uart.port.mapbase = pnp_mem_start(dev, 0);
-		uart.port.iotype = UPIO_MEM;
+		uart.port.mapsize = pnp_mem_len(dev, 0);
+		iotype = UPIO_MEM;
 		uart.port.flags = UPF_IOREMAP;
 	} else
 		return -ENODEV;
 
-#ifdef SERIAL_DEBUG_PNP
-	printk(KERN_DEBUG
-		"Setup PNP port: port %x, mem 0x%lx, irq %d, type %d\n",
-		       uart.port.iobase, uart.port.mapbase, uart.port.irq, uart.port.iotype);
-#endif
+	uart.port.uartclk = 1843200;
+	uart.port.dev = &dev->dev;
+	uart.port.flags |= UPF_SKIP_TEST | UPF_BOOT_AUTOCONF;
+
+	ret = uart_read_port_properties(&uart.port);
+	/* no interrupt -> fall back to polling */
+	if (ret == -ENXIO)
+		ret = 0;
+	if (ret)
+		return ret;
+
+	/*
+	 * The previous call may not set iotype correctly when reg-io-width
+	 * property is absent and it doesn't support IO port resource.
+	 */
+	uart.port.iotype = iotype;
+
 	if (flags & CIR_PORT) {
 		uart.port.flags |= UPF_FIXED_PORT | UPF_FIXED_TYPE;
 		uart.port.type = PORT_8250_CIR;
 	}
 
-	uart.port.flags |= UPF_SKIP_TEST | UPF_BOOT_AUTOCONF;
-	if (pnp_irq_flags(dev, 0) & IORESOURCE_IRQ_SHAREABLE)
-		uart.port.flags |= UPF_SHARE_IRQ;
-	uart.port.uartclk = 1843200;
-	uart.port.dev = &dev->dev;
+	dev_dbg(&dev->dev,
+		 "Setup PNP port: port %#lx, mem %#llx, size %#llx, irq %u, type %u\n",
+		 uart.port.iobase, (unsigned long long)uart.port.mapbase,
+		 (unsigned long long)uart.port.mapsize, uart.port.irq, uart.port.iotype);
 
 	line = serial8250_register_8250_port(&uart);
 	if (line < 0 || (flags & CIR_PORT))
@@ -475,7 +495,7 @@ serial_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id *dev_id)
 	if (uart_console(&port->port))
 		dev->capabilities |= PNP_CONSOLE;
 
-	pnp_set_drvdata(dev, (void *)((long)line + 1));
+	pnp_set_drvdata(dev, (void *)line);
 	return 0;
 }
 
@@ -484,41 +504,34 @@ static void serial_pnp_remove(struct pnp_dev *dev)
 	long line = (long)pnp_get_drvdata(dev);
 
 	dev->capabilities &= ~PNP_CONSOLE;
-	if (line)
-		serial8250_unregister_port(line - 1);
+	serial8250_unregister_port(line);
 }
 
-#ifdef CONFIG_PM
-static int serial_pnp_suspend(struct pnp_dev *dev, pm_message_t state)
+static int serial_pnp_suspend(struct device *dev)
 {
-	long line = (long)pnp_get_drvdata(dev);
+	long line = (long)dev_get_drvdata(dev);
 
-	if (!line)
-		return -ENODEV;
-	serial8250_suspend_port(line - 1);
+	serial8250_suspend_port(line);
 	return 0;
 }
 
-static int serial_pnp_resume(struct pnp_dev *dev)
+static int serial_pnp_resume(struct device *dev)
 {
-	long line = (long)pnp_get_drvdata(dev);
+	long line = (long)dev_get_drvdata(dev);
 
-	if (!line)
-		return -ENODEV;
-	serial8250_resume_port(line - 1);
+	serial8250_resume_port(line);
 	return 0;
 }
-#else
-#define serial_pnp_suspend NULL
-#define serial_pnp_resume NULL
-#endif /* CONFIG_PM */
+
+static DEFINE_SIMPLE_DEV_PM_OPS(serial_pnp_pm_ops, serial_pnp_suspend, serial_pnp_resume);
 
 static struct pnp_driver serial_pnp_driver = {
 	.name		= "serial",
 	.probe		= serial_pnp_probe,
 	.remove		= serial_pnp_remove,
-	.suspend	= serial_pnp_suspend,
-	.resume		= serial_pnp_resume,
+	.driver         = {
+		.pm     = pm_sleep_ptr(&serial_pnp_pm_ops),
+	},
 	.id_table	= pnp_dev_table,
 };
 

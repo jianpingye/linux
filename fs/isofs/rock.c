@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/isofs/rock.c
  *
@@ -203,6 +204,8 @@ int get_rock_ridge_filename(struct iso_directory_record *de,
 	int retnamlen = 0;
 	int truncate = 0;
 	int ret = 0;
+	char *p;
+	int len;
 
 	if (!ISOFS_SB(inode->i_sb)->s_rock)
 		return 0;
@@ -267,12 +270,17 @@ repeat:
 					rr->u.NM.flags);
 				break;
 			}
-			if ((strlen(retname) + rr->len - 5) >= 254) {
+			len = rr->len - 5;
+			if (retnamlen + len >= 254) {
 				truncate = 1;
 				break;
 			}
-			strncat(retname, rr->u.NM.name, rr->len - 5);
-			retnamlen += rr->len - 5;
+			p = memchr(rr->u.NM.name, '\0', len);
+			if (unlikely(p))
+				len = p - rr->u.NM.name;
+			memcpy(retname + retnamlen, rr->u.NM.name, len);
+			retnamlen += len;
+			retname[retnamlen] = '\0';
 			break;
 		case SIG('R', 'E'):
 			kfree(rs.buffer);
@@ -370,9 +378,9 @@ repeat:
 			{
 				int p;
 				for (p = 0; p < rr->u.ER.len_id; p++)
-					printk("%c", rr->u.ER.data[p]);
+					printk(KERN_CONT "%c", rr->u.ER.data[p]);
 			}
-			printk("\n");
+			printk(KERN_CONT "\n");
 			break;
 		case SIG('P', 'X'):
 			inode->i_mode = isonum_733(rr->u.PX.mode);
@@ -413,28 +421,24 @@ repeat:
 			/* Rock ridge never appears on a High Sierra disk */
 			cnt = 0;
 			if (rr->u.TF.flags & TF_CREATE) {
-				inode->i_ctime.tv_sec =
-				    iso_date(rr->u.TF.times[cnt++].time,
-					     0);
-				inode->i_ctime.tv_nsec = 0;
+				inode_set_ctime(inode,
+						iso_date(rr->u.TF.times[cnt++].time, 0),
+						0);
 			}
 			if (rr->u.TF.flags & TF_MODIFY) {
-				inode->i_mtime.tv_sec =
-				    iso_date(rr->u.TF.times[cnt++].time,
-					     0);
-				inode->i_mtime.tv_nsec = 0;
+				inode_set_mtime(inode,
+						iso_date(rr->u.TF.times[cnt++].time, 0),
+						0);
 			}
 			if (rr->u.TF.flags & TF_ACCESS) {
-				inode->i_atime.tv_sec =
-				    iso_date(rr->u.TF.times[cnt++].time,
-					     0);
-				inode->i_atime.tv_nsec = 0;
+				inode_set_atime(inode,
+						iso_date(rr->u.TF.times[cnt++].time, 0),
+						0);
 			}
 			if (rr->u.TF.flags & TF_ATTRIBUTES) {
-				inode->i_ctime.tv_sec =
-				    iso_date(rr->u.TF.times[cnt++].time,
-					     0);
-				inode->i_ctime.tv_nsec = 0;
+				inode_set_ctime(inode,
+						iso_date(rr->u.TF.times[cnt++].time, 0),
+						0);
 			}
 			break;
 		case SIG('S', 'L'):
@@ -525,9 +529,9 @@ repeat:
 			inode->i_rdev = reloc->i_rdev;
 			inode->i_size = reloc->i_size;
 			inode->i_blocks = reloc->i_blocks;
-			inode->i_atime = reloc->i_atime;
-			inode->i_ctime = reloc->i_ctime;
-			inode->i_mtime = reloc->i_mtime;
+			inode_set_atime_to_ts(inode, inode_get_atime(reloc));
+			inode_set_ctime_to_ts(inode, inode_get_ctime(reloc));
+			inode_set_mtime_to_ts(inode, inode_get_mtime(reloc));
 			iput(reloc);
 			break;
 #ifdef CONFIG_ZISOFS
@@ -679,15 +683,15 @@ int parse_rock_ridge_inode(struct iso_directory_record *de, struct inode *inode,
 }
 
 /*
- * readpage() for symlinks: reads symlink contents into the page and either
+ * read_folio() for symlinks: reads symlink contents into the folio and either
  * makes it uptodate and returns 0 or returns error (-EIO)
  */
-static int rock_ridge_symlink_readpage(struct file *file, struct page *page)
+static int rock_ridge_symlink_read_folio(struct file *file, struct folio *folio)
 {
-	struct inode *inode = page->mapping->host;
+	struct inode *inode = folio->mapping->host;
 	struct iso_inode_info *ei = ISOFS_I(inode);
 	struct isofs_sb_info *sbi = ISOFS_SB(inode->i_sb);
-	char *link = kmap(page);
+	char *link = folio_address(folio);
 	unsigned long bufsize = ISOFS_BUFFER_SIZE(inode);
 	struct buffer_head *bh;
 	char *rpnt = link;
@@ -759,6 +763,7 @@ repeat:
 			rs.cont_extent = isonum_733(rr->u.CE.extent);
 			rs.cont_offset = isonum_733(rr->u.CE.offset);
 			rs.cont_size = isonum_733(rr->u.CE.size);
+			break;
 		default:
 			break;
 		}
@@ -773,10 +778,10 @@ repeat:
 		goto fail;
 	brelse(bh);
 	*rpnt = '\0';
-	SetPageUptodate(page);
-	kunmap(page);
-	unlock_page(page);
-	return 0;
+	ret = 0;
+end:
+	folio_end_read(folio, ret == 0);
+	return ret;
 
 	/* error exit from macro */
 out:
@@ -790,12 +795,10 @@ out_bad_span:
 fail:
 	brelse(bh);
 error:
-	SetPageError(page);
-	kunmap(page);
-	unlock_page(page);
-	return -EIO;
+	ret = -EIO;
+	goto end;
 }
 
 const struct address_space_operations isofs_symlink_aops = {
-	.readpage = rock_ridge_symlink_readpage
+	.read_folio = rock_ridge_symlink_read_folio
 };

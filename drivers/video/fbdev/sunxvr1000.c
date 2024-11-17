@@ -1,13 +1,15 @@
-/* sunxvr1000.c: Sun XVR-1000 driver for sparc64 systems
+/* sunxvr1000.c: Sun XVR-1000 fb driver for sparc64 systems
+ *
+ * License: GPL
  *
  * Copyright (C) 2010 David S. Miller (davem@davemloft.net)
  */
 
-#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/fb.h>
 #include <linux/init.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 
 struct gfb_info {
 	struct fb_info		*info;
@@ -32,8 +34,8 @@ static int gfb_get_props(struct gfb_info *gp)
 	gp->depth = of_getintprop_default(gp->of_node, "depth", 32);
 
 	if (!gp->width || !gp->height) {
-		printk(KERN_ERR "gfb: Critical properties missing for %s\n",
-		       gp->of_node->full_name);
+		printk(KERN_ERR "gfb: Critical properties missing for %pOF\n",
+		       gp->of_node);
 		return -EINVAL;
 	}
 
@@ -58,12 +60,10 @@ static int gfb_setcolreg(unsigned regno,
 	return 0;
 }
 
-static struct fb_ops gfb_ops = {
+static const struct fb_ops gfb_ops = {
 	.owner			= THIS_MODULE,
+	FB_DEFAULT_IOMEM_OPS,
 	.fb_setcolreg		= gfb_setcolreg,
-	.fb_fillrect		= cfb_fillrect,
-	.fb_copyarea		= cfb_copyarea,
-	.fb_imageblit		= cfb_imageblit,
 };
 
 static int gfb_set_fbinfo(struct gfb_info *gp)
@@ -71,7 +71,6 @@ static int gfb_set_fbinfo(struct gfb_info *gp)
 	struct fb_info *info = gp->info;
 	struct fb_var_screeninfo *var = &info->var;
 
-	info->flags = FBINFO_DEFAULT;
 	info->fbops = &gfb_ops;
 	info->screen_base = gp->fb_base;
 	info->screen_size = gp->fb_size;
@@ -79,7 +78,7 @@ static int gfb_set_fbinfo(struct gfb_info *gp)
 	info->pseudo_palette = gp->pseudo_palette;
 
 	/* Fill fix common fields */
-	strlcpy(info->fix.id, "gfb", sizeof(info->fix.id));
+	strscpy(info->fix.id, "gfb", sizeof(info->fix.id));
         info->fix.smem_start = gp->fb_base_phys;
         info->fix.smem_len = gp->fb_size;
         info->fix.type = FB_TYPE_PACKED_PIXELS;
@@ -120,7 +119,6 @@ static int gfb_probe(struct platform_device *op)
 
 	info = framebuffer_alloc(sizeof(struct gfb_info), &op->dev);
 	if (!info) {
-		printk(KERN_ERR "gfb: Cannot allocate fb_info\n");
 		err = -ENOMEM;
 		goto err_out;
 	}
@@ -150,12 +148,12 @@ static int gfb_probe(struct platform_device *op)
 	if (err)
 		goto err_unmap_fb;
 
-	printk("gfb: Found device at %s\n", dp->full_name);
+	printk("gfb: Found device at %pOF\n", dp);
 
 	err = register_framebuffer(info);
 	if (err < 0) {
-		printk(KERN_ERR "gfb: Could not register framebuffer %s\n",
-		       dp->full_name);
+		printk(KERN_ERR "gfb: Could not register framebuffer %pOF\n",
+		       dp);
 		goto err_unmap_fb;
 	}
 
@@ -173,36 +171,19 @@ err_out:
 	return err;
 }
 
-static int gfb_remove(struct platform_device *op)
-{
-	struct fb_info *info = dev_get_drvdata(&op->dev);
-	struct gfb_info *gp = info->par;
-
-	unregister_framebuffer(info);
-
-	iounmap(gp->fb_base);
-
-	of_iounmap(&op->resource[6], gp->fb_base, gp->fb_size);
-
-        framebuffer_release(info);
-
-	return 0;
-}
-
 static const struct of_device_id gfb_match[] = {
 	{
 		.name = "SUNW,gfb",
 	},
 	{},
 };
-MODULE_DEVICE_TABLE(of, ffb_match);
 
 static struct platform_driver gfb_driver = {
 	.probe		= gfb_probe,
-	.remove		= gfb_remove,
 	.driver = {
-		.name		= "gfb",
-		.of_match_table	= gfb_match,
+		.name			= "gfb",
+		.of_match_table		= gfb_match,
+		.suppress_bind_attrs	= true,
 	},
 };
 
@@ -213,16 +194,4 @@ static int __init gfb_init(void)
 
 	return platform_driver_register(&gfb_driver);
 }
-
-static void __exit gfb_exit(void)
-{
-	platform_driver_unregister(&gfb_driver);
-}
-
-module_init(gfb_init);
-module_exit(gfb_exit);
-
-MODULE_DESCRIPTION("framebuffer driver for Sun XVR-1000 graphics");
-MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
-MODULE_VERSION("1.0");
-MODULE_LICENSE("GPL");
+device_initcall(gfb_init);

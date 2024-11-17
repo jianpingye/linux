@@ -1,36 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /*
  * Copyright (c) 2014 Intel Corporation.  All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * OpenIB.org BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
  */
 
-#if !defined(OPA_SMI_H)
+#ifndef OPA_SMI_H
 #define OPA_SMI_H
 
 #include <rdma/ib_mad.h>
@@ -40,7 +13,9 @@
 #define OPA_SMP_DR_DATA_SIZE			1872
 #define OPA_SMP_MAX_PATH_HOPS			64
 
-#define OPA_SMI_CLASS_VERSION			0x80
+#define OPA_MAX_VLS				32
+#define OPA_MAX_SLS				32
+#define OPA_MAX_SCS				32
 
 #define OPA_LID_PERMISSIVE			cpu_to_be32(0xFFFFFFFF)
 
@@ -72,6 +47,49 @@ struct opa_smp {
 	} route;
 } __packed;
 
+
+/* Subnet management attributes */
+/* ... */
+#define OPA_ATTRIB_ID_NODE_DESCRIPTION		cpu_to_be16(0x0010)
+#define OPA_ATTRIB_ID_NODE_INFO			cpu_to_be16(0x0011)
+#define OPA_ATTRIB_ID_PORT_INFO			cpu_to_be16(0x0015)
+#define OPA_ATTRIB_ID_PARTITION_TABLE		cpu_to_be16(0x0016)
+#define OPA_ATTRIB_ID_SL_TO_SC_MAP		cpu_to_be16(0x0017)
+#define OPA_ATTRIB_ID_VL_ARBITRATION		cpu_to_be16(0x0018)
+#define OPA_ATTRIB_ID_SM_INFO			cpu_to_be16(0x0020)
+#define OPA_ATTRIB_ID_CABLE_INFO		cpu_to_be16(0x0032)
+#define OPA_ATTRIB_ID_AGGREGATE			cpu_to_be16(0x0080)
+#define OPA_ATTRIB_ID_SC_TO_SL_MAP		cpu_to_be16(0x0082)
+#define OPA_ATTRIB_ID_SC_TO_VLR_MAP		cpu_to_be16(0x0083)
+#define OPA_ATTRIB_ID_SC_TO_VLT_MAP		cpu_to_be16(0x0084)
+#define OPA_ATTRIB_ID_SC_TO_VLNT_MAP		cpu_to_be16(0x0085)
+/* ... */
+#define OPA_ATTRIB_ID_PORT_STATE_INFO		cpu_to_be16(0x0087)
+/* ... */
+#define OPA_ATTRIB_ID_BUFFER_CONTROL_TABLE	cpu_to_be16(0x008A)
+/* ... */
+
+struct opa_node_description {
+	u8 data[64];
+} __packed;
+
+struct opa_node_info {
+	u8      base_version;
+	u8      class_version;
+	u8      node_type;
+	u8      num_ports;
+	__be32  reserved;
+	__be64  system_image_guid;
+	__be64  node_guid;
+	__be64  port_guid;
+	__be16  partition_cap;
+	__be16  device_id;
+	__be32  revision;
+	u8      local_port_num;
+	u8      vendor_id[3];   /* network byte order */
+} __packed;
+
+#define OPA_PARTITION_TABLE_BLK_SIZE 32
 
 static inline u8
 opa_get_smp_direction(struct opa_smp *smp)

@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AD5760, AD5780, AD5781, AD5790, AD5791 Voltage Output Digital to Analog
  * Converter
  *
  * Copyright 2011 Analog Devices Inc.
- *
- * Licensed under the GPL-2.
  */
 
 #include <linux/interrupt.h>
@@ -77,9 +76,11 @@ struct ad5791_chip_info {
  * @chip_info:		chip model specific constants
  * @vref_mv:		actual reference voltage used
  * @vref_neg_mv:	voltage of the negative supply
- * @pwr_down_mode	current power down mode
+ * @ctrl:		control register cache
+ * @pwr_down_mode:	current power down mode
+ * @pwr_down:		true if device is powered down
+ * @data:		spi transfer buffers
  */
-
 struct ad5791_state {
 	struct spi_device		*spi;
 	struct regulator		*reg_vdd;
@@ -94,12 +95,8 @@ struct ad5791_state {
 	union {
 		__be32 d32;
 		u8 d8[4];
-	} data[3] ____cacheline_aligned;
+	} data[3] __aligned(IIO_DMA_MINALIGN);
 };
-
-/**
- * ad5791_supported_device_ids:
- */
 
 enum ad5791_supported_device_ids {
 	ID_AD5760,
@@ -180,7 +177,7 @@ static ssize_t ad5791_read_dac_powerdown(struct iio_dev *indio_dev,
 {
 	struct ad5791_state *st = iio_priv(indio_dev);
 
-	return sprintf(buf, "%d\n", st->pwr_down);
+	return sysfs_emit(buf, "%d\n", st->pwr_down);
 }
 
 static ssize_t ad5791_write_dac_powerdown(struct iio_dev *indio_dev,
@@ -191,7 +188,7 @@ static ssize_t ad5791_write_dac_powerdown(struct iio_dev *indio_dev,
 	int ret;
 	struct ad5791_state *st = iio_priv(indio_dev);
 
-	ret = strtobool(buf, &pwr_down);
+	ret = kstrtobool(buf, &pwr_down);
 	if (ret)
 		return ret;
 
@@ -288,7 +285,7 @@ static const struct iio_chan_spec_ext_info ad5791_ext_info[] = {
 	},
 	IIO_ENUM("powerdown_mode", IIO_SHARED_BY_TYPE,
 		 &ad5791_powerdown_mode_enum),
-	IIO_ENUM_AVAILABLE("powerdown_mode", &ad5791_powerdown_mode_enum),
+	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &ad5791_powerdown_mode_enum),
 	{ },
 };
 
@@ -340,7 +337,6 @@ static int ad5791_write_raw(struct iio_dev *indio_dev,
 static const struct iio_info ad5791_info = {
 	.read_raw = &ad5791_read_raw,
 	.write_raw = &ad5791_write_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static int ad5791_probe(struct spi_device *spi)
@@ -349,6 +345,7 @@ static int ad5791_probe(struct spi_device *spi)
 	struct iio_dev *indio_dev;
 	struct ad5791_state *st;
 	int ret, pos_voltage_uv = 0, neg_voltage_uv = 0;
+	bool use_rbuf_gain2;
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
 	if (!indio_dev)
@@ -383,6 +380,12 @@ static int ad5791_probe(struct spi_device *spi)
 	st->pwr_down = true;
 	st->spi = spi;
 
+	if (pdata)
+		use_rbuf_gain2 = pdata->use_rbuf_gain2;
+	else
+		use_rbuf_gain2 = device_property_read_bool(&spi->dev,
+							   "adi,rbuf-gain2-en");
+
 	if (!IS_ERR(st->reg_vss) && !IS_ERR(st->reg_vdd)) {
 		st->vref_mv = (pos_voltage_uv + neg_voltage_uv) / 1000;
 		st->vref_neg_mv = neg_voltage_uv / 1000;
@@ -402,7 +405,7 @@ static int ad5791_probe(struct spi_device *spi)
 
 
 	st->ctrl = AD5761_CTRL_LINCOMP(st->chip_info->get_lin_comp(st->vref_mv))
-		  | ((pdata && pdata->use_rbuf_gain2) ? 0 : AD5791_CTRL_RBUF) |
+		  | (use_rbuf_gain2 ? 0 : AD5791_CTRL_RBUF) |
 		  AD5791_CTRL_BIN2SC;
 
 	ret = ad5791_spi_write(st, AD5791_ADDR_CTRL, st->ctrl |
@@ -411,7 +414,6 @@ static int ad5791_probe(struct spi_device *spi)
 		goto error_disable_reg_neg;
 
 	spi_set_drvdata(spi, indio_dev);
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->info = &ad5791_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels
@@ -433,7 +435,7 @@ error_disable_reg_pos:
 	return ret;
 }
 
-static int ad5791_remove(struct spi_device *spi)
+static void ad5791_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad5791_state *st = iio_priv(indio_dev);
@@ -444,8 +446,6 @@ static int ad5791_remove(struct spi_device *spi)
 
 	if (!IS_ERR(st->reg_vss))
 		regulator_disable(st->reg_vss);
-
-	return 0;
 }
 
 static const struct spi_device_id ad5791_id[] = {
@@ -461,7 +461,6 @@ MODULE_DEVICE_TABLE(spi, ad5791_id);
 static struct spi_driver ad5791_driver = {
 	.driver = {
 		   .name = "ad5791",
-		   .owner = THIS_MODULE,
 		   },
 	.probe = ad5791_probe,
 	.remove = ad5791_remove,
@@ -469,6 +468,6 @@ static struct spi_driver ad5791_driver = {
 };
 module_spi_driver(ad5791_driver);
 
-MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
+MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD5760/AD5780/AD5781/AD5790/AD5791 DAC");
 MODULE_LICENSE("GPL v2");

@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * attribute_container.c - implementation of a simple container for classes
  *
  * Copyright (c) 2005 - James Bottomley <James.Bottomley@steeleye.com>
- *
- * This file is licensed under GPLv2
  *
  * The basic idea here is to enable a device to be attached to an
  * aritrary numer of classes without having to allocate storage for them.
@@ -237,15 +236,117 @@ attribute_container_remove_device(struct device *dev,
 	mutex_unlock(&attribute_container_mutex);
 }
 
+static int
+do_attribute_container_device_trigger_safe(struct device *dev,
+					   struct attribute_container *cont,
+					   int (*fn)(struct attribute_container *,
+						     struct device *, struct device *),
+					   int (*undo)(struct attribute_container *,
+						       struct device *, struct device *))
+{
+	int ret;
+	struct internal_container *ic, *failed;
+	struct klist_iter iter;
+
+	if (attribute_container_no_classdevs(cont))
+		return fn(cont, dev, NULL);
+
+	klist_for_each_entry(ic, &cont->containers, node, &iter) {
+		if (dev == ic->classdev.parent) {
+			ret = fn(cont, dev, &ic->classdev);
+			if (ret) {
+				failed = ic;
+				klist_iter_exit(&iter);
+				goto fail;
+			}
+		}
+	}
+	return 0;
+
+fail:
+	if (!undo)
+		return ret;
+
+	/* Attempt to undo the work partially done. */
+	klist_for_each_entry(ic, &cont->containers, node, &iter) {
+		if (ic == failed) {
+			klist_iter_exit(&iter);
+			break;
+		}
+		if (dev == ic->classdev.parent)
+			undo(cont, dev, &ic->classdev);
+	}
+	return ret;
+}
+
+/**
+ * attribute_container_device_trigger_safe - execute a trigger for each
+ * matching classdev or fail all of them.
+ *
+ * @dev:  The generic device to run the trigger for
+ * @fn:   the function to execute for each classdev.
+ * @undo: A function to undo the work previously done in case of error
+ *
+ * This function is a safe version of
+ * attribute_container_device_trigger. It stops on the first error and
+ * undo the partial work that has been done, on previous classdev.  It
+ * is guaranteed that either they all succeeded, or none of them
+ * succeeded.
+ */
+int
+attribute_container_device_trigger_safe(struct device *dev,
+					int (*fn)(struct attribute_container *,
+						  struct device *,
+						  struct device *),
+					int (*undo)(struct attribute_container *,
+						    struct device *,
+						    struct device *))
+{
+	struct attribute_container *cont, *failed = NULL;
+	int ret = 0;
+
+	mutex_lock(&attribute_container_mutex);
+
+	list_for_each_entry(cont, &attribute_container_list, node) {
+
+		if (!cont->match(cont, dev))
+			continue;
+
+		ret = do_attribute_container_device_trigger_safe(dev, cont,
+								 fn, undo);
+		if (ret) {
+			failed = cont;
+			break;
+		}
+	}
+
+	if (ret && !WARN_ON(!undo)) {
+		list_for_each_entry(cont, &attribute_container_list, node) {
+
+			if (failed == cont)
+				break;
+
+			if (!cont->match(cont, dev))
+				continue;
+
+			do_attribute_container_device_trigger_safe(dev, cont,
+								   undo, NULL);
+		}
+	}
+
+	mutex_unlock(&attribute_container_mutex);
+	return ret;
+
+}
+
 /**
  * attribute_container_device_trigger - execute a trigger for each matching classdev
  *
  * @dev:  The generic device to run the trigger for
- * @fn	  the function to execute for each classdev.
+ * @fn:   the function to execute for each classdev.
  *
- * This funcion is for executing a trigger when you need to know both
- * the container and the classdev.  If you only care about the
- * container, then use attribute_container_trigger() instead.
+ * This function is for executing a trigger when you need to know both
+ * the container and the classdev.
  */
 void
 attribute_container_device_trigger(struct device *dev,
@@ -272,33 +373,6 @@ attribute_container_device_trigger(struct device *dev,
 			if (dev == ic->classdev.parent)
 				fn(cont, dev, &ic->classdev);
 		}
-	}
-	mutex_unlock(&attribute_container_mutex);
-}
-
-/**
- * attribute_container_trigger - trigger a function for each matching container
- *
- * @dev:  The generic device to activate the trigger for
- * @fn:	  the function to trigger
- *
- * This routine triggers a function that only needs to know the
- * matching containers (not the classdev) associated with a device.
- * It is more lightweight than attribute_container_device_trigger, so
- * should be used in preference unless the triggering function
- * actually needs to know the classdev.
- */
-void
-attribute_container_trigger(struct device *dev,
-			    int (*fn)(struct attribute_container *,
-				      struct device *))
-{
-	struct attribute_container *cont;
-
-	mutex_lock(&attribute_container_mutex);
-	list_for_each_entry(cont, &attribute_container_list, node) {
-		if (cont->match(cont, dev))
-			fn(cont, dev);
 	}
 	mutex_unlock(&attribute_container_mutex);
 }
@@ -354,20 +428,6 @@ attribute_container_add_class_device(struct device *classdev)
 	if (error)
 		return error;
 	return attribute_container_add_attrs(classdev);
-}
-
-/**
- * attribute_container_add_class_device_adapter - simple adapter for triggers
- *
- * This function is identical to attribute_container_add_class_device except
- * that it is designed to be called from the triggers
- */
-int
-attribute_container_add_class_device_adapter(struct attribute_container *cont,
-					     struct device *dev,
-					     struct device *classdev)
-{
-	return attribute_container_add_class_device(classdev);
 }
 
 /**

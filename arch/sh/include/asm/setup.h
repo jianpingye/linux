@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SH_SETUP_H
 #define _SH_SETUP_H
 
@@ -20,5 +21,6 @@
 void sh_mv_setup(void);
 void check_for_initrd(void);
 void per_cpu_trap_init(void);
+void sh_fdt_init(phys_addr_t dt_phys);
 
 #endif /* _SH_SETUP_H */

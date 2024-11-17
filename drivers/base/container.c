@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * System bus type for containers.
  *
  * Copyright (C) 2013, Intel Corporation
  * Author: Rafael J. Wysocki <rafael.j.wysocki@intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/container.h>
@@ -27,7 +24,7 @@ static int container_offline(struct device *dev)
 	return cdev->offline ? cdev->offline(cdev) : 0;
 }
 
-struct bus_type container_subsys = {
+const struct bus_type container_subsys = {
 	.name = CONTAINER_BUS_NAME,
 	.dev_name = CONTAINER_BUS_NAME,
 	.online = trivial_online,

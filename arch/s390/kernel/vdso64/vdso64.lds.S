@@ -1,16 +1,24 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This is the infamous ld script for the 64 bits vdso
  * library
  */
+
+#include <asm/vdso/vsyscall.h>
+#include <asm/page.h>
 #include <asm/vdso.h>
 
 OUTPUT_FORMAT("elf64-s390", "elf64-s390", "elf64-s390")
 OUTPUT_ARCH(s390:64-bit)
-ENTRY(_start)
 
 SECTIONS
 {
-	. = VDSO64_LBASE + SIZEOF_HEADERS;
+	PROVIDE(_vdso_data = . - __VVAR_PAGES * PAGE_SIZE);
+	PROVIDE(_vdso_rng_data = _vdso_data + __VDSO_RND_DATA_OFFSET);
+#ifdef CONFIG_TIME_NS
+	PROVIDE(_timens_data = _vdso_data + PAGE_SIZE);
+#endif
+	. = VDSO_LBASE + SIZEOF_HEADERS;
 
 	.hash		: { *(.hash) }			:text
 	.gnu.hash	: { *(.gnu.hash) }
@@ -36,6 +44,10 @@ SECTIONS
 	.rodata		: { *(.rodata .rodata.* .gnu.linkonce.r.*) }
 	.rodata1	: { *(.rodata1) }
 
+	. = ALIGN(8);
+	.altinstructions	: { *(.altinstructions) }
+	.altinstr_replacement	: { *(.altinstr_replacement) }
+
 	.dynamic	: { *(.dynamic) }		:text	:dynamic
 
 	.eh_frame_hdr	: { *(.eh_frame_hdr) }		:text	:eh_frame_hdr
@@ -44,6 +56,7 @@ SECTIONS
 
 	.rela.dyn ALIGN(8) : { *(.rela.dyn) }
 	.got ALIGN(8)	: { *(.got .toc) }
+	.got.plt ALIGN(8) : { *(.got.plt) }
 
 	_end = .;
 	PROVIDE(end = .);
@@ -91,9 +104,6 @@ SECTIONS
 	.debug_ranges	0 : { *(.debug_ranges) }
 	.gnu.attributes 0 : { KEEP (*(.gnu.attributes)) }
 
-	. = ALIGN(4096);
-	PROVIDE(_vdso_data = .);
-
 	/DISCARD/	: {
 		*(.note.GNU-stack)
 		*(.branch_lt)
@@ -132,7 +142,11 @@ VERSION
 		__kernel_gettimeofday;
 		__kernel_clock_gettime;
 		__kernel_clock_getres;
-
+		__kernel_getcpu;
+		__kernel_restart_syscall;
+		__kernel_rt_sigreturn;
+		__kernel_sigreturn;
+		__kernel_getrandom;
 	local: *;
 	};
 }

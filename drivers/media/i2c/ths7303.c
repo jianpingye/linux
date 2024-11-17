@@ -25,7 +25,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
-#include <media/ths7303.h>
+#include <media/i2c/ths7303.h>
 #include <media/v4l2-device.h>
 
 #define THS7303_CHANNEL_1	1
@@ -193,8 +193,8 @@ static int ths7303_s_stream(struct v4l2_subdev *sd, int enable)
 }
 
 /* for setting filter for HD output */
-static int ths7303_s_dv_timings(struct v4l2_subdev *sd,
-			       struct v4l2_dv_timings *dv_timings)
+static int ths7303_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
+				struct v4l2_dv_timings *dv_timings)
 {
 	struct ths7303_state *state = to_state(sd);
 
@@ -210,7 +210,6 @@ static int ths7303_s_dv_timings(struct v4l2_subdev *sd,
 static const struct v4l2_subdev_video_ops ths7303_video_ops = {
 	.s_stream	= ths7303_s_stream,
 	.s_std_output	= ths7303_s_std_output,
-	.s_dv_timings   = ths7303_s_dv_timings,
 };
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
@@ -285,7 +284,7 @@ static int ths7303_log_status(struct v4l2_subdev *sd)
 	v4l2_info(sd, "stream %s\n", state->stream_on ? "On" : "Off");
 
 	if (state->bt.pixelclock) {
-		struct v4l2_bt_timings *bt = bt = &state->bt;
+		struct v4l2_bt_timings *bt = &state->bt;
 		u32 frame_width, frame_height;
 
 		frame_width = V4L2_DV_BT_FRAME_WIDTH(bt);
@@ -317,13 +316,17 @@ static const struct v4l2_subdev_core_ops ths7303_core_ops = {
 #endif
 };
 
-static const struct v4l2_subdev_ops ths7303_ops = {
-	.core	= &ths7303_core_ops,
-	.video 	= &ths7303_video_ops,
+static const struct v4l2_subdev_pad_ops ths7303_pad_ops = {
+	.s_dv_timings = ths7303_s_dv_timings,
 };
 
-static int ths7303_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static const struct v4l2_subdev_ops ths7303_ops = {
+	.core	= &ths7303_core_ops,
+	.video	= &ths7303_video_ops,
+	.pad	= &ths7303_pad_ops,
+};
+
+static int ths7303_probe(struct i2c_client *client)
 {
 	struct ths7303_platform_data *pdata = client->dev.platform_data;
 	struct ths7303_state *state;
@@ -358,26 +361,23 @@ static int ths7303_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int ths7303_remove(struct i2c_client *client)
+static void ths7303_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
-
-	return 0;
 }
 
 static const struct i2c_device_id ths7303_id[] = {
-	{"ths7303", 0},
-	{"ths7353", 0},
-	{},
+	{ "ths7303" },
+	{ "ths7353" },
+	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, ths7303_id);
 
 static struct i2c_driver ths7303_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "ths73x3",
 	},
 	.probe		= ths7303_probe,

@@ -1,25 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of wl18xx
  *
  * Copyright (C) 2011 Texas Instruments
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/ip.h>
 #include <linux/firmware.h>
@@ -137,8 +124,8 @@ static const u8 wl18xx_rate_to_idx_5ghz[] = {
 };
 
 static const u8 *wl18xx_band_rate_to_idx[] = {
-	[IEEE80211_BAND_2GHZ] = wl18xx_rate_to_idx_2ghz,
-	[IEEE80211_BAND_5GHZ] = wl18xx_rate_to_idx_5ghz
+	[NL80211_BAND_2GHZ] = wl18xx_rate_to_idx_2ghz,
+	[NL80211_BAND_5GHZ] = wl18xx_rate_to_idx_5ghz
 };
 
 enum wl18xx_hw_rates {
@@ -177,69 +164,80 @@ enum wl18xx_hw_rates {
 static struct wlcore_conf wl18xx_conf = {
 	.sg = {
 		.params = {
-			[CONF_SG_ACL_BT_MASTER_MIN_BR] = 10,
-			[CONF_SG_ACL_BT_MASTER_MAX_BR] = 180,
-			[CONF_SG_ACL_BT_SLAVE_MIN_BR] = 10,
-			[CONF_SG_ACL_BT_SLAVE_MAX_BR] = 180,
-			[CONF_SG_ACL_BT_MASTER_MIN_EDR] = 10,
-			[CONF_SG_ACL_BT_MASTER_MAX_EDR] = 80,
-			[CONF_SG_ACL_BT_SLAVE_MIN_EDR] = 10,
-			[CONF_SG_ACL_BT_SLAVE_MAX_EDR] = 80,
-			[CONF_SG_ACL_WLAN_PS_MASTER_BR] = 8,
-			[CONF_SG_ACL_WLAN_PS_SLAVE_BR] = 8,
-			[CONF_SG_ACL_WLAN_PS_MASTER_EDR] = 20,
-			[CONF_SG_ACL_WLAN_PS_SLAVE_EDR] = 20,
-			[CONF_SG_ACL_WLAN_ACTIVE_MASTER_MIN_BR] = 20,
-			[CONF_SG_ACL_WLAN_ACTIVE_MASTER_MAX_BR] = 35,
-			[CONF_SG_ACL_WLAN_ACTIVE_SLAVE_MIN_BR] = 16,
-			[CONF_SG_ACL_WLAN_ACTIVE_SLAVE_MAX_BR] = 35,
-			[CONF_SG_ACL_WLAN_ACTIVE_MASTER_MIN_EDR] = 32,
-			[CONF_SG_ACL_WLAN_ACTIVE_MASTER_MAX_EDR] = 50,
-			[CONF_SG_ACL_WLAN_ACTIVE_SLAVE_MIN_EDR] = 28,
-			[CONF_SG_ACL_WLAN_ACTIVE_SLAVE_MAX_EDR] = 50,
-			[CONF_SG_ACL_ACTIVE_SCAN_WLAN_BR] = 10,
-			[CONF_SG_ACL_ACTIVE_SCAN_WLAN_EDR] = 20,
-			[CONF_SG_ACL_PASSIVE_SCAN_BT_BR] = 75,
-			[CONF_SG_ACL_PASSIVE_SCAN_WLAN_BR] = 15,
-			[CONF_SG_ACL_PASSIVE_SCAN_BT_EDR] = 27,
-			[CONF_SG_ACL_PASSIVE_SCAN_WLAN_EDR] = 17,
-			/* active scan params */
-			[CONF_SG_AUTO_SCAN_PROBE_REQ] = 170,
-			[CONF_SG_ACTIVE_SCAN_DURATION_FACTOR_HV3] = 50,
-			[CONF_SG_ACTIVE_SCAN_DURATION_FACTOR_A2DP] = 100,
-			/* passive scan params */
-			[CONF_SG_PASSIVE_SCAN_DURATION_FACTOR_A2DP_BR] = 800,
-			[CONF_SG_PASSIVE_SCAN_DURATION_FACTOR_A2DP_EDR] = 200,
-			[CONF_SG_PASSIVE_SCAN_DURATION_FACTOR_HV3] = 200,
-			/* passive scan in dual antenna params */
-			[CONF_SG_CONSECUTIVE_HV3_IN_PASSIVE_SCAN] = 0,
-			[CONF_SG_BCN_HV3_COLLISION_THRESH_IN_PASSIVE_SCAN] = 0,
-			[CONF_SG_TX_RX_PROTECTION_BWIDTH_IN_PASSIVE_SCAN] = 0,
-			/* general params */
-			[CONF_SG_STA_FORCE_PS_IN_BT_SCO] = 1,
-			[CONF_SG_ANTENNA_CONFIGURATION] = 0,
-			[CONF_SG_BEACON_MISS_PERCENT] = 60,
-			[CONF_SG_DHCP_TIME] = 5000,
-			[CONF_SG_RXT] = 1200,
-			[CONF_SG_TXT] = 1000,
-			[CONF_SG_ADAPTIVE_RXT_TXT] = 1,
-			[CONF_SG_GENERAL_USAGE_BIT_MAP] = 3,
-			[CONF_SG_HV3_MAX_SERVED] = 6,
-			[CONF_SG_PS_POLL_TIMEOUT] = 10,
-			[CONF_SG_UPSD_TIMEOUT] = 10,
-			[CONF_SG_CONSECUTIVE_CTS_THRESHOLD] = 2,
-			[CONF_SG_STA_RX_WINDOW_AFTER_DTIM] = 5,
-			[CONF_SG_STA_CONNECTION_PROTECTION_TIME] = 30,
-			/* AP params */
-			[CONF_AP_BEACON_MISS_TX] = 3,
-			[CONF_AP_RX_WINDOW_AFTER_BEACON] = 10,
-			[CONF_AP_BEACON_WINDOW_INTERVAL] = 2,
-			[CONF_AP_CONNECTION_PROTECTION_TIME] = 0,
-			[CONF_AP_BT_ACL_VAL_BT_SERVE_TIME] = 25,
-			[CONF_AP_BT_ACL_VAL_WL_SERVE_TIME] = 25,
-			/* CTS Diluting params */
-			[CONF_SG_CTS_DILUTED_BAD_RX_PACKETS_TH] = 0,
-			[CONF_SG_CTS_CHOP_IN_DUAL_ANT_SCO_MASTER] = 0,
+			[WL18XX_CONF_SG_PARAM_0] = 0,
+			/* Configuration Parameters */
+			[WL18XX_CONF_SG_ANTENNA_CONFIGURATION] = 0,
+			[WL18XX_CONF_SG_ZIGBEE_COEX] = 0,
+			[WL18XX_CONF_SG_TIME_SYNC] = 0,
+			[WL18XX_CONF_SG_PARAM_4] = 0,
+			[WL18XX_CONF_SG_PARAM_5] = 0,
+			[WL18XX_CONF_SG_PARAM_6] = 0,
+			[WL18XX_CONF_SG_PARAM_7] = 0,
+			[WL18XX_CONF_SG_PARAM_8] = 0,
+			[WL18XX_CONF_SG_PARAM_9] = 0,
+			[WL18XX_CONF_SG_PARAM_10] = 0,
+			[WL18XX_CONF_SG_PARAM_11] = 0,
+			[WL18XX_CONF_SG_PARAM_12] = 0,
+			[WL18XX_CONF_SG_PARAM_13] = 0,
+			[WL18XX_CONF_SG_PARAM_14] = 0,
+			[WL18XX_CONF_SG_PARAM_15] = 0,
+			[WL18XX_CONF_SG_PARAM_16] = 0,
+			[WL18XX_CONF_SG_PARAM_17] = 0,
+			[WL18XX_CONF_SG_PARAM_18] = 0,
+			[WL18XX_CONF_SG_PARAM_19] = 0,
+			[WL18XX_CONF_SG_PARAM_20] = 0,
+			[WL18XX_CONF_SG_PARAM_21] = 0,
+			[WL18XX_CONF_SG_PARAM_22] = 0,
+			[WL18XX_CONF_SG_PARAM_23] = 0,
+			[WL18XX_CONF_SG_PARAM_24] = 0,
+			[WL18XX_CONF_SG_PARAM_25] = 0,
+			/* Active Scan Parameters */
+			[WL18XX_CONF_SG_AUTO_SCAN_PROBE_REQ] = 170,
+			[WL18XX_CONF_SG_ACTIVE_SCAN_DURATION_FACTOR_HV3] = 50,
+			[WL18XX_CONF_SG_PARAM_28] = 0,
+			/* Passive Scan Parameters */
+			[WL18XX_CONF_SG_PARAM_29] = 0,
+			[WL18XX_CONF_SG_PARAM_30] = 0,
+			[WL18XX_CONF_SG_PASSIVE_SCAN_DURATION_FACTOR_HV3] = 200,
+			/* Passive Scan in Dual Antenna Parameters */
+			[WL18XX_CONF_SG_CONSECUTIVE_HV3_IN_PASSIVE_SCAN] = 0,
+			[WL18XX_CONF_SG_BEACON_HV3_COLL_TH_IN_PASSIVE_SCAN] = 0,
+			[WL18XX_CONF_SG_TX_RX_PROTECT_BW_IN_PASSIVE_SCAN] = 0,
+			/* General Parameters */
+			[WL18XX_CONF_SG_STA_FORCE_PS_IN_BT_SCO] = 1,
+			[WL18XX_CONF_SG_PARAM_36] = 0,
+			[WL18XX_CONF_SG_BEACON_MISS_PERCENT] = 60,
+			[WL18XX_CONF_SG_PARAM_38] = 0,
+			[WL18XX_CONF_SG_RXT] = 1200,
+			[WL18XX_CONF_SG_UNUSED] = 0,
+			[WL18XX_CONF_SG_ADAPTIVE_RXT_TXT] = 1,
+			[WL18XX_CONF_SG_GENERAL_USAGE_BIT_MAP] = 3,
+			[WL18XX_CONF_SG_HV3_MAX_SERVED] = 6,
+			[WL18XX_CONF_SG_PARAM_44] = 0,
+			[WL18XX_CONF_SG_PARAM_45] = 0,
+			[WL18XX_CONF_SG_CONSECUTIVE_CTS_THRESHOLD] = 2,
+			[WL18XX_CONF_SG_GEMINI_PARAM_47] = 0,
+			[WL18XX_CONF_SG_STA_CONNECTION_PROTECTION_TIME] = 0,
+			/* AP Parameters */
+			[WL18XX_CONF_SG_AP_BEACON_MISS_TX] = 3,
+			[WL18XX_CONF_SG_PARAM_50] = 0,
+			[WL18XX_CONF_SG_AP_BEACON_WINDOW_INTERVAL] = 2,
+			[WL18XX_CONF_SG_AP_CONNECTION_PROTECTION_TIME] = 30,
+			[WL18XX_CONF_SG_PARAM_53] = 0,
+			[WL18XX_CONF_SG_PARAM_54] = 0,
+			/* CTS Diluting Parameters */
+			[WL18XX_CONF_SG_CTS_DILUTED_BAD_RX_PACKETS_TH] = 0,
+			[WL18XX_CONF_SG_CTS_CHOP_IN_DUAL_ANT_SCO_MASTER] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_1] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_2] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_3] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_4] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_5] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_6] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_7] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_8] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_9] = 0,
+			[WL18XX_CONF_SG_TEMP_PARAM_10] = 0,
 		},
 		.state = CONF_SG_PROTECTIVE,
 	},
@@ -422,6 +420,8 @@ static struct wlcore_conf wl18xx_conf = {
 		.num_probe_reqs			= 2,
 		.rssi_threshold			= -90,
 		.snr_threshold			= 0,
+		.num_short_intervals		= SCAN_MAX_SHORT_INTERVALS,
+		.long_interval			= 30000,
 	},
 	.ht = {
 		.rx_ba_win_size = 32,
@@ -459,7 +459,7 @@ static struct wlcore_conf wl18xx_conf = {
 	},
 	.fwlog = {
 		.mode                         = WL12XX_FWLOG_CONTINUOUS,
-		.mem_blocks                   = 2,
+		.mem_blocks                   = 0,
 		.severity                     = 0,
 		.timestamp                    = WL12XX_FWLOG_TIMESTAMP_DISABLED,
 		.output                       = WL12XX_FWLOG_OUTPUT_DBG_PINS,
@@ -582,7 +582,7 @@ static const struct wlcore_partition_set wl18xx_ptable[PART_TABLE_LEN] = {
 		.mem  = { .start = 0x00A00000, .size  = 0x00012000 },
 		.reg  = { .start = 0x00807000, .size  = 0x00005000 },
 		.mem2 = { .start = 0x00800000, .size  = 0x0000B000 },
-		.mem3 = { .start = 0x00000000, .size  = 0x00000000 },
+		.mem3 = { .start = 0x00401594, .size  = 0x00001020 },
 	},
 	[PART_DOWN] = {
 		.mem  = { .start = 0x00000000, .size  = 0x00014000 },
@@ -600,7 +600,7 @@ static const struct wlcore_partition_set wl18xx_ptable[PART_TABLE_LEN] = {
 		.mem  = { .start = 0x00800000, .size  = 0x000050FC },
 		.reg  = { .start = 0x00B00404, .size  = 0x00001000 },
 		.mem2 = { .start = 0x00C00000, .size  = 0x00000400 },
-		.mem3 = { .start = 0x00000000, .size  = 0x00000000 },
+		.mem3 = { .start = 0x00401594, .size  = 0x00001020 },
 	},
 	[PART_PHY_INIT] = {
 		.mem  = { .start = WL18XX_PHY_INIT_MEM_ADDR,
@@ -780,9 +780,13 @@ static int wl18xx_set_clk(struct wl1271 *wl)
 		ret = wl18xx_top_reg_write(wl, PLLSH_WCS_PLL_P_FACTOR_CFG_2,
 					(wl18xx_clk_table[clk_freq].p >> 16) &
 					PLLSH_WCS_PLL_P_FACTOR_CFG_2_MASK);
+		if (ret < 0)
+			goto out;
 	} else {
 		ret = wl18xx_top_reg_write(wl, PLLSH_WCS_PLL_SWALLOW_EN,
 					   PLLSH_WCS_PLL_SWALLOW_EN_VAL2);
+		if (ret < 0)
+			goto out;
 	}
 
 	/* choose WCS PLL */
@@ -806,8 +810,6 @@ static int wl18xx_set_clk(struct wl1271 *wl)
 	/* reset the swallowing logic */
 	ret = wl18xx_top_reg_write(wl, PLLSH_COEX_PLL_SWALLOW_EN,
 				   PLLSH_COEX_PLL_SWALLOW_EN_VAL2);
-	if (ret < 0)
-		goto out;
 
 out:
 	return ret;
@@ -1026,8 +1028,10 @@ static int wl18xx_boot(struct wl1271 *wl)
 		CHANNEL_SWITCH_COMPLETE_EVENT_ID |
 		DFS_CHANNELS_CONFIG_COMPLETE_EVENT |
 		SMART_CONFIG_SYNC_EVENT_ID |
-		SMART_CONFIG_DECODE_EVENT_ID;
-;
+		SMART_CONFIG_DECODE_EVENT_ID |
+		TIME_SYNC_EVENT_ID |
+		FW_LOGGER_INDICATION |
+		RX_BA_WIN_SIZE_CHANGE_EVENT_ID;
 
 	wl->ap_event_mask = MAX_TX_FAILURE_EVENT_ID;
 
@@ -1159,6 +1163,11 @@ static int wl18xx_hw_init(struct wl1271 *wl)
 	if (ret < 0)
 		return ret;
 
+	/* set the dynamic fw traces bitmap */
+	ret = wl18xx_acx_dynamic_fw_traces(wl);
+	if (ret < 0)
+		return ret;
+
 	if (checksum_param) {
 		ret = wl18xx_acx_set_checksum_state(wl);
 		if (ret != 0)
@@ -1168,8 +1177,49 @@ static int wl18xx_hw_init(struct wl1271 *wl)
 	return ret;
 }
 
-static void wl18xx_convert_fw_status(struct wl1271 *wl, void *raw_fw_status,
-				     struct wl_fw_status *fw_status)
+static void wl18xx_convert_fw_status_8_9_1(struct wl1271 *wl,
+					   void *raw_fw_status,
+					   struct wl_fw_status *fw_status)
+{
+	struct wl18xx_fw_status_8_9_1 *int_fw_status = raw_fw_status;
+
+	fw_status->intr = le32_to_cpu(int_fw_status->intr);
+	fw_status->fw_rx_counter = int_fw_status->fw_rx_counter;
+	fw_status->drv_rx_counter = int_fw_status->drv_rx_counter;
+	fw_status->tx_results_counter = int_fw_status->tx_results_counter;
+	fw_status->rx_pkt_descs = int_fw_status->rx_pkt_descs;
+
+	fw_status->fw_localtime = le32_to_cpu(int_fw_status->fw_localtime);
+	fw_status->link_ps_bitmap = le32_to_cpu(int_fw_status->link_ps_bitmap);
+	fw_status->link_fast_bitmap =
+			le32_to_cpu(int_fw_status->link_fast_bitmap);
+	fw_status->total_released_blks =
+			le32_to_cpu(int_fw_status->total_released_blks);
+	fw_status->tx_total = le32_to_cpu(int_fw_status->tx_total);
+
+	fw_status->counters.tx_released_pkts =
+			int_fw_status->counters.tx_released_pkts;
+	fw_status->counters.tx_lnk_free_pkts =
+			int_fw_status->counters.tx_lnk_free_pkts;
+	fw_status->counters.tx_lnk_sec_pn16 =
+			int_fw_status->counters.tx_lnk_sec_pn16;
+	fw_status->counters.tx_voice_released_blks =
+			int_fw_status->counters.tx_voice_released_blks;
+	fw_status->counters.tx_last_rate =
+			int_fw_status->counters.tx_last_rate;
+	fw_status->counters.tx_last_rate_mbps =
+			int_fw_status->counters.tx_last_rate_mbps;
+	fw_status->counters.hlid =
+			int_fw_status->counters.hlid;
+
+	fw_status->log_start_addr = le32_to_cpu(int_fw_status->log_start_addr);
+
+	fw_status->priv = &int_fw_status->priv;
+}
+
+static void wl18xx_convert_fw_status_8_9_0(struct wl1271 *wl,
+					   void *raw_fw_status,
+					   struct wl_fw_status *fw_status)
 {
 	struct wl18xx_fw_status *int_fw_status = raw_fw_status;
 
@@ -1195,10 +1245,23 @@ static void wl18xx_convert_fw_status(struct wl1271 *wl, void *raw_fw_status,
 			int_fw_status->counters.tx_voice_released_blks;
 	fw_status->counters.tx_last_rate =
 			int_fw_status->counters.tx_last_rate;
+	fw_status->counters.tx_last_rate_mbps =
+			int_fw_status->counters.tx_last_rate_mbps;
+	fw_status->counters.hlid =
+			int_fw_status->counters.hlid;
 
 	fw_status->log_start_addr = le32_to_cpu(int_fw_status->log_start_addr);
 
 	fw_status->priv = &int_fw_status->priv;
+}
+
+static void wl18xx_convert_fw_status(struct wl1271 *wl, void *raw_fw_status,
+				     struct wl_fw_status *fw_status)
+{
+	if (wl->chip.fw_ver[FW_VER_MAJOR] == 0)
+		wl18xx_convert_fw_status_8_9_0(wl, raw_fw_status, fw_status);
+	else
+		wl18xx_convert_fw_status_8_9_1(wl, raw_fw_status, fw_status);
 }
 
 static void wl18xx_set_tx_desc_csum(struct wl1271 *wl,
@@ -1283,12 +1346,12 @@ static u32 wl18xx_ap_get_mimo_wide_rate_mask(struct wl1271 *wl,
 		wl1271_debug(DEBUG_ACX, "using wide channel rate mask");
 
 		/* sanity check - we don't support this */
-		if (WARN_ON(wlvif->band != IEEE80211_BAND_5GHZ))
+		if (WARN_ON(wlvif->band != NL80211_BAND_5GHZ))
 			return 0;
 
 		return CONF_TX_RATE_USE_WIDE_CHAN;
 	} else if (wl18xx_is_mimo_supported(wl) &&
-		   wlvif->band == IEEE80211_BAND_2GHZ) {
+		   wlvif->band == NL80211_BAND_2GHZ) {
 		wl1271_debug(DEBUG_ACX, "using MIMO rate mask");
 		/*
 		 * we don't care about HT channel here - if a peer doesn't
@@ -1374,25 +1437,24 @@ out:
 	return ret;
 }
 
-#define WL18XX_CONF_FILE_NAME "ti-connectivity/wl18xx-conf.bin"
-
 static int wl18xx_load_conf_file(struct device *dev, struct wlcore_conf *conf,
-				 struct wl18xx_priv_conf *priv_conf)
+				 struct wl18xx_priv_conf *priv_conf,
+				 const char *file)
 {
 	struct wlcore_conf_file *conf_file;
 	const struct firmware *fw;
 	int ret;
 
-	ret = request_firmware(&fw, WL18XX_CONF_FILE_NAME, dev);
+	ret = request_firmware(&fw, file, dev);
 	if (ret < 0) {
 		wl1271_error("could not get configuration binary %s: %d",
-			     WL18XX_CONF_FILE_NAME, ret);
+			     file, ret);
 		return ret;
 	}
 
 	if (fw->size != WL18XX_CONF_SIZE) {
-		wl1271_error("configuration binary file size is wrong, expected %zu got %zu",
-			     WL18XX_CONF_SIZE, fw->size);
+		wl1271_error("%s configuration binary size is wrong, expected %zu got %zu",
+			     file, WL18XX_CONF_SIZE, fw->size);
 		ret = -EINVAL;
 		goto out_release;
 	}
@@ -1425,9 +1487,12 @@ out_release:
 
 static int wl18xx_conf_init(struct wl1271 *wl, struct device *dev)
 {
+	struct platform_device *pdev = wl->pdev;
+	struct wlcore_platdev_data *pdata = dev_get_platdata(&pdev->dev);
 	struct wl18xx_priv *priv = wl->priv;
 
-	if (wl18xx_load_conf_file(dev, &wl->conf, &priv->conf) < 0) {
+	if (wl18xx_load_conf_file(dev, &wl->conf, &priv->conf,
+				  pdata->family->cfg_name) < 0) {
 		wl1271_warning("falling back to default config");
 
 		/* apply driver default configuration */
@@ -1500,14 +1565,28 @@ static int wl18xx_handle_static_data(struct wl1271 *wl,
 {
 	struct wl18xx_static_data_priv *static_data_priv =
 		(struct wl18xx_static_data_priv *) static_data->priv;
+	size_t fw_status_len;
 
-	strncpy(wl->chip.phy_fw_ver_str, static_data_priv->phy_version,
+	strscpy(wl->chip.phy_fw_ver_str, static_data_priv->phy_version,
 		sizeof(wl->chip.phy_fw_ver_str));
 
-	/* make sure the string is NULL-terminated */
-	wl->chip.phy_fw_ver_str[sizeof(wl->chip.phy_fw_ver_str) - 1] = '\0';
-
 	wl1271_info("PHY firmware version: %s", static_data_priv->phy_version);
+
+	/* Adjust the firmware status size according to the firmware version */
+	if (wl->chip.fw_ver[FW_VER_MAJOR] == 0)
+		fw_status_len = sizeof(struct wl18xx_fw_status);
+	else
+		fw_status_len = sizeof(struct wl18xx_fw_status_8_9_1);
+
+	if (wl->fw_status_len != fw_status_len) {
+		void *new_status = krealloc(wl->raw_fw_status, fw_status_len,
+					    GFP_KERNEL | __GFP_ZERO);
+		if (!new_status)
+			return -ENOMEM;
+
+		wl->raw_fw_status = new_status;
+		wl->fw_status_len = fw_status_len;
+	}
 
 	return 0;
 }
@@ -1797,14 +1876,21 @@ static struct ieee80211_sta_ht_cap wl18xx_mimo_ht_cap_2ghz = {
 
 static const struct ieee80211_iface_limit wl18xx_iface_limits[] = {
 	{
-		.max = 3,
+		.max = 2,
 		.types = BIT(NL80211_IFTYPE_STATION),
 	},
 	{
 		.max = 1,
-		.types = BIT(NL80211_IFTYPE_AP) |
-			 BIT(NL80211_IFTYPE_P2P_GO) |
-			 BIT(NL80211_IFTYPE_P2P_CLIENT),
+		.types =   BIT(NL80211_IFTYPE_AP)
+			 | BIT(NL80211_IFTYPE_P2P_GO)
+			 | BIT(NL80211_IFTYPE_P2P_CLIENT)
+#ifdef CONFIG_MAC80211_MESH
+			 | BIT(NL80211_IFTYPE_MESH_POINT)
+#endif
+	},
+	{
+		.max = 1,
+		.types = BIT(NL80211_IFTYPE_P2P_DEVICE),
 	},
 };
 
@@ -1812,6 +1898,16 @@ static const struct ieee80211_iface_limit wl18xx_iface_ap_limits[] = {
 	{
 		.max = 2,
 		.types = BIT(NL80211_IFTYPE_AP),
+	},
+#ifdef CONFIG_MAC80211_MESH
+	{
+		.max = 1,
+		.types = BIT(NL80211_IFTYPE_MESH_POINT),
+	},
+#endif
+	{
+		.max = 1,
+		.types = BIT(NL80211_IFTYPE_P2P_DEVICE),
 	},
 };
 
@@ -1842,6 +1938,7 @@ static int wl18xx_setup(struct wl1271 *wl)
 
 	BUILD_BUG_ON(WL18XX_MAX_LINKS > WLCORE_MAX_LINKS);
 	BUILD_BUG_ON(WL18XX_MAX_AP_STATIONS > WL18XX_MAX_LINKS);
+	BUILD_BUG_ON(WL18XX_CONF_SG_PARAMS_MAX > WLCORE_CONF_SG_PARAMS_MAX);
 
 	wl->rtable = wl18xx_rtable;
 	wl->num_tx_desc = WL18XX_NUM_TX_DESCRIPTORS;
@@ -1930,24 +2027,24 @@ static int wl18xx_setup(struct wl1271 *wl)
 		 * siso40.
 		 */
 		if (wl18xx_is_mimo_supported(wl))
-			wlcore_set_ht_cap(wl, IEEE80211_BAND_2GHZ,
+			wlcore_set_ht_cap(wl, NL80211_BAND_2GHZ,
 					  &wl18xx_mimo_ht_cap_2ghz);
 		else
-			wlcore_set_ht_cap(wl, IEEE80211_BAND_2GHZ,
+			wlcore_set_ht_cap(wl, NL80211_BAND_2GHZ,
 					  &wl18xx_siso40_ht_cap_2ghz);
 
 		/* 5Ghz is always wide */
-		wlcore_set_ht_cap(wl, IEEE80211_BAND_5GHZ,
+		wlcore_set_ht_cap(wl, NL80211_BAND_5GHZ,
 				  &wl18xx_siso40_ht_cap_5ghz);
 	} else if (priv->conf.ht.mode == HT_MODE_WIDE) {
-		wlcore_set_ht_cap(wl, IEEE80211_BAND_2GHZ,
+		wlcore_set_ht_cap(wl, NL80211_BAND_2GHZ,
 				  &wl18xx_siso40_ht_cap_2ghz);
-		wlcore_set_ht_cap(wl, IEEE80211_BAND_5GHZ,
+		wlcore_set_ht_cap(wl, NL80211_BAND_5GHZ,
 				  &wl18xx_siso40_ht_cap_5ghz);
 	} else if (priv->conf.ht.mode == HT_MODE_SISO20) {
-		wlcore_set_ht_cap(wl, IEEE80211_BAND_2GHZ,
+		wlcore_set_ht_cap(wl, NL80211_BAND_2GHZ,
 				  &wl18xx_siso20_ht_cap);
-		wlcore_set_ht_cap(wl, IEEE80211_BAND_5GHZ,
+		wlcore_set_ht_cap(wl, NL80211_BAND_5GHZ,
 				  &wl18xx_siso20_ht_cap);
 	}
 
@@ -2000,7 +2097,7 @@ MODULE_DEVICE_TABLE(platform, wl18xx_id_table);
 
 static struct platform_driver wl18xx_driver = {
 	.probe		= wl18xx_probe,
-	.remove		= wlcore_remove,
+	.remove_new	= wlcore_remove,
 	.id_table	= wl18xx_id_table,
 	.driver = {
 		.name	= "wl18xx_driver",
@@ -2008,57 +2105,55 @@ static struct platform_driver wl18xx_driver = {
 };
 
 module_platform_driver(wl18xx_driver);
-module_param_named(ht_mode, ht_mode_param, charp, S_IRUSR);
+module_param_named(ht_mode, ht_mode_param, charp, 0400);
 MODULE_PARM_DESC(ht_mode, "Force HT mode: wide or siso20");
 
-module_param_named(board_type, board_type_param, charp, S_IRUSR);
+module_param_named(board_type, board_type_param, charp, 0400);
 MODULE_PARM_DESC(board_type, "Board type: fpga, hdk (default), evb, com8 or "
 		 "dvp");
 
-module_param_named(checksum, checksum_param, bool, S_IRUSR);
+module_param_named(checksum, checksum_param, bool, 0400);
 MODULE_PARM_DESC(checksum, "Enable TCP checksum: boolean (defaults to false)");
 
-module_param_named(dc2dc, dc2dc_param, int, S_IRUSR);
+module_param_named(dc2dc, dc2dc_param, int, 0400);
 MODULE_PARM_DESC(dc2dc, "External DC2DC: u8 (defaults to 0)");
 
-module_param_named(n_antennas_2, n_antennas_2_param, int, S_IRUSR);
+module_param_named(n_antennas_2, n_antennas_2_param, int, 0400);
 MODULE_PARM_DESC(n_antennas_2,
 		 "Number of installed 2.4GHz antennas: 1 (default) or 2");
 
-module_param_named(n_antennas_5, n_antennas_5_param, int, S_IRUSR);
+module_param_named(n_antennas_5, n_antennas_5_param, int, 0400);
 MODULE_PARM_DESC(n_antennas_5,
 		 "Number of installed 5GHz antennas: 1 (default) or 2");
 
-module_param_named(low_band_component, low_band_component_param, int,
-		   S_IRUSR);
+module_param_named(low_band_component, low_band_component_param, int, 0400);
 MODULE_PARM_DESC(low_band_component, "Low band component: u8 "
 		 "(default is 0x01)");
 
 module_param_named(low_band_component_type, low_band_component_type_param,
-		   int, S_IRUSR);
+		   int, 0400);
 MODULE_PARM_DESC(low_band_component_type, "Low band component type: u8 "
 		 "(default is 0x05 or 0x06 depending on the board_type)");
 
-module_param_named(high_band_component, high_band_component_param, int,
-		   S_IRUSR);
+module_param_named(high_band_component, high_band_component_param, int, 0400);
 MODULE_PARM_DESC(high_band_component, "High band component: u8, "
 		 "(default is 0x01)");
 
 module_param_named(high_band_component_type, high_band_component_type_param,
-		   int, S_IRUSR);
+		   int, 0400);
 MODULE_PARM_DESC(high_band_component_type, "High band component type: u8 "
 		 "(default is 0x09)");
 
 module_param_named(pwr_limit_reference_11_abg,
-		   pwr_limit_reference_11_abg_param, int, S_IRUSR);
+		   pwr_limit_reference_11_abg_param, int, 0400);
 MODULE_PARM_DESC(pwr_limit_reference_11_abg, "Power limit reference: u8 "
 		 "(default is 0xc8)");
 
-module_param_named(num_rx_desc,
-		   num_rx_desc_param, int, S_IRUSR);
+module_param_named(num_rx_desc, num_rx_desc_param, int, 0400);
 MODULE_PARM_DESC(num_rx_desc_param,
 		 "Number of Rx descriptors: u8 (default is 32)");
 
+MODULE_DESCRIPTION("TI WiLink 8 wireless driver");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Luciano Coelho <coelho@ti.com>");
 MODULE_FIRMWARE(WL18XX_FW_NAME);

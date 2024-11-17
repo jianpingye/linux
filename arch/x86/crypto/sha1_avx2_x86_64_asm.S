@@ -62,11 +62,11 @@
  *Visit http://software.intel.com/en-us/articles/
  *and refer to improving-the-performance-of-the-secure-hash-algorithm-1/
  *
- *Updates 20-byte SHA-1 record in 'hash' for even number of
- *'num_blocks' consecutive 64-byte blocks
+ *Updates 20-byte SHA-1 record at start of 'state', from 'input', for
+ *even number of 'blocks' consecutive 64-byte blocks.
  *
  *extern "C" void sha1_transform_avx2(
- *	int *hash, const char* input, size_t num_blocks );
+ *	struct sha1_state *state, const u8* input, int blocks );
  */
 
 #include <linux/linkage.h>
@@ -89,7 +89,7 @@
 #define	REG_RE	%rdx
 #define	REG_RTA	%r12
 #define	REG_RTB	%rbx
-#define	REG_T1	%ebp
+#define	REG_T1	%r11d
 #define	xmm_mov	vmovups
 #define	avx2_zeroupper	vzeroupper
 #define	RND_F1	1
@@ -117,11 +117,10 @@
 	.set T1, REG_T1
 .endm
 
-#define K_BASE		%r8
 #define HASH_PTR	%r9
+#define BLOCKS_CTR	%r8
 #define BUFFER_PTR	%r10
 #define BUFFER_PTR2	%r13
-#define BUFFER_END	%r11
 
 #define PRECALC_BUF	%r14
 #define WK_BUF		%r15
@@ -205,14 +204,14 @@
 		 * blended AVX2 and ALU instruction scheduling
 		 * 1 vector iteration per 8 rounds
 		 */
-		vmovdqu ((i * 2) + PRECALC_OFFSET)(BUFFER_PTR), W_TMP
+		vmovdqu (i * 2)(BUFFER_PTR), W_TMP
 	.elseif ((i & 7) == 1)
-		vinsertf128 $1, (((i-1) * 2)+PRECALC_OFFSET)(BUFFER_PTR2),\
+		vinsertf128 $1, ((i-1) * 2)(BUFFER_PTR2),\
 			 WY_TMP, WY_TMP
 	.elseif ((i & 7) == 2)
 		vpshufb YMM_SHUFB_BSWAP, WY_TMP, WY
 	.elseif ((i & 7) == 4)
-		vpaddd  K_XMM(K_BASE), WY, WY_TMP
+		vpaddd  K_XMM + K_XMM_AR(%rip), WY, WY_TMP
 	.elseif ((i & 7) == 7)
 		vmovdqu  WY_TMP, PRECALC_WK(i&~7)
 
@@ -255,7 +254,7 @@
 		vpxor	WY, WY_TMP, WY_TMP
 	.elseif ((i & 7) == 7)
 		vpxor	WY_TMP2, WY_TMP, WY
-		vpaddd	K_XMM(K_BASE), WY, WY_TMP
+		vpaddd  K_XMM + K_XMM_AR(%rip), WY, WY_TMP
 		vmovdqu	WY_TMP, PRECALC_WK(i&~7)
 
 		PRECALC_ROTATE_WY
@@ -291,7 +290,7 @@
 		vpsrld	$30, WY, WY
 		vpor	WY, WY_TMP, WY
 	.elseif ((i & 7) == 7)
-		vpaddd	K_XMM(K_BASE), WY, WY_TMP
+		vpaddd  K_XMM + K_XMM_AR(%rip), WY, WY_TMP
 		vmovdqu	WY_TMP, PRECALC_WK(i&~7)
 
 		PRECALC_ROTATE_WY
@@ -446,6 +445,16 @@
 
 .endm
 
+/* Add constant only if (%2 > %3) condition met (uses RTA as temp)
+ * %1 + %2 >= %3 ? %4 : 0
+ */
+.macro ADD_IF_GE a, b, c, d
+	mov     \a, RTA
+	add     $\d, RTA
+	cmp     $\c, \b
+	cmovge  RTA, \a
+.endm
+
 /*
  * macro implements 80 rounds of SHA-1, for multiple blocks with s/w pipelining
  */
@@ -463,28 +472,31 @@
 	lea	(2*4*80+32)(%rsp), WK_BUF
 
 	# Precalc WK for first 2 blocks
-	PRECALC_OFFSET = 0
+	ADD_IF_GE BUFFER_PTR2, BLOCKS_CTR, 2, 64
 	.set i, 0
 	.rept    160
 		PRECALC i
 		.set i, i + 1
 	.endr
-	PRECALC_OFFSET = 128
+
+	/* Go to next block if needed */
+	ADD_IF_GE BUFFER_PTR, BLOCKS_CTR, 3, 128
+	ADD_IF_GE BUFFER_PTR2, BLOCKS_CTR, 4, 128
 	xchg	WK_BUF, PRECALC_BUF
 
 	.align 32
-_loop:
+.L_loop:
 	/*
 	 * code loops through more than one block
 	 * we use K_BASE value as a signal of a last block,
 	 * it is set below by: cmovae BUFFER_PTR, K_BASE
 	 */
-	cmp	K_BASE, BUFFER_PTR
-	jne	_begin
+	test BLOCKS_CTR, BLOCKS_CTR
+	jnz .L_begin
 	.align 32
-	jmp	_end
+	jmp	.L_end
 	.align 32
-_begin:
+.L_begin:
 
 	/*
 	 * Do first block
@@ -495,9 +507,6 @@ _begin:
 		RR	j
 		.set j, j+2
 	.endr
-
-	jmp _loop0
-_loop0:
 
 	/*
 	 * rounds:
@@ -512,10 +521,10 @@ _loop0:
 		.set j, j+2
 	.endr
 
-	add	$(2*64), BUFFER_PTR       /* move to next odd-64-byte block */
-	cmp	BUFFER_END, BUFFER_PTR    /* is current block the last one? */
-	cmovae	K_BASE, BUFFER_PTR	/* signal the last iteration smartly */
-
+	/* Update Counter */
+	sub $1, BLOCKS_CTR
+	/* Move to the next block only if needed*/
+	ADD_IF_GE BUFFER_PTR, BLOCKS_CTR, 4, 128
 	/*
 	 * rounds
 	 * 60,62,64,66,68
@@ -532,8 +541,8 @@ _loop0:
 	UPDATE_HASH	12(HASH_PTR), D
 	UPDATE_HASH	16(HASH_PTR), E
 
-	cmp	K_BASE, BUFFER_PTR	/* is current block the last one? */
-	je	_loop
+	test	BLOCKS_CTR, BLOCKS_CTR
+	jz	.L_loop
 
 	mov	TB, B
 
@@ -550,8 +559,6 @@ _loop0:
 		.set j, j+2
 	.endr
 
-	jmp	_loop1
-_loop1:
 	/*
 	 * rounds
 	 * 20+80,22+80,24+80,26+80,28+80
@@ -561,9 +568,6 @@ _loop1:
 		RR	j+80
 		.set j, j+2
 	.endr
-
-	jmp	_loop2
-_loop2:
 
 	/*
 	 * rounds
@@ -575,13 +579,10 @@ _loop2:
 		.set j, j+2
 	.endr
 
-	add	$(2*64), BUFFER_PTR2      /* move to next even-64-byte block */
-
-	cmp	BUFFER_END, BUFFER_PTR2   /* is current block the last one */
-	cmovae	K_BASE, BUFFER_PTR       /* signal the last iteration smartly */
-
-	jmp	_loop3
-_loop3:
+	/* update counter */
+	sub     $1, BLOCKS_CTR
+	/* Move to the next block only if needed*/
+	ADD_IF_GE BUFFER_PTR2, BLOCKS_CTR, 4, 128
 
 	/*
 	 * rounds
@@ -611,10 +612,10 @@ _loop3:
 
 	xchg	WK_BUF, PRECALC_BUF
 
-	jmp	_loop
+	jmp	.L_loop
 
 	.align 32
-	_end:
+.L_end:
 
 .endm
 /*
@@ -622,10 +623,9 @@ _loop3:
  * param: function's name
  */
 .macro SHA1_VECTOR_ASM  name
-	ENTRY(\name)
+	SYM_FUNC_START(\name)
 
 	push	%rbx
-	push	%rbp
 	push	%r12
 	push	%r13
 	push	%r14
@@ -634,26 +634,19 @@ _loop3:
 	RESERVE_STACK  = (W_SIZE*4 + 8+24)
 
 	/* Align stack */
-	mov	%rsp, %rbx
+	push	%rbp
+	mov	%rsp, %rbp
 	and	$~(0x20-1), %rsp
-	push	%rbx
 	sub	$RESERVE_STACK, %rsp
 
 	avx2_zeroupper
 
-	lea	K_XMM_AR(%rip), K_BASE
-
+	/* Setup initial values */
 	mov	CTX, HASH_PTR
 	mov	BUF, BUFFER_PTR
-	lea	64(BUF), BUFFER_PTR2
 
-	shl	$6, CNT			/* mul by 64 */
-	add	BUF, CNT
-	add	$64, CNT
-	mov	CNT, BUFFER_END
-
-	cmp	BUFFER_END, BUFFER_PTR2
-	cmovae	K_BASE, BUFFER_PTR2
+	mov	BUF, BUFFER_PTR2
+	mov	CNT, BLOCKS_CTR
 
 	xmm_mov	BSWAP_SHUFB_CTL(%rip), YMM_SHUFB_BSWAP
 
@@ -661,19 +654,18 @@ _loop3:
 
 	avx2_zeroupper
 
-	add	$RESERVE_STACK, %rsp
-	pop	%rsp
+	mov	%rbp, %rsp
+	pop	%rbp
 
 	pop	%r15
 	pop	%r14
 	pop	%r13
 	pop	%r12
-	pop	%rbp
 	pop	%rbx
 
-	ret
+	RET
 
-	ENDPROC(\name)
+	SYM_FUNC_END(\name)
 .endm
 
 .section .rodata

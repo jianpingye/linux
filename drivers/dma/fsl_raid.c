@@ -60,9 +60,10 @@
  */
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
-#include <linux/of_address.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
 #include <linux/dmaengine.h>
@@ -134,17 +135,9 @@ static void fsl_re_issue_pending(struct dma_chan *chan)
 
 static void fsl_re_desc_done(struct fsl_re_desc *desc)
 {
-	dma_async_tx_callback callback;
-	void *callback_param;
-
 	dma_cookie_complete(&desc->async_tx);
-
-	callback = desc->async_tx.callback;
-	callback_param = desc->async_tx.callback_param;
-	if (callback)
-		callback(callback_param);
-
 	dma_descriptor_unmap(&desc->async_tx);
+	dmaengine_desc_get_callback_invoke(&desc->async_tx, NULL);
 }
 
 static void fsl_re_cleanup_descs(struct fsl_re_chan *re_chan)
@@ -162,16 +155,14 @@ static void fsl_re_cleanup_descs(struct fsl_re_chan *re_chan)
 	fsl_re_issue_pending(&re_chan->chan);
 }
 
-static void fsl_re_dequeue(unsigned long data)
+static void fsl_re_dequeue(struct tasklet_struct *t)
 {
-	struct fsl_re_chan *re_chan;
+	struct fsl_re_chan *re_chan = from_tasklet(re_chan, t, irqtask);
 	struct fsl_re_desc *desc, *_desc;
 	struct fsl_re_hw_desc *hwdesc;
 	unsigned long flags;
 	unsigned int count, oub_count;
 	int found;
-
-	re_chan = dev_get_drvdata((struct device *)data);
 
 	fsl_re_cleanup_descs(re_chan);
 
@@ -337,7 +328,7 @@ static struct dma_async_tx_descriptor *fsl_re_prep_dma_genq(
 
 	re_chan = container_of(chan, struct fsl_re_chan, chan);
 	if (len > FSL_RE_MAX_DATA_LEN) {
-		dev_err(re_chan->dev, "genq tx length %lu, max length %d\n",
+		dev_err(re_chan->dev, "genq tx length %zu, max length %d\n",
 			len, FSL_RE_MAX_DATA_LEN);
 		return NULL;
 	}
@@ -424,7 +415,7 @@ static struct dma_async_tx_descriptor *fsl_re_prep_dma_pq(
 
 	re_chan = container_of(chan, struct fsl_re_chan, chan);
 	if (len > FSL_RE_MAX_DATA_LEN) {
-		dev_err(re_chan->dev, "pq tx length is %lu, max length is %d\n",
+		dev_err(re_chan->dev, "pq tx length is %zu, max length is %d\n",
 			len, FSL_RE_MAX_DATA_LEN);
 		return NULL;
 	}
@@ -545,7 +536,7 @@ static struct dma_async_tx_descriptor *fsl_re_prep_dma_memcpy(
 	re_chan = container_of(chan, struct fsl_re_chan, chan);
 
 	if (len > FSL_RE_MAX_DATA_LEN) {
-		dev_err(re_chan->dev, "cp tx length is %lu, max length is %d\n",
+		dev_err(re_chan->dev, "cp tx length is %zu, max length is %d\n",
 			len, FSL_RE_MAX_DATA_LEN);
 		return NULL;
 	}
@@ -670,7 +661,7 @@ static int fsl_re_chan_probe(struct platform_device *ofdev,
 
 	/* read irq property from dts */
 	chan->irq = irq_of_parse_and_map(np, 0);
-	if (chan->irq == NO_IRQ) {
+	if (!chan->irq) {
 		dev_err(dev, "No IRQ defined for JR %d\n", q);
 		ret = -ENODEV;
 		goto err_free;
@@ -679,7 +670,7 @@ static int fsl_re_chan_probe(struct platform_device *ofdev,
 	snprintf(chan->name, sizeof(chan->name), "re_jr%02d", q);
 
 	chandev = &chan_ofdev->dev;
-	tasklet_init(&chan->irqtask, fsl_re_dequeue, (unsigned long)chandev);
+	tasklet_setup(&chan->irqtask, fsl_re_dequeue);
 
 	ret = request_irq(chan->irq, fsl_re_isr, 0, chan->name, chandev);
 	if (ret) {
@@ -836,6 +827,7 @@ static int fsl_re_probe(struct platform_device *ofdev)
 		rc = of_property_read_u32(np, "reg", &off);
 		if (rc) {
 			dev_err(dev, "Reg property not found in JQ node\n");
+			of_node_put(np);
 			return -ENODEV;
 		}
 		/* Find out the Job Rings present under each JQ */
@@ -856,6 +848,8 @@ static int fsl_re_probe(struct platform_device *ofdev)
 
 static void fsl_re_remove_chan(struct fsl_re_chan *chan)
 {
+	tasklet_kill(&chan->irqtask);
+
 	dma_pool_free(chan->re_dev->hw_desc_pool, chan->inb_ring_virt_addr,
 		      chan->inb_phys_addr);
 
@@ -863,7 +857,7 @@ static void fsl_re_remove_chan(struct fsl_re_chan *chan)
 		      chan->oub_phys_addr);
 }
 
-static int fsl_re_remove(struct platform_device *ofdev)
+static void fsl_re_remove(struct platform_device *ofdev)
 {
 	struct fsl_re_drv_private *re_priv;
 	struct device *dev;
@@ -878,23 +872,21 @@ static int fsl_re_remove(struct platform_device *ofdev)
 
 	/* Unregister the driver */
 	dma_async_device_unregister(&re_priv->dma_dev);
-
-	return 0;
 }
 
-static struct of_device_id fsl_re_ids[] = {
+static const struct of_device_id fsl_re_ids[] = {
 	{ .compatible = "fsl,raideng-v1.0", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, fsl_re_ids);
 
 static struct platform_driver fsl_re_driver = {
 	.driver = {
 		.name = "fsl-raideng",
-		.owner = THIS_MODULE,
 		.of_match_table = fsl_re_ids,
 	},
 	.probe = fsl_re_probe,
-	.remove = fsl_re_remove,
+	.remove_new = fsl_re_remove,
 };
 
 module_platform_driver(fsl_re_driver);

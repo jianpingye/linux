@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IRQ_H
 #define _ASM_IRQ_H
 
@@ -7,11 +8,8 @@
 
 #define NR_IRQS_BASE	3
 
-#ifdef CONFIG_PCI_NR_MSI
-# define NR_IRQS	(NR_IRQS_BASE + CONFIG_PCI_NR_MSI)
-#else
-# define NR_IRQS	NR_IRQS_BASE
-#endif
+#define NR_IRQS	NR_IRQS_BASE
+#define NR_IRQS_LEGACY NR_IRQS_BASE
 
 /* External interruption codes */
 #define EXT_IRQ_INTERRUPT_KEY	0x0040
@@ -33,6 +31,7 @@
 #include <linux/percpu.h>
 #include <linux/cache.h>
 #include <linux/types.h>
+#include <asm/ctlreg.h>
 
 enum interruption_class {
 	IRQEXT_CLK,
@@ -47,10 +46,9 @@ enum interruption_class {
 	IRQEXT_IUC,
 	IRQEXT_CMS,
 	IRQEXT_CMC,
-	IRQEXT_CMR,
 	IRQEXT_FTP,
+	IRQEXT_WTI,
 	IRQIO_CIO,
-	IRQIO_QAI,
 	IRQIO_DAS,
 	IRQIO_C15,
 	IRQIO_C70,
@@ -58,13 +56,16 @@ enum interruption_class {
 	IRQIO_VMR,
 	IRQIO_LCS,
 	IRQIO_CTC,
-	IRQIO_APB,
 	IRQIO_ADM,
 	IRQIO_CSC,
-	IRQIO_PCI,
-	IRQIO_MSI,
 	IRQIO_VIR,
+	IRQIO_QAI,
+	IRQIO_APB,
+	IRQIO_PCF,
+	IRQIO_PCD,
+	IRQIO_MSI,
 	IRQIO_VAI,
+	IRQIO_GAL,
 	NMI_NMI,
 	CPU_RST,
 	NR_ARCH_IRQS
@@ -82,8 +83,13 @@ static __always_inline void inc_irq_stat(enum interruption_class irq)
 }
 
 struct ext_code {
-	unsigned short subcode;
-	unsigned short code;
+	union {
+		struct {
+			unsigned short subcode;
+			unsigned short code;
+		};
+		unsigned int int_code;
+	};
 };
 
 typedef void (*ext_int_handler_t)(struct ext_code, unsigned int, unsigned long);
@@ -94,7 +100,21 @@ int unregister_external_irq(u16 code, ext_int_handler_t handler);
 enum irq_subclass {
 	IRQ_SUBCLASS_MEASUREMENT_ALERT = 5,
 	IRQ_SUBCLASS_SERVICE_SIGNAL = 9,
+	IRQ_SUBCLASS_WARNING_TRACK = 33,
 };
+
+#define CR0_IRQ_SUBCLASS_MASK					  \
+	(CR0_WARNING_TRACK					| \
+	 CR0_MALFUNCTION_ALERT_SUBMASK				| \
+	 CR0_EMERGENCY_SIGNAL_SUBMASK				| \
+	 CR0_EXTERNAL_CALL_SUBMASK				| \
+	 CR0_CLOCK_COMPARATOR_SUBMASK				| \
+	 CR0_CPU_TIMER_SUBMASK					| \
+	 CR0_SERVICE_SIGNAL_SUBMASK				| \
+	 CR0_INTERRUPT_KEY_SUBMASK				| \
+	 CR0_MEASUREMENT_ALERT_SUBMASK				| \
+	 CR0_ETR_SUBMASK					| \
+	 CR0_IUCV)
 
 void irq_subclass_register(enum irq_subclass subclass);
 void irq_subclass_unregister(enum irq_subclass subclass);

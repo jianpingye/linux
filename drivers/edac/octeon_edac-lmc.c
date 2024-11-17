@@ -19,7 +19,6 @@
 #include <asm/octeon/octeon.h>
 #include <asm/octeon/cvmx-lmcx-defs.h>
 
-#include "edac_core.h"
 #include "edac_module.h"
 
 #define OCTEON_MAX_MC 4
@@ -79,6 +78,7 @@ static void octeon_lmc_edac_poll_o2(struct mem_ctl_info *mci)
 	if (!pvt->inject)
 		int_reg.u64 = cvmx_read_csr(CVMX_LMCX_INT(mci->mc_idx));
 	else {
+		int_reg.u64 = 0;
 		if (pvt->error_type == 1)
 			int_reg.s.sec_err = 1;
 		if (pvt->error_type == 2)
@@ -302,23 +302,23 @@ static int octeon_lmc_edac_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int octeon_lmc_edac_remove(struct platform_device *pdev)
+static void octeon_lmc_edac_remove(struct platform_device *pdev)
 {
 	struct mem_ctl_info *mci = platform_get_drvdata(pdev);
 
 	edac_mc_del_mc(&pdev->dev);
 	edac_mc_free(mci);
-	return 0;
 }
 
 static struct platform_driver octeon_lmc_edac_driver = {
 	.probe = octeon_lmc_edac_probe,
-	.remove = octeon_lmc_edac_remove,
+	.remove_new = octeon_lmc_edac_remove,
 	.driver = {
 		   .name = "octeon_lmc_edac",
 	}
 };
 module_platform_driver(octeon_lmc_edac_driver);
 
+MODULE_DESCRIPTION("Cavium Octeon DRAM Memory Controller (LMC) EDAC driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ralf Baechle <ralf@linux-mips.org>");

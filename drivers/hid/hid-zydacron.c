@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
 *  HID driver for zydacron remote control
 *
@@ -5,10 +6,6 @@
 */
 
 /*
-* This program is free software; you can redistribute it and/or modify it
-* under the terms of the GNU General Public License as published by the Free
-* Software Foundation; either version 2 of the License, or (at your option)
-* any later version.
 */
 
 #include <linux/device.h>
@@ -27,7 +24,7 @@ struct zc_device {
 * Zydacron remote control has an invalid HID report descriptor,
 * that needs fixing before we can parse it.
 */
-static __u8 *zc_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+static const __u8 *zc_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 	unsigned int *rsize)
 {
 	if (*rsize >= 253 &&
@@ -208,4 +205,5 @@ static struct hid_driver zc_driver = {
 };
 module_hid_driver(zc_driver);
 
+MODULE_DESCRIPTION("HID driver for zydacron remote control");
 MODULE_LICENSE("GPL");

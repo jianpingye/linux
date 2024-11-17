@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * descriptor table internals; you almost certainly want file.h instead.
  */
@@ -9,6 +10,7 @@
 #include <linux/compiler.h>
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
+#include <linux/nospec.h>
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/fs.h>
@@ -26,18 +28,9 @@ struct fdtable {
 	struct file __rcu **fd;      /* current fd array */
 	unsigned long *close_on_exec;
 	unsigned long *open_fds;
+	unsigned long *full_fds_bits;
 	struct rcu_head rcu;
 };
-
-static inline bool close_on_exec(int fd, const struct fdtable *fdt)
-{
-	return test_bit(fd, fdt->close_on_exec);
-}
-
-static inline bool fd_is_open(int fd, const struct fdtable *fdt)
-{
-	return test_bit(fd, fdt->open_fds);
-}
 
 /*
  * Open file table structure
@@ -56,9 +49,10 @@ struct files_struct {
    * written part on a separate cache line in SMP
    */
 	spinlock_t file_lock ____cacheline_aligned_in_smp;
-	int next_fd;
+	unsigned int next_fd;
 	unsigned long close_on_exec_init[1];
 	unsigned long open_fds_init[1];
+	unsigned long full_fds_bits_init[1];
 	struct file __rcu * fd_array[NR_OPEN_DEFAULT];
 };
 
@@ -75,46 +69,54 @@ struct dentry;
 /*
  * The caller must ensure that fd table isn't shared or hold rcu or file lock
  */
-static inline struct file *__fcheck_files(struct files_struct *files, unsigned int fd)
+static inline struct file *files_lookup_fd_raw(struct files_struct *files, unsigned int fd)
 {
 	struct fdtable *fdt = rcu_dereference_raw(files->fdt);
+	unsigned long mask = array_index_mask_nospec(fd, fdt->max_fds);
+	struct file *needs_masking;
 
-	if (fd < fdt->max_fds)
-		return rcu_dereference_raw(fdt->fd[fd]);
-	return NULL;
+	/*
+	 * 'mask' is zero for an out-of-bounds fd, all ones for ok.
+	 * 'fd&mask' is 'fd' for ok, or 0 for out of bounds.
+	 *
+	 * Accessing fdt->fd[0] is ok, but needs masking of the result.
+	 */
+	needs_masking = rcu_dereference_raw(fdt->fd[fd&mask]);
+	return (struct file *)(mask & (unsigned long)needs_masking);
 }
 
-static inline struct file *fcheck_files(struct files_struct *files, unsigned int fd)
+static inline struct file *files_lookup_fd_locked(struct files_struct *files, unsigned int fd)
 {
-	rcu_lockdep_assert(rcu_read_lock_held() ||
-			   lockdep_is_held(&files->file_lock),
+	RCU_LOCKDEP_WARN(!lockdep_is_held(&files->file_lock),
 			   "suspicious rcu_dereference_check() usage");
-	return __fcheck_files(files, fd);
+	return files_lookup_fd_raw(files, fd);
 }
 
-/*
- * Check whether the specified fd has an open file.
- */
-#define fcheck(fd)	fcheck_files(current->files, fd)
+struct file *lookup_fdget_rcu(unsigned int fd);
+struct file *task_lookup_fdget_rcu(struct task_struct *task, unsigned int fd);
+struct file *task_lookup_next_fdget_rcu(struct task_struct *task, unsigned int *fd);
+
+static inline bool close_on_exec(unsigned int fd, const struct files_struct *files)
+{
+	return test_bit(fd, files_fdtable(files)->close_on_exec);
+}
 
 struct task_struct;
 
-struct files_struct *get_files_struct(struct task_struct *);
 void put_files_struct(struct files_struct *fs);
-void reset_files_struct(struct files_struct *);
-int unshare_files(struct files_struct **);
-struct files_struct *dup_fd(struct files_struct *, int *);
+int unshare_files(void);
+struct fd_range {
+	unsigned int from, to;
+};
+struct files_struct *dup_fd(struct files_struct *, struct fd_range *) __latent_entropy;
 void do_close_on_exec(struct files_struct *);
 int iterate_fd(struct files_struct *, unsigned,
 		int (*)(const void *, struct file *, unsigned),
 		const void *);
 
-extern int __alloc_fd(struct files_struct *files,
-		      unsigned start, unsigned end, unsigned flags);
-extern void __fd_install(struct files_struct *files,
-		      unsigned int fd, struct file *file);
-extern int __close_fd(struct files_struct *files,
-		      unsigned int fd);
+extern int close_fd(unsigned int fd);
+extern int __close_range(unsigned int fd, unsigned int max_fd, unsigned int flags);
+extern struct file *file_close_fd(unsigned int fd);
 
 extern struct kmem_cache *files_cachep;
 

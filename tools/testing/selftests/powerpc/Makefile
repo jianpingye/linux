@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 # Makefile for powerpc selftests
 
 # ARCH can be overridden by the user for cross compiling
@@ -6,48 +7,70 @@ ARCH := $(shell echo $(ARCH) | sed -e s/ppc.*/powerpc/)
 
 ifeq ($(ARCH),powerpc)
 
-GIT_VERSION = $(shell git describe --always --long --dirty || echo "unknown")
-
-CFLAGS := -Wall -O2 -flto -Wall -Werror -DGIT_VERSION='"$(GIT_VERSION)"' -I$(CURDIR) $(CFLAGS)
-
-export CFLAGS
-
-SUB_DIRS = pmu copyloops mm tm primitives stringloops vphn switch_endian dscr
+SUB_DIRS = alignment		\
+	   benchmarks		\
+	   cache_shape		\
+	   copyloops		\
+	   dexcr		\
+	   dscr			\
+	   mm			\
+	   nx-gzip		\
+	   pmu			\
+	   signal		\
+	   primitives		\
+	   stringloops		\
+	   switch_endian	\
+	   syscalls		\
+	   tm			\
+	   eeh			\
+	   vphn         \
+	   math		\
+	   papr_attributes	\
+	   papr_vpd		\
+	   papr_sysparm		\
+	   ptrace	\
+	   security	\
+	   mce
 
 endif
 
 all: $(SUB_DIRS)
 
 $(SUB_DIRS):
-	$(MAKE) -k -C $@ all
+	BUILD_TARGET=$(OUTPUT)/$@; mkdir -p $$BUILD_TARGET; $(MAKE) OUTPUT=$$BUILD_TARGET -k -C $@ all
 
 include ../lib.mk
+include ./flags.mk
 
 override define RUN_TESTS
-	@for TARGET in $(SUB_DIRS); do \
-		$(MAKE) -C $$TARGET run_tests; \
+	+@for TARGET in $(SUB_DIRS); do \
+		BUILD_TARGET=$(OUTPUT)/$$TARGET;	\
+		$(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET run_tests;\
 	done;
 endef
 
 override define INSTALL_RULE
-	@for TARGET in $(SUB_DIRS); do \
-		$(MAKE) -C $$TARGET install; \
+	+@for TARGET in $(SUB_DIRS); do \
+		BUILD_TARGET=$(OUTPUT)/$$TARGET;	\
+		$(MAKE) OUTPUT=$$BUILD_TARGET INSTALL_PATH=$$INSTALL_PATH/$$TARGET -C $$TARGET install;\
 	done;
 endef
 
-override define EMIT_TESTS
-	@for TARGET in $(SUB_DIRS); do \
-		$(MAKE) -s -C $$TARGET emit_tests; \
+emit_tests:
+	+@for TARGET in $(SUB_DIRS); do \
+		BUILD_TARGET=$(OUTPUT)/$$TARGET;	\
+		$(MAKE) OUTPUT=$$BUILD_TARGET COLLECTION=$(COLLECTION)/$$TARGET -s -C $$TARGET $@;\
 	done;
-endef
 
-clean:
-	@for TARGET in $(SUB_DIRS); do \
-		$(MAKE) -C $$TARGET clean; \
+override define CLEAN
+	+@for TARGET in $(SUB_DIRS); do \
+		BUILD_TARGET=$(OUTPUT)/$$TARGET;	\
+		$(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET clean; \
 	done;
 	rm -f tags
+endef
 
 tags:
 	find . -name '*.c' -o -name '*.h' | xargs ctags
 
-.PHONY: tags $(SUB_DIRS)
+.PHONY: tags $(SUB_DIRS) emit_tests

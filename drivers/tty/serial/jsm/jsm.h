@@ -1,17 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /************************************************************************
  * Copyright 2003 Digi International (www.digi.com)
  *
  * Copyright (C) 2004 IBM Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY, EXPRESS OR IMPLIED; without even the
- * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
- * PURPOSE.  See the GNU General Public License for more details.
  *
  * Contact Information:
  * Scott H Kilau <Scott_Kilau@digi.com>
@@ -124,8 +115,6 @@ struct board_ops {
 	void (*send_start_character)(struct jsm_channel *ch);
 	void (*send_stop_character)(struct jsm_channel *ch);
 	void (*copy_data_from_queue_to_uart)(struct jsm_channel *ch);
-	u32 (*get_uart_bytes_left)(struct jsm_channel *ch);
-	void (*send_immediate_char)(struct jsm_channel *ch, unsigned char);
 };
 
 
@@ -136,7 +125,6 @@ struct jsm_board
 {
 	int		boardnum;	/* Board number: 0-32 */
 
-	int		type;		/* Type of board */
 	u8		rev;		/* PCI revision ID */
 	struct pci_dev	*pci_dev;
 	u32		maxports;	/* MAX ports this board can handle */
@@ -164,8 +152,6 @@ struct jsm_board
 	u32		bd_dividend;	/* Board/UARTs specific dividend */
 
 	struct board_ops *bd_ops;
-
-	struct list_head jsm_board_entry;
 };
 
 /************************************************************************

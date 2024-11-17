@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * wm8994-regmap.c  --  Register map data for WM8994 series devices
  *
  * Copyright 2011 Wolfson Microelectronics PLC.
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/mfd/wm8994/core.h>
@@ -19,7 +14,7 @@
 
 #include "wm8994.h"
 
-static struct reg_default wm1811_defaults[] = {
+static const struct reg_default wm1811_defaults[] = {
 	{ 0x0001, 0x0000 },    /* R1    - Power Management (1) */
 	{ 0x0002, 0x6000 },    /* R2    - Power Management (2) */
 	{ 0x0003, 0x0000 },    /* R3    - Power Management (3) */
@@ -251,7 +246,7 @@ static struct reg_default wm1811_defaults[] = {
 	{ 0x0748, 0x003F },    /* R1864 - IRQ Debounce */
 };
 
-static struct reg_default wm8994_defaults[] = {
+static const struct reg_default wm8994_defaults[] = {
 	{ 0x0001, 0x0000 },    /* R1     - Power Management (1) */ 
 	{ 0x0002, 0x6000 },    /* R2     - Power Management (2) */ 
 	{ 0x0003, 0x0000 },    /* R3     - Power Management (3) */ 
@@ -470,7 +465,7 @@ static struct reg_default wm8994_defaults[] = {
 	{ 0x0748, 0x003F },    /* R1864  - IRQ Debounce */ 
 };
 
-static struct reg_default wm8958_defaults[] = {
+static const struct reg_default wm8958_defaults[] = {
 	{ 0x0001, 0x0000 },    /* R1     - Power Management (1) */
 	{ 0x0002, 0x6000 },    /* R2     - Power Management (2) */
 	{ 0x0003, 0x0000 },    /* R3     - Power Management (3) */
@@ -1243,7 +1238,7 @@ struct regmap_config wm1811_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 16,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.reg_defaults = wm1811_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm1811_defaults),
@@ -1258,7 +1253,7 @@ struct regmap_config wm8994_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 16,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.reg_defaults = wm8994_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8994_defaults),
@@ -1273,7 +1268,7 @@ struct regmap_config wm8958_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 16,
 
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 
 	.reg_defaults = wm8958_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8958_defaults),

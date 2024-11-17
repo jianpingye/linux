@@ -1,13 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * AEAD: Authenticated Encryption with Associated Data
  * 
- * Copyright (c) 2007 Herbert Xu <herbert@gondor.apana.org.au>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option) 
- * any later version.
- *
+ * Copyright (c) 2007-2015 Herbert Xu <herbert@gondor.apana.org.au>
  */
 
 #ifndef _CRYPTO_INTERNAL_AEAD_H
@@ -21,6 +16,7 @@
 struct rtattr;
 
 struct aead_instance {
+	void (*free)(struct aead_instance *inst);
 	union {
 		struct {
 			char head[offsetof(struct aead_alg, base)];
@@ -34,18 +30,18 @@ struct crypto_aead_spawn {
 	struct crypto_spawn base;
 };
 
-extern const struct crypto_type crypto_aead_type;
-extern const struct crypto_type crypto_nivaead_type;
+struct aead_queue {
+	struct crypto_queue base;
+};
 
 static inline void *crypto_aead_ctx(struct crypto_aead *tfm)
 {
 	return crypto_tfm_ctx(&tfm->base);
 }
 
-static inline struct crypto_instance *crypto_aead_alg_instance(
-	struct crypto_aead *aead)
+static inline void *crypto_aead_ctx_dma(struct crypto_aead *tfm)
 {
-	return crypto_tfm_alg_instance(&aead->base);
+	return crypto_tfm_ctx_dma(&tfm->base);
 }
 
 static inline struct crypto_instance *aead_crypto_instance(
@@ -61,7 +57,7 @@ static inline struct aead_instance *aead_instance(struct crypto_instance *inst)
 
 static inline struct aead_instance *aead_alg_instance(struct crypto_aead *aead)
 {
-	return aead_instance(crypto_aead_alg_instance(aead));
+	return aead_instance(crypto_tfm_alg_instance(&aead->base));
 }
 
 static inline void *aead_instance_ctx(struct aead_instance *inst)
@@ -74,9 +70,19 @@ static inline void *aead_request_ctx(struct aead_request *req)
 	return req->__ctx;
 }
 
+static inline void *aead_request_ctx_dma(struct aead_request *req)
+{
+	unsigned int align = crypto_dma_align();
+
+	if (align <= crypto_tfm_ctx_alignment())
+		align = 1;
+
+	return PTR_ALIGN(aead_request_ctx(req), align);
+}
+
 static inline void aead_request_complete(struct aead_request *req, int err)
 {
-	req->base.complete(&req->base, err);
+	crypto_request_complete(&req->base, err);
 }
 
 static inline u32 aead_request_flags(struct aead_request *req)
@@ -84,26 +90,19 @@ static inline u32 aead_request_flags(struct aead_request *req)
 	return req->base.flags;
 }
 
-static inline void crypto_set_aead_spawn(
-	struct crypto_aead_spawn *spawn, struct crypto_instance *inst)
+static inline struct aead_request *aead_request_cast(
+	struct crypto_async_request *req)
 {
-	crypto_set_spawn(&spawn->base, inst);
+	return container_of(req, struct aead_request, base);
 }
 
-struct crypto_alg *crypto_lookup_aead(const char *name, u32 type, u32 mask);
-
-int crypto_grab_aead(struct crypto_aead_spawn *spawn, const char *name,
-		     u32 type, u32 mask);
+int crypto_grab_aead(struct crypto_aead_spawn *spawn,
+		     struct crypto_instance *inst,
+		     const char *name, u32 type, u32 mask);
 
 static inline void crypto_drop_aead(struct crypto_aead_spawn *spawn)
 {
 	crypto_drop_spawn(&spawn->base);
-}
-
-static inline struct crypto_alg *crypto_aead_spawn_alg(
-	struct crypto_aead_spawn *spawn)
-{
-	return spawn->base.alg;
 }
 
 static inline struct aead_alg *crypto_spawn_aead_alg(
@@ -118,43 +117,44 @@ static inline struct crypto_aead *crypto_spawn_aead(
 	return crypto_spawn_tfm2(&spawn->base);
 }
 
-struct aead_instance *aead_geniv_alloc(struct crypto_template *tmpl,
-				       struct rtattr **tb, u32 type, u32 mask);
-void aead_geniv_free(struct aead_instance *inst);
-int aead_geniv_init(struct crypto_tfm *tfm);
-void aead_geniv_exit(struct crypto_tfm *tfm);
-
-static inline struct crypto_aead *aead_geniv_base(struct crypto_aead *geniv)
-{
-	return geniv->child;
-}
-
-static inline void *aead_givcrypt_reqctx(struct aead_givcrypt_request *req)
-{
-	return aead_request_ctx(&req->areq);
-}
-
-static inline void aead_givcrypt_complete(struct aead_givcrypt_request *req,
-					  int err)
-{
-	aead_request_complete(&req->areq, err);
-}
-
 static inline void crypto_aead_set_reqsize(struct crypto_aead *aead,
 					   unsigned int reqsize)
 {
-	crypto_aead_crt(aead)->reqsize = reqsize;
+	aead->reqsize = reqsize;
 }
 
-static inline unsigned int crypto_aead_alg_maxauthsize(struct aead_alg *alg)
+static inline void crypto_aead_set_reqsize_dma(struct crypto_aead *aead,
+					       unsigned int reqsize)
 {
-	return alg->base.cra_aead.encrypt ? alg->base.cra_aead.maxauthsize :
-					    alg->maxauthsize;
+	reqsize += crypto_dma_align() & ~(crypto_tfm_ctx_alignment() - 1);
+	aead->reqsize = reqsize;
 }
 
-static inline unsigned int crypto_aead_maxauthsize(struct crypto_aead *aead)
+static inline void aead_init_queue(struct aead_queue *queue,
+				   unsigned int max_qlen)
 {
-	return crypto_aead_alg_maxauthsize(crypto_aead_alg(aead));
+	crypto_init_queue(&queue->base, max_qlen);
+}
+
+static inline unsigned int crypto_aead_alg_chunksize(struct aead_alg *alg)
+{
+	return alg->chunksize;
+}
+
+/**
+ * crypto_aead_chunksize() - obtain chunk size
+ * @tfm: cipher handle
+ *
+ * The block size is set to one for ciphers such as CCM.  However,
+ * you still need to provide incremental updates in multiples of
+ * the underlying block size as the IV does not have sub-block
+ * granularity.  This is known in this API as the chunk size.
+ *
+ * Return: chunk size in bytes
+ */
+static inline unsigned int crypto_aead_chunksize(struct crypto_aead *tfm)
+{
+	return crypto_aead_alg_chunksize(crypto_aead_alg(tfm));
 }
 
 int crypto_register_aead(struct aead_alg *alg);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of the ROHM BH1770GLC / OSRAM SFH7770 sensor driver.
  * Chip is combined proximity and ambient light sensor.
@@ -5,21 +6,6 @@
  * Copyright (C) 2010 Nokia Corporation and/or its subsidiary(-ies).
  *
  * Contact: Samu Onkalo <samu.p.onkalo@nokia.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/kernel.h>
@@ -27,7 +13,7 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/mutex.h>
-#include <linux/i2c/bh1770glc.h>
+#include <linux/platform_data/bh1770glc.h>
 #include <linux/regulator/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/workqueue.h>
@@ -179,9 +165,6 @@ static const char reg_vleds[] = "Vleds";
  */
 static const s16 prox_rates_hz[] = {100, 50, 33, 25, 14, 10, 5, 2};
 static const s16 prox_rates_ms[] = {10, 20, 30, 40, 70, 100, 200, 500};
-
-/* Supported IR-led currents in mA */
-static const u8 prox_curr_ma[] = {5, 10, 20, 50, 100, 150, 200};
 
 /*
  * Supported stand alone rates in ms from chip data sheet
@@ -697,15 +680,15 @@ static ssize_t bh1770_lux_result_show(struct device *dev,
 {
 	struct bh1770_chip *chip =  dev_get_drvdata(dev);
 	ssize_t ret;
-	long timeout;
+	long time_left;
 
 	if (pm_runtime_suspended(dev))
 		return -EIO; /* Chip is not enabled at all */
 
-	timeout = wait_event_interruptible_timeout(chip->wait,
-					!chip->lux_wait_result,
-					msecs_to_jiffies(BH1770_TIMEOUT));
-	if (!timeout)
+	time_left = wait_event_interruptible_timeout(chip->wait,
+						     !chip->lux_wait_result,
+						     msecs_to_jiffies(BH1770_TIMEOUT));
+	if (!time_left)
 		return -EIO;
 
 	mutex_lock(&chip->mutex);
@@ -1175,12 +1158,11 @@ static struct attribute *sysfs_attrs[] = {
 	NULL
 };
 
-static struct attribute_group bh1770_attribute_group = {
+static const struct attribute_group bh1770_attribute_group = {
 	.attrs = sysfs_attrs
 };
 
-static int bh1770_probe(struct i2c_client *client,
-				const struct i2c_device_id *id)
+static int bh1770_probe(struct i2c_client *client)
 {
 	struct bh1770_chip *chip;
 	int err;
@@ -1297,7 +1279,7 @@ fail0:
 	return err;
 }
 
-static int bh1770_remove(struct i2c_client *client)
+static void bh1770_remove(struct i2c_client *client)
 {
 	struct bh1770_chip *chip = i2c_get_clientdata(client);
 
@@ -1316,14 +1298,12 @@ static int bh1770_remove(struct i2c_client *client)
 
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
 static int bh1770_suspend(struct device *dev)
 {
-	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct i2c_client *client = to_i2c_client(dev);
 	struct bh1770_chip *chip = i2c_get_clientdata(client);
 
 	bh1770_chip_off(chip);
@@ -1333,7 +1313,7 @@ static int bh1770_suspend(struct device *dev)
 
 static int bh1770_resume(struct device *dev)
 {
-	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct i2c_client *client = to_i2c_client(dev);
 	struct bh1770_chip *chip = i2c_get_clientdata(client);
 	int ret = 0;
 
@@ -1361,7 +1341,7 @@ static int bh1770_resume(struct device *dev)
 #ifdef CONFIG_PM
 static int bh1770_runtime_suspend(struct device *dev)
 {
-	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct i2c_client *client = to_i2c_client(dev);
 	struct bh1770_chip *chip = i2c_get_clientdata(client);
 
 	bh1770_chip_off(chip);
@@ -1371,7 +1351,7 @@ static int bh1770_runtime_suspend(struct device *dev)
 
 static int bh1770_runtime_resume(struct device *dev)
 {
-	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct i2c_client *client = to_i2c_client(dev);
 	struct bh1770_chip *chip = i2c_get_clientdata(client);
 
 	bh1770_chip_on(chip);
@@ -1381,8 +1361,8 @@ static int bh1770_runtime_resume(struct device *dev)
 #endif
 
 static const struct i2c_device_id bh1770_id[] = {
-	{"bh1770glc", 0 },
-	{"sfh7770", 0 },
+	{ "bh1770glc" },
+	{ "sfh7770" },
 	{}
 };
 
@@ -1394,12 +1374,11 @@ static const struct dev_pm_ops bh1770_pm_ops = {
 };
 
 static struct i2c_driver bh1770_driver = {
-	.driver	 = {
+	.driver	  = {
 		.name	= "bh1770glc",
-		.owner	= THIS_MODULE,
 		.pm	= &bh1770_pm_ops,
 	},
-	.probe	  = bh1770_probe,
+	.probe    = bh1770_probe,
 	.remove	  = bh1770_remove,
 	.id_table = bh1770_id,
 };

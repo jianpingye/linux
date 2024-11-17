@@ -27,18 +27,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/time.h>
-#ifdef KTEST
 #include "../kselftest.h"
-#else
-static inline int ksft_exit_pass(void)
-{
-	exit(0);
-}
-static inline int ksft_exit_fail(void)
-{
-	exit(1);
-}
-#endif
 
 #define NSEC_PER_SEC 1000000000LL
 
@@ -139,6 +128,6 @@ out:
 	/* restore clock */
 	settime(start);
 	if (ret)
-		return ksft_exit_fail();
-	return ksft_exit_pass();
+		ksft_exit_fail();
+	ksft_exit_pass();
 }

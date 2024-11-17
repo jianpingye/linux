@@ -1,17 +1,8 @@
-/* ir-rc5-decoder.c - decoder for RC5(x) and StreamZap protocols
- *
- * Copyright (C) 2010 by Mauro Carvalho Chehab
- * Copyright (C) 2010 by Jarod Wilson <jarod@redhat.com>
- *
- * This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0
+// ir-rc5-decoder.c - decoder for RC5(x) and StreamZap protocols
+//
+// Copyright (C) 2010 by Mauro Carvalho Chehab
+// Copyright (C) 2010 by Jarod Wilson <jarod@redhat.com>
 
 /*
  * This decoder handles the 14 bit RC5 protocol, 15 bit "StreamZap" protocol
@@ -25,11 +16,11 @@
 #define RC5_SZ_NBITS		15
 #define RC5X_NBITS		20
 #define CHECK_RC5X_NBITS	8
-#define RC5_UNIT		888888 /* ns */
+#define RC5_UNIT		889 /* us */
 #define RC5_BIT_START		(1 * RC5_UNIT)
 #define RC5_BIT_END		(1 * RC5_UNIT)
 #define RC5X_SPACE		(4 * RC5_UNIT)
-#define RC5_TRAILER		(10 * RC5_UNIT) /* In reality, approx 100 */
+#define RC5_TRAILER		(6 * RC5_UNIT) /* In reality, approx 100 */
 
 enum rc5_state {
 	STATE_INACTIVE,
@@ -51,13 +42,10 @@ static int ir_rc5_decode(struct rc_dev *dev, struct ir_raw_event ev)
 	struct rc5_dec *data = &dev->raw->rc5;
 	u8 toggle;
 	u32 scancode;
-	enum rc_type protocol;
-
-	if (!(dev->enabled_protocols & (RC_BIT_RC5 | RC_BIT_RC5X | RC_BIT_RC5_SZ)))
-		return 0;
+	enum rc_proto protocol;
 
 	if (!is_timing_event(ev)) {
-		if (ev.reset)
+		if (ev.overflow)
 			data->state = STATE_INACTIVE;
 		return 0;
 	}
@@ -66,8 +54,8 @@ static int ir_rc5_decode(struct rc_dev *dev, struct ir_raw_event ev)
 		goto out;
 
 again:
-	IR_dprintk(2, "RC5(x/sz) decode started at state %i (%uus %s)\n",
-		   data->state, TO_US(ev.duration), TO_STR(ev.pulse));
+	dev_dbg(&dev->dev, "RC5(x/sz) decode started at state %i (%uus %s)\n",
+		data->state, ev.duration, TO_STR(ev.pulse));
 
 	if (!geq_margin(ev.duration, RC5_UNIT, RC5_UNIT / 2))
 		return 0;
@@ -100,9 +88,6 @@ again:
 		return 0;
 
 	case STATE_BIT_END:
-		if (!is_transition(&ev, &dev->raw->prev_ev))
-			break;
-
 		if (data->count == CHECK_RC5X_NBITS)
 			data->state = STATE_CHECK_RC5X;
 		else
@@ -127,7 +112,7 @@ again:
 		if (data->is_rc5x && data->count == RC5X_NBITS) {
 			/* RC5X */
 			u8 xdata, command, system;
-			if (!(dev->enabled_protocols & RC_BIT_RC5X)) {
+			if (!(dev->enabled_protocols & RC_PROTO_BIT_RC5X_20)) {
 				data->state = STATE_INACTIVE;
 				return 0;
 			}
@@ -135,14 +120,14 @@ again:
 			command  = (data->bits & 0x00FC0) >> 6;
 			system   = (data->bits & 0x1F000) >> 12;
 			toggle   = (data->bits & 0x20000) ? 1 : 0;
-			command += (data->bits & 0x01000) ? 0 : 0x40;
+			command += (data->bits & 0x40000) ? 0 : 0x40;
 			scancode = system << 16 | command << 8 | xdata;
-			protocol = RC_TYPE_RC5X;
+			protocol = RC_PROTO_RC5X_20;
 
 		} else if (!data->is_rc5x && data->count == RC5_NBITS) {
 			/* RC5 */
 			u8 command, system;
-			if (!(dev->enabled_protocols & RC_BIT_RC5)) {
+			if (!(dev->enabled_protocols & RC_PROTO_BIT_RC5)) {
 				data->state = STATE_INACTIVE;
 				return 0;
 			}
@@ -151,12 +136,12 @@ again:
 			toggle   = (data->bits & 0x00800) ? 1 : 0;
 			command += (data->bits & 0x01000) ? 0 : 0x40;
 			scancode = system << 8 | command;
-			protocol = RC_TYPE_RC5;
+			protocol = RC_PROTO_RC5;
 
 		} else if (!data->is_rc5x && data->count == RC5_SZ_NBITS) {
 			/* RC5 StreamZap */
 			u8 command, system;
-			if (!(dev->enabled_protocols & RC_BIT_RC5_SZ)) {
+			if (!(dev->enabled_protocols & RC_PROTO_BIT_RC5_SZ)) {
 				data->state = STATE_INACTIVE;
 				return 0;
 			}
@@ -164,13 +149,13 @@ again:
 			system   = (data->bits & 0x02FC0) >> 6;
 			toggle   = (data->bits & 0x01000) ? 1 : 0;
 			scancode = system << 6 | command;
-			protocol = RC_TYPE_RC5_SZ;
+			protocol = RC_PROTO_RC5_SZ;
 
 		} else
 			break;
 
-		IR_dprintk(1, "RC5(x/sz) scancode 0x%06x (p: %u, t: %u)\n",
-			   scancode, protocol, toggle);
+		dev_dbg(&dev->dev, "RC5(x/sz) scancode 0x%06x (p: %u, t: %u)\n",
+			scancode, protocol, toggle);
 
 		rc_keydown(dev, protocol, scancode, toggle);
 		data->state = STATE_INACTIVE;
@@ -178,23 +163,21 @@ again:
 	}
 
 out:
-	IR_dprintk(1, "RC5(x/sz) decode failed at state %i count %d (%uus %s)\n",
-		   data->state, data->count, TO_US(ev.duration), TO_STR(ev.pulse));
+	dev_dbg(&dev->dev, "RC5(x/sz) decode failed at state %i count %d (%uus %s)\n",
+		data->state, data->count, ev.duration, TO_STR(ev.pulse));
 	data->state = STATE_INACTIVE;
 	return -EINVAL;
 }
 
-static struct ir_raw_timings_manchester ir_rc5_timings = {
-	.leader			= RC5_UNIT,
-	.pulse_space_start	= 0,
+static const struct ir_raw_timings_manchester ir_rc5_timings = {
+	.leader_pulse		= RC5_UNIT,
 	.clock			= RC5_UNIT,
 	.trailer_space		= RC5_UNIT * 10,
 };
 
-static struct ir_raw_timings_manchester ir_rc5x_timings[2] = {
+static const struct ir_raw_timings_manchester ir_rc5x_timings[2] = {
 	{
-		.leader			= RC5_UNIT,
-		.pulse_space_start	= 0,
+		.leader_pulse		= RC5_UNIT,
 		.clock			= RC5_UNIT,
 		.trailer_space		= RC5X_SPACE,
 	},
@@ -204,31 +187,17 @@ static struct ir_raw_timings_manchester ir_rc5x_timings[2] = {
 	},
 };
 
-static struct ir_raw_timings_manchester ir_rc5_sz_timings = {
-	.leader				= RC5_UNIT,
-	.pulse_space_start		= 0,
+static const struct ir_raw_timings_manchester ir_rc5_sz_timings = {
+	.leader_pulse			= RC5_UNIT,
 	.clock				= RC5_UNIT,
 	.trailer_space			= RC5_UNIT * 10,
 };
 
-static int ir_rc5_validate_filter(const struct rc_scancode_filter *scancode,
-				  unsigned int important_bits)
-{
-	/* all important bits of scancode should be set in mask */
-	if (~scancode->mask & important_bits)
-		return -EINVAL;
-	/* extra bits in mask should be zero in data */
-	if (scancode->mask & scancode->data & ~important_bits)
-		return -EINVAL;
-	return 0;
-}
-
 /**
  * ir_rc5_encode() - Encode a scancode as a stream of raw events
  *
- * @protocols:	allowed protocols
- * @scancode:	scancode filter describing scancode (helps distinguish between
- *		protocol subtypes when scancode is ambiguous)
+ * @protocol:	protocol variant to encode
+ * @scancode:	scancode to encode
  * @events:	array of raw ir events to write into
  * @max:	maximum size of @events
  *
@@ -237,59 +206,56 @@ static int ir_rc5_validate_filter(const struct rc_scancode_filter *scancode,
  *		encoding. In this case all @max events will have been written.
  *		-EINVAL if the scancode is ambiguous or invalid.
  */
-static int ir_rc5_encode(u64 protocols,
-			 const struct rc_scancode_filter *scancode,
+static int ir_rc5_encode(enum rc_proto protocol, u32 scancode,
 			 struct ir_raw_event *events, unsigned int max)
 {
 	int ret;
 	struct ir_raw_event *e = events;
-	unsigned int data, xdata, command, commandx, system;
+	unsigned int data, xdata, command, commandx, system, pre_space_data;
 
 	/* Detect protocol and convert scancode to raw data */
-	if (protocols & RC_BIT_RC5 &&
-	    !ir_rc5_validate_filter(scancode, 0x1f7f)) {
+	if (protocol == RC_PROTO_RC5) {
 		/* decode scancode */
-		command  = (scancode->data & 0x003f) >> 0;
-		commandx = (scancode->data & 0x0040) >> 6;
-		system   = (scancode->data & 0x1f00) >> 8;
+		command  = (scancode & 0x003f) >> 0;
+		commandx = (scancode & 0x0040) >> 6;
+		system   = (scancode & 0x1f00) >> 8;
 		/* encode data */
 		data = !commandx << 12 | system << 6 | command;
 
-		/* Modulate the data */
-		ret = ir_raw_gen_manchester(&e, max, &ir_rc5_timings, RC5_NBITS,
-					    data);
+		/* First bit is encoded by leader_pulse */
+		ret = ir_raw_gen_manchester(&e, max, &ir_rc5_timings,
+					    RC5_NBITS - 1, data);
 		if (ret < 0)
 			return ret;
-	} else if (protocols & RC_BIT_RC5X &&
-		   !ir_rc5_validate_filter(scancode, 0x1f7f3f)) {
+	} else if (protocol == RC_PROTO_RC5X_20) {
 		/* decode scancode */
-		xdata    = (scancode->data & 0x00003f) >> 0;
-		command  = (scancode->data & 0x003f00) >> 8;
-		commandx = (scancode->data & 0x004000) >> 14;
-		system   = (scancode->data & 0x1f0000) >> 16;
-		/* commandx and system overlap, bits must match when encoded */
-		if (commandx == (system & 0x1))
-			return -EINVAL;
-		/* encode data */
-		data = 1 << 18 | system << 12 | command << 6 | xdata;
+		xdata    = (scancode & 0x00003f) >> 0;
+		command  = (scancode & 0x003f00) >> 8;
+		commandx = !(scancode & 0x004000);
+		system   = (scancode & 0x1f0000) >> 16;
 
-		/* Modulate the data */
+		/* encode data */
+		data = commandx << 18 | system << 12 | command << 6 | xdata;
+
+		/* First bit is encoded by leader_pulse */
+		pre_space_data = data >> (RC5X_NBITS - CHECK_RC5X_NBITS);
 		ret = ir_raw_gen_manchester(&e, max, &ir_rc5x_timings[0],
-					CHECK_RC5X_NBITS,
-					data >> (RC5X_NBITS-CHECK_RC5X_NBITS));
+					    CHECK_RC5X_NBITS - 1,
+					    pre_space_data);
 		if (ret < 0)
 			return ret;
 		ret = ir_raw_gen_manchester(&e, max - (e - events),
-					&ir_rc5x_timings[1],
-					RC5X_NBITS - CHECK_RC5X_NBITS,
-					data);
+					    &ir_rc5x_timings[1],
+					    RC5X_NBITS - CHECK_RC5X_NBITS,
+					    data);
 		if (ret < 0)
 			return ret;
-	} else if (protocols & RC_BIT_RC5_SZ &&
-		   !ir_rc5_validate_filter(scancode, 0x2fff)) {
+	} else if (protocol == RC_PROTO_RC5_SZ) {
 		/* RC5-SZ scancode is raw enough for Manchester as it is */
+		/* First bit is encoded by leader_pulse */
 		ret = ir_raw_gen_manchester(&e, max, &ir_rc5_sz_timings,
-					RC5_SZ_NBITS, scancode->data & 0x2fff);
+					    RC5_SZ_NBITS - 1,
+					    scancode & 0x2fff);
 		if (ret < 0)
 			return ret;
 	} else {
@@ -300,9 +266,12 @@ static int ir_rc5_encode(u64 protocols,
 }
 
 static struct ir_raw_handler rc5_handler = {
-	.protocols	= RC_BIT_RC5 | RC_BIT_RC5X | RC_BIT_RC5_SZ,
+	.protocols	= RC_PROTO_BIT_RC5 | RC_PROTO_BIT_RC5X_20 |
+							RC_PROTO_BIT_RC5_SZ,
 	.decode		= ir_rc5_decode,
 	.encode		= ir_rc5_encode,
+	.carrier	= 36000,
+	.min_timeout	= RC5_TRAILER,
 };
 
 static int __init ir_rc5_decode_init(void)
@@ -321,7 +290,7 @@ static void __exit ir_rc5_decode_exit(void)
 module_init(ir_rc5_decode_init);
 module_exit(ir_rc5_decode_exit);
 
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Mauro Carvalho Chehab and Jarod Wilson");
 MODULE_AUTHOR("Red Hat Inc. (http://www.redhat.com)");
 MODULE_DESCRIPTION("RC5(x/sz) IR protocol decoder");

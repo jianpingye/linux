@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * HD-audio controller (Azalia) registers and helpers
  *
@@ -78,6 +79,7 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 
 /* stream register offsets from stream base */
 #define AZX_REG_SD_CTL			0x00
+#define AZX_REG_SD_CTL_3B		0x02 /* 3rd byte of SD_CTL register */
 #define AZX_REG_SD_STS			0x03
 #define AZX_REG_SD_LPIB			0x04
 #define AZX_REG_SD_CBL			0x08
@@ -89,9 +91,47 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 #define AZX_REG_SD_BDLPL		0x18
 #define AZX_REG_SD_BDLPU		0x1c
 
+#define AZX_SD_FIFOSIZE_MASK		GENMASK(15, 0)
+
+/* GTS registers */
+#define AZX_REG_LLCH			0x14
+
+#define AZX_REG_GTS_BASE		0x520
+
+#define AZX_REG_GTSCC	(AZX_REG_GTS_BASE + 0x00)
+#define AZX_REG_WALFCC	(AZX_REG_GTS_BASE + 0x04)
+#define AZX_REG_TSCCL	(AZX_REG_GTS_BASE + 0x08)
+#define AZX_REG_TSCCU	(AZX_REG_GTS_BASE + 0x0C)
+#define AZX_REG_LLPFOC	(AZX_REG_GTS_BASE + 0x14)
+#define AZX_REG_LLPCL	(AZX_REG_GTS_BASE + 0x18)
+#define AZX_REG_LLPCU	(AZX_REG_GTS_BASE + 0x1C)
+
 /* Haswell/Broadwell display HD-A controller Extended Mode registers */
 #define AZX_REG_HSW_EM4			0x100c
 #define AZX_REG_HSW_EM5			0x1010
+
+/* Skylake/Broxton vendor-specific registers */
+#define AZX_REG_VS_EM1			0x1000
+#define AZX_REG_VS_INRC			0x1004
+#define AZX_REG_VS_OUTRC		0x1008
+#define AZX_REG_VS_FIFOTRK		0x100C
+#define AZX_REG_VS_FIFOTRK2		0x1010
+#define AZX_REG_VS_EM2			0x1030
+#define AZX_REG_VS_EM3L			0x1038
+#define AZX_REG_VS_EM3U			0x103C
+#define AZX_REG_VS_EM4L			0x1040
+#define AZX_REG_VS_EM4U			0x1044
+#define AZX_REG_VS_LTRP			0x1048
+#define AZX_REG_VS_D0I3C		0x104A
+#define AZX_REG_VS_PCE			0x104B
+#define AZX_REG_VS_L2MAGC		0x1050
+#define AZX_REG_VS_L2LAHPT		0x1054
+#define AZX_REG_VS_SDXDPIB_XBASE	0x1084
+#define AZX_REG_VS_SDXDPIB_XINTERVAL	0x20
+#define AZX_REG_VS_SDXEFIFOS_XBASE	0x1094
+#define AZX_REG_VS_SDXEFIFOS_XINTERVAL	0x20
+
+#define AZX_REG_VS_LTRP_GB_MASK		GENMASK(6, 0)
 
 /* PCI space */
 #define AZX_PCIREG_TCSEL		0x44
@@ -104,8 +144,12 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 #define BDL_SIZE		4096
 #define AZX_MAX_BDL_ENTRIES	(BDL_SIZE / 16)
 #define AZX_MAX_FRAG		32
-/* max buffer size - no h/w limit, you can increase as you like */
-#define AZX_MAX_BUF_SIZE	(1024*1024*1024)
+/*
+ * max buffer size - artificial 4MB limit per stream to avoid big allocations
+ * In theory it can be really big, but as it is per stream on systems with many streams memory could
+ * be quickly saturated if userspace requests maximum buffer size for each of them.
+ */
+#define AZX_MAX_BUF_SIZE	(4*1024*1024)
 
 /* RIRB int mask: overrun[2], response[0] */
 #define RIRB_INT_RESPONSE	0x01
@@ -130,6 +174,7 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 #define SD_INT_COMPLETE		0x04	/* completion interrupt */
 #define SD_INT_MASK		(SD_INT_DESC_ERR|SD_INT_FIFO_ERR|\
 				 SD_INT_COMPLETE)
+#define SD_CTL_STRIPE_MASK	0x3	/* stripe control mask */
 
 /* SD_STS */
 #define SD_STS_FIFO_READY	0x20	/* FIFO ready */
@@ -160,6 +205,10 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 #define AZX_SPB_BASE			0x08
 /* Interval used to calculate the iterating register offset */
 #define AZX_SPB_INTERVAL		0x08
+/* SPIB base */
+#define AZX_SPB_SPIB			0x00
+/* SPIB MAXFIFO base*/
+#define AZX_SPB_MAXFIFO			0x04
 
 /* registers of Global Time Synchronization Capability Structure */
 #define AZX_GTS_CAP_ID			0x1
@@ -213,18 +262,93 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 #define AZX_ML_BASE			0x40
 #define AZX_ML_INTERVAL			0x40
 
+/* HDaudio registers valid for HDaudio and HDaudio extended links */
 #define AZX_REG_ML_LCAP			0x00
+
+#define AZX_ML_HDA_LCAP_ALT		BIT(28)
+#define AZX_ML_HDA_LCAP_ALT_HDA		0x0
+#define AZX_ML_HDA_LCAP_ALT_HDA_EXT	0x1
+
+#define AZX_ML_HDA_LCAP_INTC		BIT(27)		/* only used if ALT == 1 */
+#define AZX_ML_HDA_LCAP_OFLS		BIT(26)		/* only used if ALT == 1 */
+#define AZX_ML_HDA_LCAP_LSS		BIT(23)		/* only used if ALT == 1 */
+#define AZX_ML_HDA_LCAP_SLCOUNT		GENMASK(22, 20)	/* only used if ALT == 1 */
+
 #define AZX_REG_ML_LCTL			0x04
+#define AZX_ML_LCTL_INTSTS		BIT(31)		/* only used if ALT == 1 */
+#define AZX_ML_LCTL_CPA			BIT(23)
+#define AZX_ML_LCTL_CPA_SHIFT		23
+#define AZX_ML_LCTL_SPA			BIT(16)
+#define AZX_ML_LCTL_SPA_SHIFT		16
+#define AZX_ML_LCTL_INTEN		BIT(5)		/* only used if ALT == 1 */
+#define AZX_ML_LCTL_OFLEN		BIT(4)		/* only used if ALT == 1 */
+#define AZX_ML_LCTL_SCF			GENMASK(3, 0)	/* only used if ALT == 0 */
+
 #define AZX_REG_ML_LOSIDV		0x08
+
+/* bit0 is reserved, with BIT(1) mapping to stream1 */
+#define AZX_ML_LOSIDV_STREAM_MASK	0xFFFE
+
 #define AZX_REG_ML_LSDIID		0x0C
+#define AZX_REG_ML_LSDIID_OFFSET(x)	(0x0C + (x) * 0x02)	/* only used if ALT == 1 */
+
+/* HDaudio registers only valid if LCAP.ALT == 0 */
 #define AZX_REG_ML_LPSOO		0x10
 #define AZX_REG_ML_LPSIO		0x12
 #define AZX_REG_ML_LWALFC		0x18
 #define AZX_REG_ML_LOUTPAY		0x20
 #define AZX_REG_ML_LINPAY		0x30
 
-#define AZX_MLCTL_SPA			(1<<16)
-#define AZX_MLCTL_CPA			23
+/* HDaudio Extended link registers only valid if LCAP.ALT == 1 */
+#define AZX_REG_ML_LSYNC		0x1C
+
+#define AZX_REG_ML_LSYNC_CMDSYNC	BIT(24)
+#define AZX_REG_ML_LSYNC_CMDSYNC_SHIFT	24
+#define AZX_REG_ML_LSYNC_SYNCGO		BIT(23)
+#define AZX_REG_ML_LSYNC_SYNCPU		BIT(20)
+#define AZX_REG_ML_LSYNC_SYNCPRD	GENMASK(19, 0)
+
+#define AZX_REG_ML_LEPTR		0x20
+
+#define AZX_REG_ML_LEPTR_ID		GENMASK(31, 24)
+#define AZX_REG_ML_LEPTR_ID_SHIFT	24
+#define AZX_REG_ML_LEPTR_ID_SDW		0x00
+#define AZX_REG_ML_LEPTR_ID_INTEL_SSP	0xC0
+#define AZX_REG_ML_LEPTR_ID_INTEL_DMIC  0xC1
+#define AZX_REG_ML_LEPTR_ID_INTEL_UAOL  0xC2
+#define AZX_REG_ML_LEPTR_VER		GENMASK(23, 20)
+#define AZX_REG_ML_LEPTR_PTR		GENMASK(19, 0)
+
+/* registers for DMA Resume Capability Structure */
+#define AZX_DRSM_CAP_ID			0x5
+#define AZX_REG_DRSM_CTL		0x4
+/* Base used to calculate the iterating register offset */
+#define AZX_DRSM_BASE			0x08
+/* Interval used to calculate the iterating register offset */
+#define AZX_DRSM_INTERVAL		0x08
+
+/* Global time synchronization registers */
+#define GTSCC_TSCCD_MASK		0x80000000
+#define GTSCC_TSCCD_SHIFT		BIT(31)
+#define GTSCC_TSCCI_MASK		0x20
+#define GTSCC_CDMAS_DMA_DIR_SHIFT	4
+
+#define WALFCC_CIF_MASK			0x1FF
+#define WALFCC_FN_SHIFT			9
+#define HDA_CLK_CYCLES_PER_FRAME	512
+
+/*
+ * An error occurs near frame "rollover". The clocks in frame value indicates
+ * whether this error may have occurred. Here we use the value of 10. Please
+ * see the errata for the right number [<10]
+ */
+#define HDA_MAX_CYCLE_VALUE		499
+#define HDA_MAX_CYCLE_OFFSET		10
+#define HDA_MAX_CYCLE_READ_RETRY	10
+
+#define TSCCU_CCU_SHIFT			32
+#define LLPC_CCU_SHIFT			32
+
 
 /*
  * helpers to read the stream position

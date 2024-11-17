@@ -1,16 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * IPVS:        Weighted Fail Over module
  *
  * Authors:     Kenny Mathis <kmathis@chokepoint.net>
  *
- *              This program is free software; you can redistribute it and/or
- *              modify it under the terms of the GNU General Public License
- *              as published by the Free Software Foundation; either version
- *              2 of the License, or (at your option) any later version.
- *
  * Changes:
  *     Kenny Mathis            :     added initial functionality based on weight
- *
  */
 
 #define KMSG_COMPONENT "IPVS"
@@ -77,3 +72,4 @@ static void __exit ip_vs_fo_cleanup(void)
 module_init(ip_vs_fo_init);
 module_exit(ip_vs_fo_cleanup);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("ipvs weighted failover scheduler");

@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * f_subset.c -- "CDC Subset" Ethernet link function driver
  *
  * Copyright (C) 2003-2005,2008 David Brownell
  * Copyright (C) 2008 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/slab.h>
@@ -262,7 +258,7 @@ static int geth_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 
 	/* we know alt == 0, so this is an activation or a reset */
 
-	if (geth->port.in_ep->driver_data) {
+	if (geth->port.in_ep->enabled) {
 		DBG(cdev, "reset cdc subset\n");
 		gether_disconnect(&geth->port);
 	}
@@ -343,13 +339,11 @@ geth_bind(struct usb_configuration *c, struct usb_function *f)
 	if (!ep)
 		goto fail;
 	geth->port.in_ep = ep;
-	ep->driver_data = cdev;	/* claim */
 
 	ep = usb_ep_autoconfig(cdev->gadget, &fs_subset_out_desc);
 	if (!ep)
 		goto fail;
 	geth->port.out_ep = ep;
-	ep->driver_data = cdev;	/* claim */
 
 	/* support all relevant hardware speeds... we expect that when
 	 * hardware is dual speed, all bulk-capable endpoints work at
@@ -364,7 +358,7 @@ geth_bind(struct usb_configuration *c, struct usb_function *f)
 		fs_subset_out_desc.bEndpointAddress;
 
 	status = usb_assign_descriptors(f, fs_eth_function, hs_eth_function,
-			ss_eth_function);
+			ss_eth_function, ss_eth_function);
 	if (status)
 		goto fail;
 
@@ -373,19 +367,11 @@ geth_bind(struct usb_configuration *c, struct usb_function *f)
 	 * until we're activated via set_alt().
 	 */
 
-	DBG(cdev, "CDC Subset: %s speed IN/%s OUT/%s\n",
-			gadget_is_superspeed(c->cdev->gadget) ? "super" :
-			gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full",
+	DBG(cdev, "CDC Subset: IN/%s OUT/%s\n",
 			geth->port.in_ep->name, geth->port.out_ep->name);
 	return 0;
 
 fail:
-	/* we might as well release our claims on endpoints */
-	if (geth->port.out_ep)
-		geth->port.out_ep->driver_data = NULL;
-	if (geth->port.in_ep)
-		geth->port.in_ep->driver_data = NULL;
-
 	ERROR(cdev, "%s: can't bind, err %d\n", f->name, status);
 
 	return status;
@@ -413,14 +399,14 @@ USB_ETHERNET_CONFIGFS_ITEM_ATTR_QMULT(gether);
 USB_ETHERNET_CONFIGFS_ITEM_ATTR_IFNAME(gether);
 
 static struct configfs_attribute *gether_attrs[] = {
-	&f_gether_opts_dev_addr.attr,
-	&f_gether_opts_host_addr.attr,
-	&f_gether_opts_qmult.attr,
-	&f_gether_opts_ifname.attr,
+	&gether_opts_attr_dev_addr,
+	&gether_opts_attr_host_addr,
+	&gether_opts_attr_qmult,
+	&gether_opts_attr_ifname,
 	NULL,
 };
 
-static struct config_item_type gether_func_type = {
+static const struct config_item_type gether_func_type = {
 	.ct_item_ops	= &gether_item_ops,
 	.ct_attrs	= gether_attrs,
 	.ct_owner	= THIS_MODULE,
@@ -514,5 +500,6 @@ static struct usb_function *geth_alloc(struct usb_function_instance *fi)
 }
 
 DECLARE_USB_FUNCTION_INIT(geth, geth_alloc_inst, geth_alloc);
+MODULE_DESCRIPTION("\"CDC Subset\" Ethernet link function driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("David Brownell");

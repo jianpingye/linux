@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Marvell MVEBU CPU clock handling.
  *
@@ -5,12 +6,10 @@
  *
  * Gregory CLEMENT <gregory.clement@free-electrons.com>
  *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 #include <linux/kernel.h>
-#include <linux/clkdev.h>
+#include <linux/slab.h>
+#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/of_address.h>
 #include <linux/io.h>
@@ -120,7 +119,7 @@ static int clk_cpu_on_set_rate(struct clk_hw *hwclk, unsigned long rate,
 	if (!cpuclk->pmu_dfs)
 		return -ENODEV;
 
-	cur_rate = __clk_get_rate(hwclk->clk);
+	cur_rate = clk_hw_get_rate(hwclk);
 
 	reg = readl(cpuclk->reg_base + SYS_CTRL_CLK_DIVIDER_CTRL2_OFFSET);
 	fabric_div = (reg >> SYS_CTRL_CLK_DIVIDER_CTRL2_NBCLK_RATIO_SHIFT) &
@@ -169,8 +168,8 @@ static void __init of_cpu_clk_setup(struct device_node *node)
 	struct cpu_clk *cpuclk;
 	void __iomem *clock_complex_base = of_iomap(node, 0);
 	void __iomem *pmu_dfs_base = of_iomap(node, 1);
-	int ncpus = 0;
-	struct device_node *dn;
+	int ncpus = num_possible_cpus();
+	int cpu;
 
 	if (clock_complex_base == NULL) {
 		pr_err("%s: clock-complex base register not set\n",
@@ -182,35 +181,25 @@ static void __init of_cpu_clk_setup(struct device_node *node)
 		pr_warn("%s: pmu-dfs base register not set, dynamic frequency scaling not available\n",
 			__func__);
 
-	for_each_node_by_type(dn, "cpu")
-		ncpus++;
-
-	cpuclk = kzalloc(ncpus * sizeof(*cpuclk), GFP_KERNEL);
+	cpuclk = kcalloc(ncpus, sizeof(*cpuclk), GFP_KERNEL);
 	if (WARN_ON(!cpuclk))
 		goto cpuclk_out;
 
-	clks = kzalloc(ncpus * sizeof(*clks), GFP_KERNEL);
+	clks = kcalloc(ncpus, sizeof(*clks), GFP_KERNEL);
 	if (WARN_ON(!clks))
 		goto clks_out;
 
-	for_each_node_by_type(dn, "cpu") {
+	for_each_possible_cpu(cpu) {
 		struct clk_init_data init;
 		struct clk *clk;
-		struct clk *parent_clk;
 		char *clk_name = kzalloc(5, GFP_KERNEL);
-		int cpu, err;
 
 		if (WARN_ON(!clk_name))
 			goto bail_out;
 
-		err = of_property_read_u32(dn, "reg", &cpu);
-		if (WARN_ON(err))
-			goto bail_out;
-
 		sprintf(clk_name, "cpu%d", cpu);
-		parent_clk = of_clk_get(node, 0);
 
-		cpuclk[cpu].parent_name = __clk_get_name(parent_clk);
+		cpuclk[cpu].parent_name = of_clk_get_parent_name(node, 0);
 		cpuclk[cpu].clk_name = clk_name;
 		cpuclk[cpu].cpu = cpu;
 		cpuclk[cpu].reg_base = clock_complex_base;
@@ -246,3 +235,11 @@ cpuclk_out:
 
 CLK_OF_DECLARE(armada_xp_cpu_clock, "marvell,armada-xp-cpu-clock",
 					 of_cpu_clk_setup);
+
+static void __init of_mv98dx3236_cpu_clk_setup(struct device_node *node)
+{
+	of_clk_add_provider(node, of_clk_src_simple_get, NULL);
+}
+
+CLK_OF_DECLARE(mv98dx3236_cpu_clock, "marvell,mv98dx3236-cpu-clock",
+					 of_mv98dx3236_cpu_clk_setup);

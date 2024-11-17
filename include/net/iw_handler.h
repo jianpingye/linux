@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This file define the new driver API for Wireless Extensions
  *
@@ -22,7 +23,7 @@
  * to handle wireless statistics.
  *
  * The initial APIs served us well and has proven a reasonably good design.
- * However, there is a few shortcommings :
+ * However, there are a few shortcomings :
  *	o No events, everything is a request to the driver.
  *	o Large ioctl function in driver with gigantic switch statement
  *	  (i.e. spaghetti code).
@@ -37,13 +38,13 @@
  * -------------------------------
  * The new driver API is just a bunch of standard functions (handlers),
  * each handling a specific Wireless Extension. The driver just export
- * the list of handler it supports, and those will be called apropriately.
+ * the list of handler it supports, and those will be called appropriately.
  *
  * I tried to keep the main advantage of the previous API (simplicity,
  * efficiency and light weight), and also I provide a good dose of backward
  * compatibility (most structures are the same, driver can use both API
  * simultaneously, ...).
- * Hopefully, I've also addressed the shortcomming of the initial API.
+ * Hopefully, I've also addressed the shortcoming of the initial API.
  *
  * The advantage of the new API are :
  *	o Handling of Extensions in driver broken in small contained functions
@@ -83,7 +84,7 @@
 
 /* ---------------------- THE IMPLEMENTATION ---------------------- */
 /*
- * Some of the choice I've made are pretty controversials. Defining an
+ * Some of the choice I've made are pretty controversial. Defining an
  * API is very much weighting compromises. This goes into some of the
  * details and the thinking behind the implementation.
  *
@@ -139,7 +140,7 @@
  * example to distinguish setting max rate and basic rate), I would
  * break the prototype. Using iwreq_data is more flexible.
  * 3) Also, the above form is not generic (see above).
- * 4) I don't expect driver developper using the wrong field of the
+ * 4) I don't expect driver developer using the wrong field of the
  * union (Doh !), so static typechecking doesn't add much value.
  * 5) Lastly, you can skip the union by doing :
  *	static int mydriver_ioctl_setrate(struct net_device *dev,
@@ -363,7 +364,7 @@ struct iw_handler_def {
  * defined in struct iw_priv_args.
  *
  * For standard IOCTLs, things are quite different and we need to
- * use the stuctures below. Actually, this struct is also more
+ * use the structures below. Actually, this struct is also more
  * efficient, but that's another story...
  */
 
@@ -425,20 +426,19 @@ struct iw_public_data {
 
 /**************************** PROTOTYPES ****************************/
 /*
- * Functions part of the Wireless Extensions (defined in net/core/wireless.c).
- * Those may be called only within the kernel.
+ * Functions part of the Wireless Extensions (defined in net/wireless/wext-core.c).
+ * Those may be called by driver modules.
  */
-
-/* First : function strictly used inside the kernel */
-
-/* Handle /proc/net/wireless, called in net/code/dev.c */
-int dev_get_wireless_info(char *buffer, char **start, off_t offset, int length);
-
-/* Second : functions that may be called by driver modules */
 
 /* Send a single event to user space */
 void wireless_send_event(struct net_device *dev, unsigned int cmd,
 			 union iwreq_data *wrqu, const char *extra);
+#ifdef CONFIG_WEXT_CORE
+/* flush all previous wext events - if work is done from netdev notifiers */
+void wireless_nlevent_flush(void);
+#else
+static inline void wireless_nlevent_flush(void) {}
+#endif
 
 /* We may need a function to send a stream of events to user space.
  * More on that later... */
@@ -459,7 +459,7 @@ int iw_handler_get_thrspy(struct net_device *dev, struct iw_request_info *info,
 void wireless_spy_update(struct net_device *dev, unsigned char *address,
 			 struct iw_quality *wstats);
 
-/************************* INLINE FUNTIONS *************************/
+/************************* INLINE FUNCTIONS *************************/
 /*
  * Function that are so simple that it's more efficient inlining them
  */
@@ -499,25 +499,8 @@ static inline int iwe_stream_event_len_adjust(struct iw_request_info *info,
 /*
  * Wrapper to add an Wireless Event to a stream of events.
  */
-static inline char *
-iwe_stream_add_event(struct iw_request_info *info, char *stream, char *ends,
-		     struct iw_event *iwe, int event_len)
-{
-	int lcp_len = iwe_stream_lcp_len(info);
-
-	event_len = iwe_stream_event_len_adjust(info, event_len);
-
-	/* Check if it's possible */
-	if(likely((stream + event_len) < ends)) {
-		iwe->len = event_len;
-		/* Beware of alignement issues on 64 bits */
-		memcpy(stream, (char *) iwe, IW_EV_LCP_PK_LEN);
-		memcpy(stream + lcp_len, &iwe->u,
-		       event_len - lcp_len);
-		stream += event_len;
-	}
-	return stream;
-}
+char *iwe_stream_add_event(struct iw_request_info *info, char *stream,
+			   char *ends, struct iw_event *iwe, int event_len);
 
 static inline char *
 iwe_stream_add_event_check(struct iw_request_info *info, char *stream,
@@ -535,26 +518,8 @@ iwe_stream_add_event_check(struct iw_request_info *info, char *stream,
  * Wrapper to add an short Wireless Event containing a pointer to a
  * stream of events.
  */
-static inline char *
-iwe_stream_add_point(struct iw_request_info *info, char *stream, char *ends,
-		     struct iw_event *iwe, char *extra)
-{
-	int event_len = iwe_stream_point_len(info) + iwe->u.data.length;
-	int point_len = iwe_stream_point_len(info);
-	int lcp_len   = iwe_stream_lcp_len(info);
-
-	/* Check if it's possible */
-	if(likely((stream + event_len) < ends)) {
-		iwe->len = event_len;
-		memcpy(stream, (char *) iwe, IW_EV_LCP_PK_LEN);
-		memcpy(stream + lcp_len,
-		       ((char *) &iwe->u) + IW_EV_POINT_OFF,
-		       IW_EV_POINT_PK_LEN - IW_EV_LCP_PK_LEN);
-		memcpy(stream + point_len, extra, iwe->u.data.length);
-		stream += event_len;
-	}
-	return stream;
-}
+char *iwe_stream_add_point(struct iw_request_info *info, char *stream,
+			   char *ends, struct iw_event *iwe, char *extra);
 
 static inline char *
 iwe_stream_add_point_check(struct iw_request_info *info, char *stream,
@@ -573,25 +538,8 @@ iwe_stream_add_point_check(struct iw_request_info *info, char *stream,
  * Be careful, this one is tricky to use properly :
  * At the first run, you need to have (value = event + IW_EV_LCP_LEN).
  */
-static inline char *
-iwe_stream_add_value(struct iw_request_info *info, char *event, char *value,
-		     char *ends, struct iw_event *iwe, int event_len)
-{
-	int lcp_len = iwe_stream_lcp_len(info);
-
-	/* Don't duplicate LCP */
-	event_len -= IW_EV_LCP_LEN;
-
-	/* Check if it's possible */
-	if(likely((value + event_len) < ends)) {
-		/* Add new value */
-		memcpy(value, &iwe->u, event_len);
-		value += event_len;
-		/* Patch LCP */
-		iwe->len = value - event;
-		memcpy(event, (char *) iwe, lcp_len);
-	}
-	return value;
-}
+char *iwe_stream_add_value(struct iw_request_info *info, char *event,
+			   char *value, char *ends, struct iw_event *iwe,
+			   int event_len);
 
 #endif	/* _IW_HANDLER_H */

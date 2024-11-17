@@ -21,7 +21,7 @@
  *
  * Authors: Dave Airlie
  */
-#include <drm/drmP.h>
+
 #include <drm/radeon_drm.h>
 #include "radeon.h"
 #include "nid.h"
@@ -116,8 +116,8 @@ radeon_dp_aux_transfer_native(struct drm_dp_aux *aux, struct drm_dp_aux_msg *msg
 	       AUX_SW_WR_BYTES(bytes));
 
 	/* write the data header into the registers */
-	/* request, addres, msg size */
-	byte = (msg->request << 4);
+	/* request, address, msg size */
+	byte = (msg->request << 4) | ((msg->address >> 16) & 0xf);
 	WREG32(AUX_SW_DATA + aux_offset[instance],
 	       AUX_SW_DATA_MASK(byte) | AUX_SW_AUTOINCREMENT_DISABLE);
 
@@ -158,18 +158,17 @@ radeon_dp_aux_transfer_native(struct drm_dp_aux *aux, struct drm_dp_aux_msg *msg
 	} while (retry_count++ < 1000);
 
 	if (retry_count >= 1000) {
-		DRM_ERROR("auxch hw never signalled completion, error %08x\n", tmp);
+		dev_err(rdev->dev, "auxch hw never signalled completion, error %08x\n", tmp);
 		ret = -EIO;
 		goto done;
 	}
 
 	if (tmp & AUX_SW_RX_TIMEOUT) {
-		DRM_DEBUG_KMS("dp_aux_ch timed out\n");
 		ret = -ETIMEDOUT;
 		goto done;
 	}
 	if (tmp & AUX_RX_ERROR_FLAGS) {
-		DRM_DEBUG_KMS("dp_aux_ch flags not zero: %08x\n", tmp);
+		drm_dbg_kms_ratelimited(dev, "dp_aux_ch flags not zero: %08x\n", tmp);
 		ret = -EIO;
 		goto done;
 	}

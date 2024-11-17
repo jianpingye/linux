@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SCSI_SCSI_DBG_H
 #define _SCSI_SCSI_DBG_H
 
@@ -5,15 +6,9 @@ struct scsi_cmnd;
 struct scsi_device;
 struct scsi_sense_hdr;
 
-#define SCSI_LOG_BUFSIZE 128
-
 extern void scsi_print_command(struct scsi_cmnd *);
 extern size_t __scsi_format_command(char *, size_t,
 				   const unsigned char *, size_t);
-extern void scsi_show_extd_sense(const struct scsi_device *, const char *,
-				 unsigned char, unsigned char);
-extern void scsi_show_sense_hdr(const struct scsi_device *, const char *,
-				const struct scsi_sense_hdr *);
 extern void scsi_print_sense_hdr(const struct scsi_device *, const char *,
 				 const struct scsi_sense_hdr *);
 extern void scsi_print_sense(const struct scsi_cmnd *);
@@ -29,7 +24,6 @@ extern const char *scsi_extd_sense_format(unsigned char, unsigned char,
 					  const char **);
 extern const char *scsi_mlreturn_string(int);
 extern const char *scsi_hostbyte_string(int);
-extern const char *scsi_driverbyte_string(int);
 #else
 static inline bool
 scsi_opcode_sa_name(int cmd, int sa,
@@ -77,12 +71,6 @@ scsi_mlreturn_string(int result)
 
 static inline const char *
 scsi_hostbyte_string(int result)
-{
-	return NULL;
-}
-
-static inline const char *
-scsi_driverbyte_string(int result)
 {
 	return NULL;
 }
